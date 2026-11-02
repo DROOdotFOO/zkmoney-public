@@ -24,7 +24,8 @@ export function BroadcastStatusRow({
       </div>
     )
   if (status.kind === "published") return null
-  const working = status.kind !== "unlock" && status.kind !== "registration"
+  const working =
+    status.kind !== "unlock" && status.kind !== "registration" && status.kind !== "moving"
   return (
     <div className="ww-send-to__note" data-testid="broadcast-status" data-status={status.kind}>
       {working && <Spinner size={12} />}

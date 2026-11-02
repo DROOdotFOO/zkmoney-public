@@ -2,11 +2,11 @@
  * The last check before a wallet is asked to fund a deposit address: a new capacity read, never a cached one, and
  * the fee the form showed. It reserves nothing; it only stops a transfer that is known not to fit right now.
  */
-import {
-  type CapacityEligibility,
-  type PortalCapacityState,
-  type PortalCapacityStore,
-  type RequiredCredit,
+import type {
+  CapacityEligibility,
+  PortalCapacityState,
+  PortalCapacityStore,
+  RequiredCredit,
 } from "@obsidion/front-core"
 import {
   capacityAllowsFunding,

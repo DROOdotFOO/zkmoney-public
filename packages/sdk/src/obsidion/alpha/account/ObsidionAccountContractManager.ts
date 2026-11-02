@@ -1,6 +1,6 @@
 import {
   CompleteAddress,
-  ContractInstanceWithAddress,
+  type ContractInstanceWithAddress,
   getContractInstanceFromInstantiationParams,
 } from "@aztec-labs/stdlib/contract"
 import {
@@ -9,9 +9,9 @@ import {
   deriveMasterIncomingViewingSecretKey,
 } from "@aztec-labs/stdlib/keys"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { ContractArtifact } from "@aztec-labs/stdlib/abi"
-import { ContractService, ContractName } from "@obsidion/contracts"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import { ContractService, type ContractName } from "@obsidion/contracts"
 import type { PXE } from "@aztec-labs/pxe/client/lazy"
 import type {
   DepositSpendMetadata,

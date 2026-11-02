@@ -1,15 +1,13 @@
 /**
  * The L2→L1 withdrawal rail for the browser, composing the shared machinery
- * (`TokenService.exitToL1PrivateSponsored`, `WithdrawalStorage`,
- * `WithdrawalTrackingService`, `resolveWithdrawalWiring`) over browser
- * collaborators. The burn is ClaimFPC-sponsored — web has no fee service, so
- * the FPC batch is the only fee rail — and finalization is oxide's headless
- * relayer: once the burn is mined this module only ARMS the chain watcher.
+ * (`TokenService.exitToL1PrivateSponsored`, the session's withdrawal store and
+ * tracker, `resolveWithdrawalWiring`) over browser collaborators. The burn is
+ * ClaimFPC-sponsored — web has no fee service, so the FPC batch is the only fee
+ * rail — and finalization is oxide's headless relayer: once the burn is mined
+ * this module only wakes the session's withdrawal tracker.
  *
- * The tracker singleton needs the wallet's node plus an sdk
- * `L1WithdrawalFinalizationReader` over the tuple's portal; front-core
- * originates no contract call. Boot is memoized per page load and re-armed by
- * `useWithdrawals` whenever a wallet is available.
+ * The tracker reads the L1 through sdk readers over the tuple's portal
+ * ({@link withdrawalRails}); front-core originates no contract call.
  */
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { Fr } from "@aztec-labs/aztec.js/fields"
@@ -18,7 +16,7 @@ import type { Address, Hex } from "viem"
 import { createPublicClient, formatUnits, parseUnits } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import {
-  ContractService,
+  type ContractService,
   createWithdrawEventSource,
   L1SwapEscrowReader,
   L1WithdrawalFinalizationReader,
@@ -47,25 +45,29 @@ import {
   revivePendingWithdrawal,
   trackWithdrawalSubmission,
   withdrawalRecipients,
+  bestEffort,
+  task,
+  within,
+  withdrawalFailure,
+  type Resource,
+  type Task,
   type WithdrawalDeployment,
-  WithdrawalStorage,
-  WithdrawalTrackingService,
   type AddressScreener,
   type FieldLike,
+  type TrackerRails,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
-import { getConfig, l1Transport } from "../../config/env"
+import { getConfig, l1Transport, type WebWalletConfig } from "../../config/env"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { currentTxAmountCap, portalDomainOfToken } from "../token/oxideToken"
 import { usdBalance } from "../../ui/format"
 import { isFlowCancelled, runOperation, type OperationHandle } from "../operations/operations"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { session } from "../../platform/session"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { claimSponsorContext, noteSubscribed } from "../onboarding/claimSponsorship"
 import { RAIL_REGISTERED } from "../onboarding/rails"
-import { slowWhenHidden } from "../../platform/visibilityScheduler"
 import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import type { WithdrawalReceiveAsset } from "./withdrawAssets"
 import { withdrawalExecutorAt, withdrawalExecutorFee } from "./withdrawalFee"
@@ -78,14 +80,7 @@ export type WithdrawStage = "building" | "proving" | "submitting"
 export type SwapCommit = Pick<SwapSimulation, "relayerTip" | "amountOut" | "decimals"> &
   Partial<Pick<SwapSimulation, "gasOut">>
 
-export function getWithdrawalStore(): WithdrawalStorage {
-  return WithdrawalStorage.get(webStorage)
-}
-
-let trackerBoot: Promise<WithdrawalTrackingService | null> | undefined
-
-function l1Client() {
-  const config = getConfig()
+function l1Client(config: WebWalletConfig = getConfig()) {
   return createPublicClient({ chain: config.l1Chain, transport: l1Transport(config) })
 }
 
@@ -101,51 +96,41 @@ export async function currentDeployment(
     : undefined
 }
 
+let rails: { tuple: OxideEnvTuple; value: TrackerRails | null } | undefined
+
 /**
- * Boot (once per page load) and resume the chain watcher. Returns null when
- * the manifest lacks the oxide-rails coordinates — withdrawals are simply
- * unavailable there. A failed boot is not sticky; the next call retries.
+ * The tracker's L1 readers over the manifest tuple, built once per tuple; null when the tuple
+ * lacks the oxide-rails coordinates, where withdrawals are unavailable.
  */
-export function ensureWithdrawalTracker(
-  wallet: ObsidionWallet,
-): Promise<WithdrawalTrackingService | null> {
-  if (!trackerBoot) {
-    const boot = (async () => {
-      const config = getConfig()
-      const tuple = await getOxideTuple(config)
-      const wiring = resolveWithdrawalWiring(tuple)
-      if (!wiring) return null
-      const publicClient = l1Client() as unknown as ConstructorParameters<
-        typeof L1WithdrawalFinalizationReader
-      >[0]
-      const readerFor = (d: { portal: Hex }) =>
-        new L1WithdrawalFinalizationReader(publicClient, { portal: d.portal })
-      const tracker = WithdrawalTrackingService.get({
-        // Slowed rather than stopped behind a hidden tab: an exit already burned on L2 has to keep
-        // advancing through its phases, or it sits unfinalized until someone looks at the wallet.
-        scheduler: slowWhenHidden(3),
-        store: getWithdrawalStore(),
-        node: wallet.node,
-        finalizationReader: readerFor(wiring),
-        deployment: { portal: wiring.portal, l2Token: wiring.l2Token },
-        // A burn on a since-retired deployment finalizes on ITS portal, not the live one.
-        readerForDeployment: readerFor,
-        // The swap leg watches the escrow itself; the factory comes off each record.
-        swapEscrowReader: new L1SwapEscrowReader(publicClient, {
-          dai: requireTupleField(tuple, "token") as Address,
-        }),
-        l1BlockAt: async (ms) =>
-          findBlockAtTime(publicClient, Math.floor(ms / 1000), await publicClient.getBlockNumber()),
-      })
-      await tracker.resumeAll()
-      return tracker
-    })()
-    trackerBoot = boot
-    boot.catch(() => {
-      if (trackerBoot === boot) trackerBoot = undefined
-    })
+export async function withdrawalRails(config: WebWalletConfig): Promise<TrackerRails | null> {
+  const tuple = await getOxideTuple(config)
+  if (rails?.tuple === tuple) return rails.value
+  const wiring = resolveWithdrawalWiring(tuple)
+  const publicClient = l1Client(config) as unknown as ConstructorParameters<
+    typeof L1WithdrawalFinalizationReader
+  >[0]
+  const readerFor = (d: { portal: Hex }) =>
+    new L1WithdrawalFinalizationReader(publicClient, { portal: d.portal })
+  const value: TrackerRails | null = wiring && {
+    finalizationReader: readerFor(wiring),
+    deployment: { portal: wiring.portal, l2Token: wiring.l2Token },
+    // A burn on a since-retired deployment finalizes on ITS portal, not the live one.
+    readerForDeployment: readerFor,
+    // The swap leg watches the escrow itself; the factory comes off each record.
+    swapEscrowReader: new L1SwapEscrowReader(publicClient, {
+      dai: requireTupleField(tuple, "token") as Address,
+    }),
+    l1BlockAt: async (ms) =>
+      findBlockAtTime(publicClient, Math.floor(ms / 1000), await publicClient.getBlockNumber()),
   }
-  return trackerBoot
+  rails = { tuple, value }
+  return value
+}
+
+/** Runs the session's withdrawal tracker over the records now in its store. */
+export function wakeWithdrawalTracker(): void {
+  const open = session()
+  void open.wake(open.tasks.withdrawalTracker)
 }
 
 /** A token whose recovery events the rescan rebuilds burns from. */
@@ -169,7 +154,7 @@ const rescans = new Map<string, Promise<WithdrawalRecord[]>>()
 
 /**
  * Once per page load and token: rebuild the records this browser lost from the account's own
- * recovery events on every token it holds, Savings' included, and arm the watcher for them.
+ * recovery events on every token it holds, Savings' included, and wake the tracker for them.
  * Reading the events syncs PXE first, so a fresh device gets its whole history. Tokens run one at a
  * time; a token missing from an earlier call is scanned when a later call names it. Resolves to the
  * records created.
@@ -200,6 +185,21 @@ export async function rescanWithdrawals(
   return rebuilt
 }
 
+/** Rebuilds Main's withdrawals once per session; not retried, as the Savings replay runs it again. */
+export function withdrawalRescan(
+  needs: { wallet: Resource<ObsidionWallet>; token: Resource<TokenService> },
+  rescan = rescanWithdrawals,
+): Task {
+  return task("withdrawalRescan", {
+    needs,
+    after: { firstBalance: true, depositsReplayed: { whenCatchingUp: 0 } },
+    every: "once",
+    async run({ wallet, token, signal }) {
+      await within(rescan(wallet, [{ tokenService: token }]), "withdrawalRescan", { signal })
+    },
+  })
+}
+
 async function rescanToken(
   wallet: ObsidionWallet,
   { tokenService, tuple, label, executorKind = () => "plain" }: RescanToken,
@@ -225,9 +225,10 @@ async function rescanToken(
           throw err
         }),
     }),
-    store: getWithdrawalStore(),
+    store: session().withdrawals,
     tokenSymbol: token.symbol,
     tokenDecimals: token.decimals,
+    networkId: wallet.networkId,
     deployment: { portal: wiring.portal, l2Token: wiring.l2Token },
     report: ({ tokenSymbol, events, unknown, created, savingsMoves }) =>
       console.info(
@@ -238,13 +239,8 @@ async function rescanToken(
         } rebuilt (${savingsMoves} Savings moves)`,
       ),
   })
-  if (rebuilt.length === 0) return rebuilt
-  const tracker = await ensureWithdrawalTracker(wallet)
-  for (const record of rebuilt) await tracker?.watch(record)
   // Most rebuilt burns settled long ago; until a pass reads that, their rows show in progress.
-  tracker
-    ?.syncOnce()
-    .catch((err) => console.warn("[withdrawGateway] rebuilt withdrawals pass failed", err))
+  if (rebuilt.length > 0) wakeWithdrawalTracker()
   return rebuilt
 }
 
@@ -304,8 +300,11 @@ export interface BurnInput<R extends BurnResult> {
   localId?: string
   /** Runs once the record is seeded, before the burn: records of the caller's own ride the seed. */
   onSeeded?: (record: WithdrawalRecord) => Promise<void>
-  /** Signs, proves and sends the burn off the persisted record; resolves on the L2 receipt. */
-  burn: (record: WithdrawalRecord) => Promise<R>
+  /**
+   * Signs, proves and sends the burn off the persisted record; resolves on the L2 receipt. Hands
+   * `onTxHash` to the sdk, which awaits it before the node takes the burn.
+   */
+  burn: (record: WithdrawalRecord, onTxHash: (txHash: string) => Promise<void>) => Promise<R>
   /** The mined amount and tip; the seeded record's figures stand in when absent or rejected. */
   minedFigures?: (result: R) => Promise<{ amount: string; relayerTip: string } | undefined>
   /** The context the failure copy is worded for; "withdraw:submit" when absent. */
@@ -313,37 +312,40 @@ export interface BurnInput<R extends BurnResult> {
 }
 
 /**
- * The one burn sequence behind every L2→L1 exit. Seeds the withdrawal record, stamps its hash at
- * submit, and runs the burn. A burn that may still land is returned unmined, left to the chain and
- * the tracker (`result` absent). One a node refused because a burn it holds spends the same notes
- * drops its seed and puts that earlier withdrawal back to pending. One that never went out drops
- * its seed on a cancel and is marked `failed` otherwise, then rethrows. A mined burn is marked mined and armed on the tracker; nothing
- * after the mine fails the record, so callers keep their own bookkeeping off it too.
+ * The one burn sequence behind every L2→L1 exit. Seeds the withdrawal record and runs the burn,
+ * which saves its hash on the record before the node takes it. A burn that may still land is
+ * returned unmined, left to the chain and the tracker (`result` absent). One a node refused because
+ * a burn it holds spends the same notes drops its seed and puts that earlier withdrawal back to
+ * pending. One that never went out drops its seed on a cancel and is marked `failed` otherwise,
+ * then rethrows. A mined burn is marked mined and wakes the tracker; nothing after the mine
+ * fails the record, so callers keep their own bookkeeping off it too.
  */
 export async function runBurn<R extends BurnResult>(
   input: BurnInput<R>,
 ): Promise<{ record: WithdrawalRecord; result?: R }> {
   const { op, wallet } = input
-  const store = getWithdrawalStore()
-  await store.load()
+  const store = session().withdrawals
+  await store.ready
   const localId = input.localId ?? newWithdrawalLocalId()
-  const record = await store.create({ ...input.record, localId, operationId: op.operationId })
+  const record = await store.create({
+    ...input.record,
+    localId,
+    operationId: op.operationId,
+    networkId: wallet.networkId,
+  })
   const submission = trackWithdrawalSubmission(store, localId, op.operationId)
   let result: R
   try {
     await input.onSeeded?.(record)
-    result = await input.burn(record)
+    result = await input.burn(record, submission.stamp)
   } catch (err) {
     // The node refused this burn because one it holds spends the same notes, so this one never
     // went out. When that one is an earlier withdrawal, it is pending again, whatever it read.
     const conflict = conflictingPendingTx(err)
     if (conflict) {
-      await store.remove(localId).catch(() => {})
-      const earlier = await revivePendingWithdrawal(store, conflict).catch(() => null)
-      if (earlier)
-        await ensureWithdrawalTracker(wallet)
-          .then((tracker) => tracker?.watch(earlier))
-          .catch(() => {})
+      await bestEffort("unknown", store.remove(localId))
+      const earlier = await bestEffort("unknown", revivePendingWithdrawal(store, conflict))
+      if (earlier) wakeWithdrawalTracker()
       throw new PendingTxConflictError(
         conflict,
         earlier
@@ -355,48 +357,42 @@ export async function runBurn<R extends BurnResult>(
     const pending = await submission.recover(wallet.node)
     if (pending) {
       op.leaveToChain(pending.l2TxHash ?? submission.txHash)
-      await ensureWithdrawalTracker(wallet)
-        .then((tracker) => tracker?.watch(pending))
-        .catch(() => {})
+      wakeWithdrawalTracker()
       return { record: pending }
     }
     // A cancel thrown from a stage callback lands before the burn: drop the seed, not fail it.
     if (isFlowCancelled(err)) {
-      await store.remove(localId).catch(() => {})
+      await bestEffort("unknown", store.remove(localId))
     } else {
       const message =
         sponsorshipErrorCopy(err, input.reportContext ?? "withdraw:submit")?.message ??
         (err instanceof Error ? err.message : "Withdrawal failed")
-      await store.patch(localId, { phase: "failed", error: message }).catch(() => {})
+      const failed = { phase: "failed", failure: withdrawalFailure(message) } as const
+      await bestEffort("unknown", store.apply(localId, { type: "patch", fields: failed }))
     }
     throw err
   } finally {
-    await submission.stop()
+    submission.stop()
   }
   const figures = await input.minedFigures?.(result).catch(() => undefined)
   let mined: WithdrawalRecord
   try {
-    mined = await store.markMined(
-      localId,
-      result.txHash,
-      result.blockNumber,
-      figures?.amount ?? record.rawAmount ?? "0",
-      figures?.relayerTip ?? record.relayerTip,
-    )
+    const marked = await store.apply(localId, {
+      type: "mined",
+      l2TxHash: result.txHash,
+      blockNumber: result.blockNumber,
+      rawAmount: figures?.amount ?? record.rawAmount ?? "0",
+      relayerTip: figures?.relayerTip ?? record.relayerTip,
+    })
+    if (!marked) throw new Error(`no withdrawal record ${localId}`)
+    mined = marked
   } catch (err) {
     // Mined but not recorded as such: the tracker picks it up from the stamped hash.
     console.warn("[withdrawGateway] burn mined; its record could not be updated:", err)
     op.leaveToChain(result.txHash)
-    return { record: store.get(localId) ?? record }
+    return { record: (await store.get(localId)) ?? record }
   }
-  // Oxide's relayer finalizes the burn regardless, and `OperationsMount` resumes the tracker on the
-  // next load.
-  try {
-    const tracker = await ensureWithdrawalTracker(wallet)
-    await tracker?.watch(mined)
-  } catch (err) {
-    console.warn("[withdrawGateway] burn mined; watcher arm failed (resumed on next load):", err)
-  }
+  wakeWithdrawalTracker()
   return { record: mined, result }
 }
 
@@ -633,10 +629,11 @@ export async function runSponsoredBurn(
       ...swapRecordFields(swap, swapCommit),
       ...input.record,
     },
-    burn: () => {
+    burn: (_record, onTxHash) => {
       onStage("proving")
       return deps.tokenService.exitToL1PrivateSponsored(exit.l1Recipient, exit.amount, sponsor, {
         operationId: op.operationId,
+        onTxHash,
         userAccount: deps.account,
         useRawAmount: true,
         withdrawal: exit.withdrawal,

@@ -1,9 +1,9 @@
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import type { PaymentRequest } from "../core/storages/RequestStorage.js"
+import type { StoredRequest } from "../engine/requests.js"
 import type { IncomingRequestInput } from "./requestReceiverTypes.js"
 
-/** The receiver-side XMTP request packet mapped to a stored PaymentRequest row. */
-export function incomingRequestToRow(input: IncomingRequestInput): PaymentRequest {
+/** The receiver-side XMTP request packet mapped to a stored request row. */
+export function incomingRequestToRow(input: IncomingRequestInput): StoredRequest {
   const amount = Number(input.amountAtomic) / 10 ** input.decimals
   return {
     id: input.requestId,

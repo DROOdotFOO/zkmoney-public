@@ -8,7 +8,7 @@ import { useBack } from "../../ui/hooks"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
 import { Warning } from "../../ui/Warning"
 import { FRESH_ADDRESS_VERDICT_COPY, useFreshAddressVerdict } from "./freshAddressCheck"
-import { WithdrawFreshModal } from "./WithdrawFreshModal"
+import { WithdrawFreshModal } from "./WithdrawFreshModal/WithdrawFreshModal"
 
 export type VerdictKind = keyof typeof FRESH_ADDRESS_VERDICT_COPY
 

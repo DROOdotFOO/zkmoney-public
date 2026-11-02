@@ -31,12 +31,14 @@ import {
 import { openMigrationDialog } from "../migration/migrationDialog"
 import { isFlowCancelled, runOperation } from "../operations/operations"
 import {
+  frozenExitSummary,
+  runFrozenExit,
   type FrozenExitDone,
+  type FrozenExitRead,
   type FrozenExitSent,
   type FrozenFunds,
   type FrozenSourceFunds,
-} from "./frozenExitParts"
-import { frozenExitSummary, runFrozenExit, type FrozenExitRead } from "./frozenExitRun"
+} from "./frozenExitRun"
 import { reviewCopy, withdrawDoneCopy, withdrawingCopy } from "../cutover/cutoverCopy"
 import { useNetworkReady } from "../cutover/networkReady"
 import { notifyIfArmed } from "../cutover/notify"

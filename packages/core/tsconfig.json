@@ -1,5 +1,5 @@
 {
-  "extends": "../../tsconfig.json",
+  "extends": ["../../tsconfig.json", "@obsidion/lint-config/tsconfig.strict.json"],
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
@@ -7,14 +7,17 @@
     "outDir": "./dist",
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    // Platform-neutral: no DOM types.
+    "lib": ["ES2022"]
   },
   "include": [
     "src/types/index.ts",
     "src/constants/index.ts",
     "src/oxide/index.ts",
     "src/oxide/manifestEntriesCli.ts",
-    "src/text/index.ts"
+    "src/text/index.ts",
+    "src/errors/index.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

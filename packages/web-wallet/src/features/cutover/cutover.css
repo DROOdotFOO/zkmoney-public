@@ -837,6 +837,12 @@ button.ww-cutover__account {
 .ww-cutover__actions > .zkm-primary-btn {
   width: 100%;
 }
+.ww-cutover__checking {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
 .zkm-btn-reset.ww-cutover__text-btn {
   align-self: center;
   min-height: 44px;

@@ -39,7 +39,7 @@ import {
   webAuthnAssertionCodec,
 } from "./savedApprovals"
 import type { UpgradeActivity } from "./upgradeActivity"
-import { logger } from "src/utils/logger"
+import { logger } from "../../utils/logger"
 
 export interface MetadataMigrationSessionOptions {
   wallet: ObsidionWallet

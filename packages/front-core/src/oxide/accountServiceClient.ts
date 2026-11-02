@@ -12,11 +12,7 @@
 
 import { sha256 } from "@aztec-labs/foundation/crypto/sha256"
 import { BOOTSTRAP_SIGNATURE_HEADER } from "@obsidion/core/constants"
-import type {
-  DrawnNameResponse,
-  NameClaimResponse,
-  SignedTermsResponse,
-} from "@obsidion/core/types"
+import type { DrawnNameResponse, NameClaimResponse } from "@obsidion/core/types"
 import { type Hex, encodeAbiParameters, keccak256, parseAbiParameters } from "viem"
 import type { PackedUserOperation } from "@oxide/l1-contracts"
 

@@ -1,0 +1,32 @@
+@media (max-width: 640px) {
+  :global(.ww-shell) :global(.ww-panel) :global(.ww-noncontacts-entry).contactsRequestsEntry {
+    margin: 24px 16px 0;
+  }
+}
+.contactsBackDesk {
+  position: absolute;
+  top: 36px;
+  left: 40px;
+}
+:global(.ww-shell) .contactsAdd {
+  position: absolute;
+  top: 36px;
+  right: 40px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+/* Above the empty state, which has no scroll container to inset it. */
+:global(.ww-shell) :global(.ww-noncontacts-entry).contactsRequestsEntry {
+  width: auto;
+  margin: 24px 40px 0;
+}

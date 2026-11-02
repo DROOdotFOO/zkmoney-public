@@ -18,7 +18,7 @@ import { showReportableError } from "../../errors/errorModal"
 import { Modal } from "../../ui/Modal"
 import { getXmtpSender } from "../../platform/xmtp/xmtpLifecycle"
 import { loadWalletIdentity } from "../identity/walletIdentity"
-import { ContactsScreen } from "./ContactsScreen"
+import { ContactsScreen } from "./ContactsScreen/ContactsScreen"
 import {
   confirmConnect,
   previewConnect,

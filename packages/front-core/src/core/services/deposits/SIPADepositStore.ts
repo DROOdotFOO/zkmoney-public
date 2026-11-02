@@ -15,7 +15,7 @@ import type { SIPADepositPhase } from "@obsidion/core/types"
 import type { IStorageAdapter } from "../../storages/adapter"
 import { getAddress, keccak256, type Address, type Hash, type Hex } from "viem"
 import { RecordStorage } from "../bridge/RecordStorage"
-import { getActiveNetworkId } from "../../activeNetworkId"
+import { notElsewhere, type OnNetwork } from "../../../types/networkStamp"
 
 // Defined in the DTO leaf so sdk services share the vocabulary.
 export type { SIPADepositPhase }
@@ -109,7 +109,7 @@ export interface SIPADepositRecord {
   origin?: SipaOrigin
   /** L1 chain the SIPA lives on. */
   l1ChainId: number
-  /** L2 network the record was created on (rollup L1 address). Unset only pre-boot. */
+  /** L2 network the record was created on: see `OnNetwork`. */
   networkId?: string
   /** Decimal display amount (gross before the sweep, net once known). */
   amount: string
@@ -327,11 +327,11 @@ export function isAccountMoveSipa(record: Pick<SIPADepositRecord, "intent">): bo
 
 type SIPADepositPatch = Partial<SIPADepositRecord> & Pick<SIPADepositRecord, "phase">
 
+/** A new record's fields but its key and phase. */
+export type SIPADepositFields = OnNetwork<Omit<SIPADepositRecord, "sipaAddress" | "phase">>
+
 function needsSweepRows(record: SIPADepositRecord, networkId: string): boolean {
-  return (
-    (record.version ?? 1) < SIPA_DEPOSIT_RECORD_VERSION &&
-    (!record.networkId || record.networkId.toLowerCase() === networkId.toLowerCase())
-  )
+  return (record.version ?? 1) < SIPA_DEPOSIT_RECORD_VERSION && notElsewhere(record, networkId)
 }
 
 function withSweepRows(record: SIPADepositRecord, pinned: SipaSweepRow): SIPADepositRecord {
@@ -359,7 +359,7 @@ function merge(
   sipaAddress: Address,
   existing: SIPADepositRecord | null,
   patch: SIPADepositPatch,
-  fallback?: Omit<SIPADepositRecord, "sipaAddress" | "phase">,
+  fallback?: SIPADepositFields,
 ): SIPADepositRecord | null {
   let next: SIPADepositRecord
   if (existing) {
@@ -374,8 +374,7 @@ function merge(
         `SIPADepositStore.upsert: no existing record for ${sipaAddress} and no fallback supplied`,
       )
     }
-    next = { ...fallback, ...patch, sipaAddress }
-    next.networkId ??= getActiveNetworkId()
+    next = { ...fallback, ...patch, sipaAddress, networkId: fallback.networkId.toLowerCase() }
     next.version ??= SIPA_DEPOSIT_RECORD_VERSION
   }
 
@@ -429,7 +428,7 @@ export class SIPADepositStore {
   async upsert(
     sipaAddress: Address,
     patch: SIPADepositPatch,
-    fallback?: Omit<SIPADepositRecord, "sipaAddress" | "phase">,
+    fallback?: SIPADepositFields,
     opts?: { strict?: boolean },
   ): Promise<SIPADepositRecord> {
     const stored = await this.store.updateRecord(
@@ -446,7 +445,7 @@ export class SIPADepositStore {
    */
   async create(
     sipaAddress: Address,
-    record: Omit<SIPADepositRecord, "sipaAddress">,
+    record: SIPADepositFields & Pick<SIPADepositRecord, "phase">,
     opts?: { strict?: boolean },
   ): Promise<SIPADepositRecord | null> {
     let created: SIPADepositRecord | null = null

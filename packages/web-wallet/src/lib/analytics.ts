@@ -1,6 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2"
 import { isDemoMode } from "../dev/demoFlag"
 import { deviceStorage } from "../platform/storage/rollupStorage"
+import { firstInTab, landingAttribution } from "./trafficSource"
 
 /** Every event the web wallet emits, grouped by funnel. */
 export type AnalyticsEvent =
@@ -100,8 +101,16 @@ export type AnalyticsEvent =
  * each event's closed props.
  */
 export type OnboardingEvent =
+  // A visitor with no account opened a signup, login, payment-link or request page (`page`), once
+  // per tab.
+  | "landing_viewed"
+  // The signup screen, once per tab.
   | "onboarding_started"
-  // Each "Open account" click (`attempt` 1 or 2+), and the claim server's drawn tag (`shuffle` on a
+  // The login screen once per tab, then each login's outcome (`method`; `code` on a failure).
+  | "login_opened"
+  | "login_succeeded"
+  | "login_failed"
+  // Each "Create Account" click (`attempt` 1 or 2+), and the claim server's drawn tag (`shuffle` on a
   // re-roll).
   | "onboarding_create_attempted"
   | "onboarding_tag_drawn"
@@ -175,16 +184,12 @@ export function analyticsEnabled(): boolean {
 }
 
 /**
- * Consent disclosure, shared by the consent prompt and the Settings caption so the two can't
- * drift. Paylink events carry amount ranges and a hashed link identifier (derived from the link's
- * tagging public key), so neither may promise that amounts are never sent — "anonymized link
- * identifier" is the honest phrasing. Both name the onboarding counts, which no answer turns off.
+ * Consent disclosure. Paylink events carry amount ranges and a hashed link identifier (derived from
+ * the link's tagging public key), so it may not promise that amounts are never sent — "anonymized
+ * link identifier" is the honest phrasing. It names the onboarding counts, which no answer turns off.
  */
 export const ANALYTICS_CONSENT_COPY =
-  "Share anonymous data on how you use the wallet — like timings and paylink activity shown in amount ranges (e.g., “under $50”) linked to an anonymized ID. Exact amounts, addresses, or tags are never shared. Signup steps are always counted, with no ID. You can update this anytime in settings."
-
-export const ANALYTICS_SETTINGS_COPY =
-  "Anonymous usage events only — timings and payment-link activity as amount ranges tied to an anonymized link identifier. Never exact amounts, addresses, or tags. Signup steps are always counted, with no identifier."
+  "Share anonymous data on how you use the wallet — like timings and paylink activity shown in amount ranges (e.g., “under $50”) linked to an anonymized ID. Exact amounts, addresses, or tags are never shared. Signup and login steps are always counted, with no ID. You can update this anytime in settings."
 
 const BASE_ID_KEY = "zkm_bid"
 /** Storage keys of the pre-base independent random ids; unread now, deleted when the base is minted. */
@@ -341,8 +346,32 @@ export function fireSignupEvent({ event, props }: SignupEvent): void {
   }
 }
 
+/** The acquisition steps: each carries the landing's `channel` and `source`. */
+export const ATTRIBUTED_EVENTS: ReadonlySet<OnboardingEvent> = new Set<OnboardingEvent>([
+  "landing_viewed",
+  "onboarding_started",
+  "onboarding_create_attempted",
+  "onboarding_failed",
+  "onboarding_account_created",
+  "onboarding_completed",
+  "wallet_entered",
+  "login_opened",
+  "login_succeeded",
+  "login_failed",
+])
+
+export type LandingPage = "signup" | "login" | "paylink" | "request_link" | "pay_page"
+
+/** The first page a visitor with no account sees in a tab. */
+export function reportLanding(page: LandingPage): void {
+  if (firstInTab("landing_viewed")) fireOnboardingEvent("landing_viewed", { page })
+}
+
 export function fireOnboardingEvent(event: OnboardingEvent, props?: AnalyticsProps): void {
-  fireSignupEvent({ event, props })
+  fireSignupEvent({
+    event,
+    props: ATTRIBUTED_EVENTS.has(event) ? { ...props, ...landingAttribution() } : props,
+  })
 }
 
 /**

@@ -1,6 +1,6 @@
 import { z } from "zod"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { TRANSFER_MEMO_MAX_BYTES } from "../services/transferMeta.js"
+import { TRANSFER_MEMO_MAX_BYTES } from "../services/token/transferMeta.js"
 
 /**
  * Maximum accepted length of a connect-back `uuid` string, in characters.

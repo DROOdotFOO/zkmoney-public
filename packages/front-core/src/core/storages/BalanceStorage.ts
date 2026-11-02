@@ -1,7 +1,7 @@
 import type { IStorageAdapter } from "./adapter"
 import { RecordStorage } from "../services/bridge/RecordStorage"
 import { BALANCE_STORAGE_KEY } from "./constants"
-import { logger } from "src/utils/logger"
+import { logger } from "../../utils/logger"
 
 /**
  * One cached balance. `scope` is `balanceScope(network, accountCompleteAddress)`, so a cached
@@ -30,9 +30,8 @@ const KEY_BALANCE_RECORDS = "@obsidion/balances/records"
 const recordKey = (scope: string, tokenAddress: string) => `${scope}:${tokenAddress}`
 
 /**
- * Last-known on-chain balances on the RecordStorage kernel, so the asset
- * layer reads them cache-first through `useCachedRecords` and every fetch
- * notifies subscribers. Legacy installs persisted a flat
+ * Last-known on-chain balances on the RecordStorage kernel: the persistence the balances store
+ * (`engine/balances`) mirrors, so it shows them cache-first. Legacy installs persisted a flat
  * `{ "scope:token": "raw" }` blob under BALANCE_STORAGE_KEY; `load()` migrates
  * it once and removes the old key.
  */
@@ -42,7 +41,7 @@ export class BalanceStorage {
   private store: RecordStorage<BalanceRecord>
   private loadPromise: Promise<void> | null = null
 
-  private constructor(storage: IStorageAdapter) {
+  constructor(storage: IStorageAdapter) {
     this.storage = storage
     this.store = new RecordStorage<BalanceRecord>({
       storage,

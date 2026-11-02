@@ -85,7 +85,7 @@ it.
 Neither needs a marker in the sdk. `finalize` arrives as a property of the options bag
 `wallet.sendTx` takes, so the profiler wraps it in transit while wrapping `sendTx` — a plain object
 literal only, since spreading a class instance would drop its prototype. The signer is caught one
-layer out at `ServiceBase.setTeeSigner`, the point `useAsset` fans it into TokenService and
+layer out at `ServiceBase.setTeeSigner`, the point the session's token takes it, as do
 PaylinkService. A signer passed straight to a service constructor rather than through `setTeeSigner`
 would not be wrapped; nothing currently does that.
 

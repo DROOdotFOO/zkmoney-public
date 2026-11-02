@@ -1,6 +1,6 @@
 import { sha512ToGrumpkinScalar } from "@aztec-labs/foundation/crypto/sha512"
-import { GrumpkinScalar } from "@aztec-labs/foundation/curves/grumpkin"
-import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import type { GrumpkinScalar } from "@aztec-labs/foundation/curves/grumpkin"
+import type { Fr } from "@aztec-labs/foundation/curves/bn254"
 import { DomainSeparator } from "@aztec-labs/constants"
 
 /**

@@ -14,10 +14,10 @@ import type { NoteDao } from "@aztec-labs/stdlib/note"
 import { type ContractName, type ContractService, DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { DOM_SEP__GOLDEN_TICKET } from "@obsidion/core/constants"
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
-import type { PaylinkParams } from "../PaylinkService.js"
-import { LINK_CLASS_REFUSAL } from "./paylinkInlineCodec.js"
-import { unpackPaylinkData } from "./paylinkNoteData.js"
-import { registerEscrow } from "./paylinkVoucher.js"
+import type { PaylinkParams } from "./PaylinkService.js"
+import { LINK_CLASS_REFUSAL } from "./link/paylinkInlineCodec.js"
+import { unpackPaylinkData } from "./escrow/paylinkNoteData.js"
+import { registerEscrow } from "./claim/paylinkVoucher.js"
 
 /** Both escrows keep the note in their first storage slot. */
 export const PAYLINK_NOTE_STORAGE_SLOT = 1n

@@ -1,6 +1,6 @@
 /** The upgrade's screens (Figma "Migration" page, LobEQ1bmcPDw0ahexKy1iI). */
 import { useState, type ReactNode } from "react"
-import { PrimaryGradientButton } from "@obsidion/web-ds"
+import { GradientSpinner, PrimaryGradientButton } from "@obsidion/web-ds"
 import doneBadge from "../../assets/cutover/done-badge.png"
 import { usdAtomicFloor } from "../../ui/format"
 import { useWakeLock } from "../../ui/hooks"
@@ -26,7 +26,7 @@ import {
 } from "../cutover/parts"
 import { cutoverAccount } from "../cutover/account"
 import { SLOW_AFTER_MS, useElapsed } from "../cutover/elapsed"
-import { ChooseTransactions } from "../cutover/ChooseTransactions"
+import { ChooseTransactions } from "../cutover/ChooseTransactions/ChooseTransactions"
 import { ProgressScreen } from "../cutover/ProgressScreen"
 import { LeaveSheet, MoveFundsSheet, WorkingSheet } from "../cutover/sheets"
 import type { UpgradeRing } from "../cutover/upgradeProgress"
@@ -63,6 +63,8 @@ function moving({ balance, updateOnly }: { balance: UpgradeBalance; updateOnly?:
 }
 
 const account = cutoverAccount
+
+const CHECK_SLOW_AFTER_MS = 30_000
 
 const PILLS = [
   { icon: "bolt", label: chooseCopy.pills[0]! },
@@ -124,6 +126,8 @@ export function UpgradeChoose(props: {
   const shown = amounts(props.balance)
   const { waiting } = props
   const [transactionsOpen, setTransactionsOpen] = useState(false)
+  const checkingFor = useElapsed(!!props.checking)
+  const slow = checkingFor !== undefined && checkingFor >= CHECK_SLOW_AFTER_MS
   return (
     <>
       <CutoverPage
@@ -132,8 +136,12 @@ export function UpgradeChoose(props: {
         footer={
           <div className="ww-cutover__actions">
             {props.checking && (
-              <span className="ww-cutover__caption" role="status">
-                {chooseCopy.preparing}
+              <span className="ww-cutover__caption ww-cutover__checking" role="status">
+                <GradientSpinner size={14} />
+                <span>
+                  {shown.total === undefined ? chooseCopy.reading : chooseCopy.preparing}
+                  {slow && `. ${chooseCopy.slow}`}
+                </span>
               </span>
             )}
             <PrimaryGradientButton

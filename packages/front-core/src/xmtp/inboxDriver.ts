@@ -39,7 +39,7 @@
  *     hit the store-layer idempotency.
  */
 
-import { type AztecPaymentRequestContent } from "@obsidion/sdk"
+import type { AztecPaymentRequestContent } from "@obsidion/sdk"
 
 import type { IStorageAdapter } from "../core/storages/adapter"
 import type { ConnectBackStatus } from "./ConnectBackReceiver"
@@ -643,7 +643,7 @@ export class XmtpInboxReceiverDriver {
     // The connect-back budget was refilled at the consumer tick (pollOnce /
     // probeOnce); the sweep and any stream drains between ticks consume from
     // the same counter.
-    const { exhaustedConvId } = await this.drainConversations(ordered, currentAccount, local)
+    const { exhaustedConvId } = await this.drainConversations(ordered, local)
 
     this.state.resumeConversationId = exhaustedConvId
     await this.persist()
@@ -665,7 +665,6 @@ export class XmtpInboxReceiverDriver {
    */
   private async drainConversations(
     conversations: InboxConversation[],
-    currentAccount: CurrentAccountInfo,
     local = false,
   ): Promise<{ exhaustedConvId?: string }> {
     let exhaustedConvId: string | undefined
@@ -675,7 +674,7 @@ export class XmtpInboxReceiverDriver {
       // had a connect-back / payment-request message it couldn't process — a
       // conversation with no such messages costs 0 budget and shouldn't push
       // the checkpoint forward.
-      const result = await this.processConversation(conv, this.liveConnectBackBudget, currentAccount, local)
+      const result = await this.processConversation(conv, this.liveConnectBackBudget, local)
       this.liveConnectBackBudget = result.connectBackBudgetRemaining
       if (result.exhaustedMidConversation) {
         exhaustedConvId = conv.id
@@ -727,7 +726,7 @@ export class XmtpInboxReceiverDriver {
     const batch = await this.consentOrdered(resolved)
     if (batch.length === 0) return
 
-    const { exhaustedConvId } = await this.drainConversations(batch, currentAccount)
+    const { exhaustedConvId } = await this.drainConversations(batch)
 
     if (exhaustedConvId) {
       // Budget ran out partway: re-queue the exhausted conversation + the rest of
@@ -818,7 +817,6 @@ export class XmtpInboxReceiverDriver {
   private async processConversation(
     conv: InboxConversation,
     connectBackBudget: number,
-    currentAccount: CurrentAccountInfo,
     local = false,
   ): Promise<{
     connectBackBudgetRemaining: number

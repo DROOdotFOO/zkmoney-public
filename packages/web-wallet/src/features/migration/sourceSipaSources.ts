@@ -1,26 +1,33 @@
 /**
  * A retired deployment's SIPAs and their swept deposits, found from chain data alone: the source
- * rollup's `SIPA` events and the L1 `Sweep` and `Deposit` logs. A new device finds them too.
+ * rollup's `SIPA` events, the account's registration commitments and the L1 `Sweep` and `Deposit`
+ * logs. A new device finds them too.
  */
 import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import type { OxideEnvTuple, SourceSipaScan as SourceSipaScanParams } from "@obsidion/core/types"
 import {
+  composeWireNameHash,
   deploymentScanRange,
   deriveBootstrapKey,
   deriveRefundableSipaSources,
   deriveStealthKey,
+  directDepositKey,
+  registrationCommitments,
   scanSweptDeposits,
   setupSipaDiscovery,
+  type RefundableSipaSource,
 } from "@obsidion/front-core"
 import {
+  fetchHistoricalResolverPublicKeys,
   fetchHistoricalSipaResolverOperators,
   resolverSelectionPolicy,
   fetchSipaEvents,
   predictAccountAddress,
 } from "@obsidion/sdk"
-import type { Address, PublicClient } from "viem"
+import type { Address, Hex, PublicClient } from "viem"
 import { getWebBroadcasterArtifact } from "../../config/classArtifacts"
 import { getConfig } from "../../config/env"
+import { loadWalletIdentity } from "../identity/walletIdentity"
 import type { SourceChain } from "./historicTokenContext"
 
 export interface SourceSipaScan {
@@ -73,22 +80,62 @@ export async function sourceSipaScanParams(
   }
 }
 
+/**
+ * The account's registration addresses, by the commitment their sweeps deposit to. An address the
+ * wallet never announced has no `SIPA` event, but its funds wait in the portal all the same.
+ */
+async function registrationSources(
+  o: Omit<SourceSipaScan, "chain">,
+  recipient: string,
+): Promise<RefundableSipaSource[]> {
+  const handle = loadWalletIdentity()?.handle
+  const { tuple, publicClient } = o
+  if (!handle || !tuple.ensDomain || !tuple.registrationSIPAImplementation) return []
+  if (!tuple.accountMetadataRegistry)
+    throw new Error("The source deployment has no resolver registry")
+  const found = await registrationCommitments(
+    o.masterSecret,
+    composeWireNameHash(handle, tuple.ensDomain),
+    recipient as Hex,
+    await fetchHistoricalResolverPublicKeys(
+      publicClient,
+      tuple.accountMetadataRegistry as Address,
+      await deploymentScanRange(publicClient, tuple, o.scanHead),
+    ),
+  )
+  return found.map(({ salt, commitment }) => ({
+    sipaAddress: directDepositKey(commitment),
+    recipientL2Address: recipient,
+    messageSecret: salt,
+    recipientCommitment: commitment,
+    direct: true,
+  }))
+}
+
 export async function sourceSipaSources(o: SourceSipaScan) {
   const { chain, tuple } = o
   // A deployment without SIPAs, such as Sky savings, has no resolver record to look up.
   if (!tuple.depositSIPAImplementation && !tuple.registrationSIPAImplementation) return []
+  let recipient: string
+  let announced: RefundableSipaSource[]
   if (chain.kind === "generation") {
-    const sources = await chain.session.sipaSources(await sourceSipaScanParams(o))
-    return sources.map((source) => ({ ...source, origin: "sipa-event" as const }))
+    recipient = chain.session.address
+    announced = (await chain.session.sipaSources(await sourceSipaScanParams(o))).map((source) => ({
+      ...source,
+      origin: "sipa-event" as const,
+    }))
+  } else {
+    const synced = await pxeSipaEvents({ ...o, chain })
+    recipient = synced.recipient
+    announced = await deriveRefundableSipaSources({
+      events: synced.events,
+      recipientL2Address: recipient,
+      stealthPublicKey: deriveStealthKey(o.masterSecret).publicKey,
+      tuple,
+      recoveryAccount: await sipaRecoveryAccount(o),
+    })
   }
-  const { recipient, events } = await pxeSipaEvents({ ...o, chain })
-  return deriveRefundableSipaSources({
-    events,
-    recipientL2Address: recipient,
-    stealthPublicKey: deriveStealthKey(o.masterSecret).publicKey,
-    tuple,
-    recoveryAccount: await sipaRecoveryAccount(o),
-  })
+  return [...announced, ...(await registrationSources(o, recipient))]
 }
 
 /** The `SIPA` events on a rollup this release's PXE reads. */

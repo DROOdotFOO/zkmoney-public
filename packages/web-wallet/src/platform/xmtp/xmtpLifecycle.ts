@@ -8,21 +8,28 @@
  * the capability probe (browser genuinely can't run the client).
  */
 
-import { RequestBroadcaster, type IXmtpSender } from "@obsidion/front-core"
+import { RequestBroadcaster, type ErrorCode, type IXmtpSender } from "@obsidion/front-core"
+import words from "../../errors/catalog.copy"
 import { createExternalState } from "../../lib/externalState"
 import type { WebXmtpClient } from "./WebXmtpClient"
 
 export type XmtpUiState = "off" | "leader" | "another-tab" | "unsupported" | "error"
 
-/** User-facing prose per unusable messaging state. The banner renders these; send paths throw them. */
+/** The code per unusable messaging state. The banner renders its copy; send paths throw it. */
+const STATE_CODE = {
+  "another-tab": "messaging.anotherTab",
+  "unsupported": "messaging.unsupported",
+  "error": "messaging.failed",
+} as const satisfies Partial<Record<XmtpUiState, ErrorCode>>
+
 export const XMTP_STATE_COPY: Partial<Record<XmtpUiState, string>> = {
-  "another-tab": "Wallet open in another tab — messaging paused here",
-  unsupported: "Messaging isn't supported in this browser — contacts still work",
-  error: "Messaging couldn't start — it will retry when you return to this tab",
+  "another-tab": words[STATE_CODE["another-tab"]],
+  "unsupported": words[STATE_CODE.unsupported],
+  "error": words[STATE_CODE.error],
 }
 
-export function xmtpUnavailableMessage(state: XmtpUiState): string {
-  return XMTP_STATE_COPY[state] ?? "Messaging is still starting up — try again in a moment"
+export function xmtpUnavailableCode(state: XmtpUiState): ErrorCode {
+  return (STATE_CODE as Partial<Record<XmtpUiState, ErrorCode>>)[state] ?? "messaging.starting"
 }
 
 const XMTP_LOCK_NAME = "xmtp-client"

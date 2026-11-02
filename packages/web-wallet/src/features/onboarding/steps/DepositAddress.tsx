@@ -220,9 +220,7 @@ export function DepositAddressRow({
       )}
       {warning && (
         <OneTimeAddressWarning
-          symbol=""
           capacityWarning={capacityWarning}
-          privacy={false}
           onClose={() => setWarning(false)}
           onGotIt={() => {
             setWarning(false)

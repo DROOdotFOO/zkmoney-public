@@ -20,9 +20,7 @@ describe("deriveXmtpSigner", () => {
     expect(Buffer.from(a.privateKey).toString("hex")).toBe(
       Buffer.from(b.privateKey).toString("hex"),
     )
-    expect(Buffer.from(a.publicKey).toString("hex")).toBe(
-      Buffer.from(b.publicKey).toString("hex"),
-    )
+    expect(Buffer.from(a.publicKey).toString("hex")).toBe(Buffer.from(b.publicKey).toString("hex"))
   })
 
   it("derives different addresses from different secrets", () => {

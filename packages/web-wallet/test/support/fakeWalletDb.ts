@@ -1,3 +1,4 @@
+import { mapRange, type StateMap } from "../../src/platform/storage/mapRange"
 import type { WalletDb, WalletDbBackend, WalletOp } from "../../src/platform/storage/walletStorage"
 
 type Stored = { state: Map<string, string>; held: boolean }
@@ -41,6 +42,8 @@ export class FakeWalletDbs implements WalletDbBackend {
       persistent,
       load: async () => ({ state: new Map(entry.state) }),
       get: async (key) => entry.state.get(key),
+      getMany: async (keys) => keys.map((key) => entry.state.get(key)),
+      range: (prefix, opts) => mapRange(stateMap(entry.state), prefix, opts),
       apply: async (ops) => {
         if (closed) throw new Error(`wallet_${version} is closed`)
         await this.onApply?.(version, ops)
@@ -58,6 +61,23 @@ export class FakeWalletDbs implements WalletDbBackend {
 
   async list(): Promise<string[]> {
     return [...this.stored.keys()]
+  }
+}
+
+/** kv-store's map over `state`, its range bounds flipping with direction as the SQLite one does. */
+export function stateMap(state: ReadonlyMap<string, string>): StateMap {
+  return {
+    getAsync: async (key) => state.get(key),
+    async *entriesAsync({ start, end, limit, reverse } = {}) {
+      const keys = [...state.keys()].sort()
+      const found = keys.filter((key) =>
+        reverse
+          ? (start === undefined || key > start) && (end === undefined || key <= end)
+          : (start === undefined || key >= start) && (end === undefined || key < end),
+      )
+      if (reverse) found.reverse()
+      for (const key of found.slice(0, limit)) yield [key, state.get(key)!]
+    },
   }
 }
 

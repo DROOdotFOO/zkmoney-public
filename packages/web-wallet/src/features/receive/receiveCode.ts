@@ -51,9 +51,6 @@ export interface CodeDeps {
 export const receiveCodeKey = (networkId: string, tag: string) =>
   `webwallet.receiveCode.${networkId}.${tag}`
 
-const UNLISTED_KEY = "webwallet.receiveCode.unlisted"
-const UNLISTED_MAX = 100
-
 function isReceiveCode(v: unknown): v is ReceiveCode {
   const c = v as ReceiveCode
   return (
@@ -68,21 +65,6 @@ export function readReceiveCode(key: string): ReceiveCode | null {
   } catch {
     return null
   }
-}
-
-/** Request ids of codes minted without an amount: they stay out of the requests list. */
-export function unlistedCodeRequestIds(): Set<string> {
-  try {
-    const parsed = JSON.parse(walletStorage.getItem(UNLISTED_KEY) ?? "[]")
-    return new Set(Array.isArray(parsed) ? parsed.map((id) => String(id).toLowerCase()) : [])
-  } catch {
-    return new Set()
-  }
-}
-
-function unlist(requestId: string): Promise<void> {
-  const ids = [...unlistedCodeRequestIds(), requestId.toLowerCase()].slice(-UNLISTED_MAX)
-  return walletStorage.commitItem(UNLISTED_KEY, JSON.stringify(ids))
 }
 
 /** Expired, or its address is too old to be swept. */
@@ -116,7 +98,6 @@ export async function replaceCode(
     day: next.ready?.day,
     expiresAt: minted.row.expiresAt ?? now + CODE_LIFETIME_MS,
   }
-  if (code.amount === 0) await unlist(code.requestId)
   await walletStorage.commitItem(deps.key, JSON.stringify(code))
   if (previous && !next.previousPaid) await deps.cancel(previous.requestId)
   return code

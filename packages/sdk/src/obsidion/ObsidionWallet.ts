@@ -9,7 +9,7 @@ import {
   ContractService,
   DEFAULT_CONTRACTS,
   getSimulatedAlphaAccountArtifact,
-  ContractName,
+  type ContractName,
 } from "@obsidion/contracts"
 import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 import { SimulationOverrides, type ContractOverrides } from "@aztec-labs/stdlib/tx"
@@ -25,54 +25,60 @@ import {
   getStubEcdsaAccountContractArtifact,
 } from "@aztec-labs/accounts/ecdsa/stub/lazy"
 import { getPXEConfig, type PXEConfig } from "@aztec-labs/pxe/config"
-import { createPXE as createPXELazy, PXE, PXECreationOptions } from "@aztec-labs/pxe/client/lazy"
+import {
+  createPXE as createPXELazy,
+  type PXE,
+  type PXECreationOptions,
+} from "@aztec-labs/pxe/client/lazy"
 import { ObsidionAccount } from "./alpha/account/ObsidionAccount.js"
 import {
   ObsidionAccountContractManager,
-  AlphaContractManagerOptions,
+  type AlphaContractManagerOptions,
 } from "./alpha/account/ObsidionAccountContractManager.js"
 import { alphaPasskeySet } from "./alpha/account/alphaPasskeySet.js"
-import { AlphaAuthProvider } from "./alpha/auth/AlphaAuthProvider.js"
+import type { AlphaAuthProvider } from "./alpha/auth/AlphaAuthProvider.js"
 import {
   collectOffchainEffects,
-  ExecutionPayload,
+  type ExecutionPayload,
   mergeExecutionPayloads,
   type TxExecutionRequest,
   type TxProfileResult,
   type UtilityExecutionResult,
 } from "@aztec-labs/stdlib/tx"
 import { CallAuthorizationRequest } from "@aztec-labs/aztec.js/authorization"
-import { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
-  Aliased,
+  type Aliased,
   TxSimulationResultWithAppOffset,
   type ExecuteUtilityOptions,
   type PrivateEvent,
   type PrivateEventFilter,
   type ProfileOptions,
 } from "@aztec-labs/aztec.js/wallet"
-import { Account, NO_FROM } from "@aztec-labs/aztec.js/account"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { SendInteractionOptions, SimulateInteractionOptions } from "@aztec-labs/aztec.js/contracts"
-import { CompleteAddress } from "@aztec-labs/aztec.js/addresses"
+import { type Account, NO_FROM } from "@aztec-labs/aztec.js/account"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type {
+  SendInteractionOptions,
+  SimulateInteractionOptions,
+} from "@aztec-labs/aztec.js/contracts"
+import type { CompleteAddress } from "@aztec-labs/aztec.js/addresses"
 import type { NodeInfo } from "@aztec-labs/stdlib/contract"
 import type { ChainInfo } from "@aztec-labs/entrypoints/interfaces"
-import {
+import type {
   ContractArtifact,
   FunctionCall,
-  type EventMetadataDefinition,
+  EventMetadataDefinition,
 } from "@aztec-labs/stdlib/abi"
 import { FEE_MULTIPLIER, getBlockBaseMaxFees } from "../utils/index.js"
 import { DEFAULT_WAIT_OPTS } from "../utils/constants.js"
-import { CLAIM_FPC_MAX_FEES_PER_GAS } from "../feePaymentMethod/claimFpcBatchGas.js"
+import { CLAIM_FPC_MAX_FEES_PER_GAS } from "../feePaymentMethod/claimFpc/gas/claimFpcBatchGas.js"
 import {
   AccountFeePaymentMethodOptions,
   type DefaultAccountEntrypointOptions,
 } from "@aztec-labs/entrypoints/account"
 import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
 import { assertProvenGasWithinLimits, type PayloadFinalizer } from "./stagedExecution.js"
-import { ObsidionFeeJuicePaymentMethod } from "../feePaymentMethod/index.js"
 import { FeeUnavailableError } from "./FeeUnavailableError.js"
 import {
   ProvingStage,
@@ -140,6 +146,9 @@ export interface ObsidionWalletOptions {
   chainInfo?: WalletChainInfo
 }
 
+/** `networkId` is the pinned rollup address; absent, `create` reads the node's. */
+export type CreateWalletOptions = ObsidionWalletOptions & { networkId?: string }
+
 /**
  * `aztecNode.sendTx` succeeded but the pending record did not persist. Carries `txHash` so the
  * caller can show "submitted, tracking failed" rather than a generic send failure.
@@ -186,6 +195,14 @@ export function txExpiresAtMs(kernelExpirationTimestamp?: bigint, now = Date.now
   return Number.isFinite(kernelMs) && kernelMs > 0 ? Math.min(kernelMs, ceilingMs) : ceilingMs
 }
 
+/** The pinned rollup address, else the node's. */
+export async function readNetworkId(
+  node: AztecNode,
+  opts?: { networkId?: string },
+): Promise<string> {
+  return opts?.networkId ?? (await node.getNodeInfo()).l1ContractAddresses.rollupAddress.toString()
+}
+
 /** Wallet for the alpha (non-modular) account system. Auth is handled by AlphaAuthProvider. */
 export class ObsidionWallet extends BaseWallet {
   public accounts: Map<string, Account> = new Map()
@@ -203,7 +220,13 @@ export class ObsidionWallet extends BaseWallet {
 
   private readonly pinnedChainInfo: WalletChainInfo | undefined
 
-  constructor(public pxe: PXE, public node: AztecNode, opts?: ObsidionWalletOptions) {
+  /** The rollup's L1 address: the network the wallet's records belong to. */
+  constructor(
+    public pxe: PXE,
+    public node: AztecNode,
+    public readonly networkId: string,
+    opts?: ObsidionWalletOptions,
+  ) {
     super(pxe, node)
     this.pendingTxStore = opts?.pendingTxStore ?? new InMemoryPendingTxStore()
     this.pinnedChainInfo = opts?.chainInfo
@@ -236,8 +259,9 @@ export class ObsidionWallet extends BaseWallet {
     node: AztecNode,
     overridePXEConfig?: Partial<PXEConfig>,
     options: PXECreationOptions = { loggers: {} },
-    walletOpts?: ObsidionWalletOptions,
+    walletOpts?: CreateWalletOptions,
   ): Promise<ObsidionWallet> {
+    const networkId = await readNetworkId(node, walletOpts)
     const pxeConfig = Object.assign(getPXEConfig(), {
       proverEnabled: overridePXEConfig?.proverEnabled ?? false,
       ...overridePXEConfig,
@@ -246,13 +270,10 @@ export class ObsidionWallet extends BaseWallet {
       autoSync: false,
     })
     // Rollup-keyed default so restarts reuse the cache; tests pass their own for isolation.
-    if (pxeConfig.dataDirectory === undefined) {
-      const { l1ContractAddresses } = await node.getNodeInfo()
-      pxeConfig.dataDirectory = `pxe-${l1ContractAddresses.rollupAddress}`
-    }
+    pxeConfig.dataDirectory ??= `pxe-${networkId}`
 
     const pxe = await createPXELazy(node, pxeConfig, options)
-    return new ObsidionWallet(pxe, node, walletOpts)
+    return new ObsidionWallet(pxe, node, networkId, walletOpts)
   }
 
   /**
@@ -262,9 +283,10 @@ export class ObsidionWallet extends BaseWallet {
   static async createWithPXE(
     pxe: PXE,
     node: AztecNode,
+    networkId: string,
     walletOpts?: ObsidionWalletOptions,
   ): Promise<ObsidionWallet> {
-    return new ObsidionWallet(pxe, node, walletOpts)
+    return new ObsidionWallet(pxe, node, networkId, walletOpts)
   }
 
   protected addAccount(
@@ -1045,9 +1067,8 @@ export class ObsidionWallet extends BaseWallet {
             expiresAtMs: txExpiresAtMs(provenTx.publicInputs.expirationTimestamp),
           })
 
-          // The op id and the client-side txHash let `TxLifecycleService` flip the row to MINING
-          // and stamp the real hash before submit, without waiting for the caller's post-mining
-          // patch.
+          // The op id and the client-side txHash let the caller stamp the real hash on its row
+          // before submit (`trackSubmission`), without waiting for the post-mining patch.
           provingProgress.emitStageStart(ProvingStage.Mining, opId, txHash.toString())
           this.log.debug(`Sending transaction ${txHash}`)
 

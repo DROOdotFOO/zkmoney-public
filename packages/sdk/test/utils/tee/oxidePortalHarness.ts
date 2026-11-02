@@ -363,15 +363,12 @@ export async function deploySandboxOxidePortalStack(
       },
     ],
   })
-  const {
-    depositSIPAImplementation,
-    registrationSIPAImplementation,
-    userOpSIPAImplementation,
-  } = await deploySIPAImplementations(walletClient, publicClient, {
-    sipaFactory,
-    forwardingTable,
-    nameRegistry,
-  })
+  const { depositSIPAImplementation, registrationSIPAImplementation, userOpSIPAImplementation } =
+    await deploySIPAImplementations(walletClient, publicClient, {
+      sipaFactory,
+      forwardingTable,
+      nameRegistry,
+    })
   // The executor's own subsidy prices its payout off an ETH/USD feed: 8 decimals, $3000.
   const { address: priceFeed } = await deployL1Contract(
     extendedClient,

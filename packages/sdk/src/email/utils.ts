@@ -2,9 +2,9 @@ import { utils } from "@shield-labs/utils"
 import { Base64, Bytes, Hex } from "ox"
 import { assert } from "ts-essentials"
 import { z } from "zod"
-import { PublicKeyRegistry } from "./PublicKeyRegistry.js"
+import type { PublicKeyRegistry } from "./PublicKeyRegistry.js"
 import { poseidon2Hash } from "@zkpassport/poseidon2"
-import { FieldLike } from "@aztec-labs/aztec.js/abi"
+import type { FieldLike } from "@aztec-labs/aztec.js/abi"
 import { bnToLimbStrArray } from "./BigNumParamGen.js"
 
 // JWT structure constants - keep in sync with Noir JWTInput struct

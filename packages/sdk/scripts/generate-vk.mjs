@@ -1,12 +1,12 @@
 // Pin a circuit's UltraHonk verification key in @obsidion/core and write it beside the circuit
 // (target/vk/vk), the way zkJWT's is.
 //
-// `scripts/build_contracts.sh` runs this on every circuit build with `--in` (the artifact it just
-// compiled), `--out` (the constants file) and `--circuit`, so the pin cannot fall behind the artifact
-// the wallet proves with. Standalone, with no `--in`, it compiles the circuit first and copies the
-// artifact to packages/contracts. `--check` derives the key and fails on a pin that differs, writing
-// nothing. `--vk-out FILE` only writes the derived key to FILE; the Nix build derives it that way, and
-// `--vk FILE` pins that key instead of deriving it.
+// `packages/contracts/scripts/build_contracts.sh` runs this on every circuit build with `--in`
+// (the artifact it just compiled), `--out` (the constants file) and `--circuit`, so the pin cannot
+// fall behind the artifact the wallet proves with. Standalone, with no `--in`, it compiles the
+// circuit first and copies the artifact to packages/contracts. `--check` derives the key and fails
+// on a pin that differs, writing nothing. `--vk-out FILE` only writes the derived key to FILE; the
+// Nix build derives it that way, and `--vk FILE` pins that key instead of deriving it.
 import { execSync } from "node:child_process"
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"

@@ -3,9 +3,8 @@ import {
   NodeIdentityMismatchError,
   PortalIdentityMismatchError,
   profileRollupSkew,
-  useAztecContext,
+  useStore,
   verifyNodeIdentity,
-  type InitializePXEOptions,
   type NodeIdentityField,
   type NodeIdentityInfo,
 } from "@obsidion/front-core"
@@ -19,11 +18,10 @@ import type { Hex } from "viem"
 import { useLocation } from "react-router-dom"
 import {
   createContext,
-  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
-  useState,
+  useMemo,
   useSyncExternalStore,
 } from "react"
 import { getConfig, type WebWalletConfig } from "../config/env"
@@ -33,10 +31,8 @@ import { loadWalletIdentity } from "../features/identity/walletIdentity"
 import { networkHasSwapStack } from "../features/withdraw/freshAddressAvailability"
 import { fireEvent } from "../lib/analytics"
 import { createExternalState } from "../lib/externalState"
-import { provingDevice } from "../lib/provingDevice"
-import { barretenbergWasm } from "../platform/bbWasmPath"
-import { isActiveTab } from "../platform/storage/activeTab"
 import { reloadPage } from "../platform/storage/walletStorage"
+import { NodeUnreachableError, pageWallet, walletDemanded } from "../platform/wallet"
 
 /** `idle`: the boot waits for a screen that needs it (`bootWaitsForDemand`). */
 type BootStatus = "idle" | "booting" | "ready" | "error"
@@ -68,14 +64,29 @@ interface PxeBootState {
   demandBoot: () => void
 }
 
-const PxeBootContext = createContext<PxeBootState>({
-  bootStatus: "booting",
-  retryBoot: () => {},
-  demandBoot: () => {},
-})
+const PxeBootContext = createContext<PxeBootTarget | undefined>(undefined)
 
-export function usePxeBoot() {
-  return useContext(PxeBootContext)
+const retryBoot = () => void reloadPage()
+const demandBoot = () => pageWallet().demand()
+
+/**
+ * The page wallet's boot, as the screens show it. Demo mode boots none and reads as ready. Outside
+ * the provider, before the active tab opens a store (the pre-boot layer), it reads as booting.
+ */
+export function usePxeBoot(): PxeBootState {
+  const target = useContext(PxeBootContext)
+  const state = useStore(pageWallet())
+  const demanded = useStore(walletDemanded)
+  const bootError = useMemo(
+    () => (state.status === "failed" ? describeBootError(state.error) : undefined),
+    [state],
+  )
+  if (target?.kind === "demo" || state.status === "ready") {
+    return { bootStatus: "ready", retryBoot, demandBoot }
+  }
+  if (state.status === "failed") return { bootStatus: "error", bootError, retryBoot, demandBoot }
+  const waits = target !== undefined && !demanded && bootWaitsForDemand()
+  return { bootStatus: waits ? "idle" : "booting", retryBoot, demandBoot }
 }
 
 /**
@@ -98,24 +109,6 @@ function assertProfileAgrees(config: WebWalletConfig, identity: ChainIdentity): 
     l1_version: Number(skew.l1),
   })
   throw new ProfileRollupSkewError(skew.profile, skew.l1)
-}
-
-/** The node did not answer a request; the transport error rides as `cause`. */
-class NodeUnreachableError extends Error {
-  constructor(cause: unknown) {
-    super("node did not answer", { cause })
-    this.name = "NodeUnreachableError"
-  }
-}
-
-function isNodeFetchFailure(e: unknown): boolean {
-  const rpcError = e instanceof Error ? e.cause : undefined
-  return (
-    typeof rpcError === "object" &&
-    rpcError !== null &&
-    "data" in rpcError &&
-    rpcError.data instanceof Error
-  )
 }
 
 function identityFromNode(info: NodeIdentityInfo): ChainIdentity {
@@ -196,66 +189,6 @@ export async function verifiedIdentity(
 export async function assertCustomL1RpcSimulates(config: WebWalletConfig): Promise<void> {
   if (config.endpoints.l1Rpc.isDefault || !networkHasSwapStack(config.network)) return
   await assertL1RpcSimulates(config.l1RpcUrl)
-}
-
-/**
- * The store takes one PXE, so the PXE is created exactly once per page load even under
- * StrictMode's double-mounted effects: the in-flight promise is shared.
- */
-let bootPromise: Promise<void> | undefined
-
-function bootOnce(
-  initializePXE: (opts: InitializePXEOptions) => Promise<unknown>,
-  node: AztecNode,
-  { store, identity, bootStartedAt, attempts }: Extract<PxeBootTarget, { kind: "pxe" }>,
-) {
-  bootPromise ??= (async () => {
-    await initializePXE({
-      node,
-      proverEnabled: getConfig().proverEnabled,
-      // The boot's bb.js, so the first proof downloads it no second time.
-      bbWasmPath: barretenbergWasm().wasmPath,
-      store,
-      chainIdentity: identity,
-    }).catch((e: unknown) => {
-      throw isNodeFetchFailure(e) ? new NodeUnreachableError(e) : e
-    })
-    fireEvent("pxe_boot_completed", {
-      duration_ms: Math.round(performance.now() - bootStartedAt),
-      attempts,
-      ...provingDevice(),
-    })
-  })()
-  return bootPromise
-}
-
-const DOWNLOAD_RELOADS_KEY = "pxeBoot.downloadReloads"
-const MAX_DOWNLOAD_RELOADS = 2
-const MODULE_DOWNLOAD_FAILURE =
-  /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/
-
-function isModuleDownloadFailure(e: unknown): boolean {
-  if (e instanceof AggregateError) return e.errors.some(isModuleDownloadFailure)
-  return e instanceof TypeError && MODULE_DOWNLOAD_FAILURE.test(e.message)
-}
-
-function takeDownloadReload(): boolean {
-  try {
-    const reloads = Number(sessionStorage.getItem(DOWNLOAD_RELOADS_KEY)) || 0
-    if (reloads >= MAX_DOWNLOAD_RELOADS) return false
-    sessionStorage.setItem(DOWNLOAD_RELOADS_KEY, String(reloads + 1))
-    return true
-  } catch {
-    return false
-  }
-}
-
-function clearDownloadReloads(): void {
-  try {
-    sessionStorage.removeItem(DOWNLOAD_RELOADS_KEY)
-  } catch {
-    return
-  }
 }
 
 /** The default L1 RPC carries its provider key in the path; a URL the user typed is theirs to see. */
@@ -400,75 +333,27 @@ export function bootWaitsForDemand(pathname = location.pathname): boolean {
   return isPayPath(pathname) && !loadWalletIdentity()
 }
 
-/**
- * Kicks off PXE init on the store the active tab opened. MUST sit inside ObsidionCoreProvider but
- * OUTSIDE ObsidionAppProvider: the app provider renders null until the contract service exists,
- * which needs the wallet `initializePXE` creates — mounting the initializer underneath it
- * deadlocks into a black screen.
- */
+/** Reports a failed boot of the page wallet; `pxeBoot` is the store the active tab opened. */
 export function PxeBootProvider({
-  node,
   pxeBoot,
   children,
 }: {
-  node: AztecNode
   pxeBoot: PxeBootTarget
   children: ReactNode
 }) {
-  const { currentNetwork, initializePXE } = useAztecContext()
-  const [demanded, setDemanded] = useState(() => pxeBoot.kind === "demo" || !bootWaitsForDemand())
-  const [state, setState] = useState<Omit<PxeBootState, "retryBoot" | "demandBoot">>({
-    bootStatus: demanded ? "booting" : "idle",
-  })
-
+  const state = useStore(pageWallet())
   useEffect(() => {
-    // Demo mode opens no store and boots no PXE — its fixtures are already in storage.
-    if (pxeBoot.kind === "demo") {
-      setState({ bootStatus: "ready" })
-      return
-    }
-    // initializePXE silently no-ops until AztecProvider has loaded the network
-    // from storage — wait for it or the boot "succeeds" with no wallet.
-    if (!currentNetwork || !demanded) return
-    setState((s) => (s.bootStatus === "idle" ? { bootStatus: "booting" } : s))
-    let cancelled = false
-    bootOnce(initializePXE, node, pxeBoot)
-      // A tab another tab took over while this one booted publishes nothing: it is reloading, and
-      // closed the store under the PXE, so a failure is expected.
-      .then(() => {
-        clearDownloadReloads()
-        if (!cancelled && isActiveTab()) setState({ bootStatus: "ready" })
-      })
-      .catch((e: unknown) => {
-        if (cancelled || !isActiveTab()) return
-        if (isModuleDownloadFailure(e) && takeDownloadReload()) return void reloadPage()
-        reportBootFailure(e, pxeBoot)
-        setState({ bootStatus: "error", bootError: describeBootError(e) })
-      })
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- boot once the network is known
-  }, [currentNetwork, demanded])
-
-  // A failed boot may have half-built the wallet's services, which live for the page.
-  const retryBoot = useCallback(() => void reloadPage(), [])
-  const demandBoot = useCallback(() => setDemanded(true), [])
-
-  return (
-    <PxeBootContext.Provider value={{ ...state, retryBoot, demandBoot }}>
-      {children}
-    </PxeBootContext.Provider>
-  )
+    if (state.status === "failed" && pxeBoot.kind === "pxe") reportBootFailure(state.error, pxeBoot)
+  }, [state, pxeBoot])
+  return <PxeBootContext.Provider value={pxeBoot}>{children}</PxeBootContext.Provider>
 }
 
 /** Inside the router: demands the boot on any route where it does not wait. */
 export function BootDemand() {
   const { pathname } = useLocation()
-  const { bootStatus, demandBoot } = usePxeBoot()
   useEffect(() => {
-    if (bootStatus === "idle" && !bootWaitsForDemand(pathname)) demandBoot()
-  }, [bootStatus, pathname, demandBoot])
+    if (!bootWaitsForDemand(pathname)) demandBoot()
+  }, [pathname])
   return null
 }
 

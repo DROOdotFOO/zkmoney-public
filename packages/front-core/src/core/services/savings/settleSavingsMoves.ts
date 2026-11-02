@@ -6,7 +6,7 @@ import {
   settleSavingsMove,
   type SavingsMoveSettleDeps,
 } from "../../../oxide/savingsMoves"
-import { logger } from "src/utils/logger"
+import { logger } from "../../../utils/logger"
 import type { WithdrawalRecord } from "../bridge/types"
 import type { SavingsMoveStorage } from "./SavingsMoveStorage"
 import type { SavingsMoveRecord } from "./types"

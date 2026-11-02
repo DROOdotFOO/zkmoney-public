@@ -1,3 +1,4 @@
+import { legacyStore, type ReadonlyStore, type Sourced } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { getActiveCredentialId } from "../../platform/storage/activeStorage"
 import { walletStorage } from "../../platform/storage/walletStorage"
@@ -23,8 +24,13 @@ const STORAGE_KEY = "webwallet.identity"
  * returning-user entry via /enter).
  */
 export function loadWalletIdentity({ saved = false } = {}): WalletIdentity | null {
+  return decodeIdentity(
+    saved ? walletStorage.getCommitted(STORAGE_KEY) : walletStorage.getItem(STORAGE_KEY),
+  )
+}
+
+function decodeIdentity(raw: string | null): WalletIdentity | null {
   try {
-    const raw = saved ? walletStorage.getCommitted(STORAGE_KEY) : walletStorage.getItem(STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as WalletIdentity
     if (typeof parsed.address !== "string") return null
@@ -33,6 +39,20 @@ export function loadWalletIdentity({ saved = false } = {}): WalletIdentity | nul
   } catch {
     return null
   }
+}
+
+/** The identity, read again on every write. */
+export function walletIdentity(): ReadonlyStore<Sourced<WalletIdentity | null>> {
+  return legacyStore(
+    {
+      read: () => loadWalletIdentity(),
+      subscribe: (onChange) =>
+        walletStorage.onCommit((ops) => {
+          if (ops.some(([key]) => key === STORAGE_KEY)) onChange()
+        }),
+    },
+    null,
+  )
 }
 
 /**

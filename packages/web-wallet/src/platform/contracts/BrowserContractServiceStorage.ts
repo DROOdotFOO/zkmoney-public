@@ -1,5 +1,5 @@
 import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
-import { ContractName, IContractServiceStorage, NetworkType } from "@obsidion/sdk"
+import type { ContractName, IContractServiceStorage, NetworkType } from "@obsidion/sdk"
 
 /**
  * The web wallet's `IContractServiceStorage`: a per-process artifact memo, network-scoped so one

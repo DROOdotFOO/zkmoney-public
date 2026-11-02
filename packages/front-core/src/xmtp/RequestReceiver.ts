@@ -2,7 +2,7 @@
  * Routes one decoded payment-request message (`request` / `request-declined`) into
  * `RequestStoreWrites`. The optional sender policy skips refused requesters; the optional
  * tag-binding gate skips peer mismatches and defers transport failures. Fulfillment never arrives
- * here — `requestFulfillmentReconciler` joins it from the on-chain `Transfer.meta`. `process` never
+ * here — `resolveRequests` reads it from the on-chain `Transfer.meta`. `process` never
  * throws — store errors become `deferred` for retry. Idempotency lives in the store.
  */
 
@@ -102,7 +102,7 @@ export class RequestReceiver {
       case "request-declined": {
         const gate = await this.flipGate(content.requestId, senderXmtpAddresses)
         if (gate) return gate
-        const { applied } = await this.store.applyStatus(content.requestId, "declined")
+        const { applied } = await this.store.decline(content.requestId)
         return applied
           ? { status: "accepted", kind: "request-declined" }
           : { status: "ignored", reason: "no-matching-request" }

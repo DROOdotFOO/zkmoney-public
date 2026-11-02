@@ -1,7 +1,7 @@
-import { createContext, useContext, ReactNode } from "react"
+import { createContext, useContext, type ReactNode } from "react"
 import { useStorage } from "../hooks"
 import { assert } from "ts-essentials"
-import type { IStorageAdapter, NetworkStorageConfig } from "src/core"
+import type { IStorageAdapter, NetworkStorageConfig } from "../core"
 
 type StorageContextProps = ReturnType<typeof useStorage>
 

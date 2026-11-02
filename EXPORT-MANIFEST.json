@@ -1,5 +1,5 @@
 {
-  "source": "170efc3ab1b3ffb98b9743ce035571cad2504c81",
+  "source": "ea3459dc835ebc6161a266147cfd45fc9daf09ab",
   "oxidePin": "3b5e1f7c8f18e24f74d463911b319aac101f0aee",
   "walletPackages": [
     "@obsidion/auth-web",
@@ -8,6 +8,7 @@
     "@obsidion/core",
     "@obsidion/front-core",
     "@obsidion/generation-v5",
+    "@obsidion/lint-config",
     "@obsidion/metrics-policy",
     "@obsidion/oxide-build",
     "@obsidion/passkey-web",

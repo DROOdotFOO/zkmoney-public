@@ -9,7 +9,9 @@ import {
   RotationStrippedError,
   fundingLocalId,
   moveProgress,
+  movesBalance,
   persistedRotation,
+  rerootAhead,
   storeRotation,
   stripSettled,
   type BackupFunding,
@@ -83,7 +85,14 @@ const record = (over: Partial<BackupRotationRecord> = {}): BackupRotationRecord 
     prfSlot: "first",
     securityKey: false,
   },
-  plan: { address: "0x22", fundingAmount: "2000", credited: "1400", approvals: 1, moves: 2 },
+  plan: {
+    address: "0x22",
+    fundingAmount: "2000",
+    deposited: "1800",
+    credited: "1400",
+    approvals: 1,
+    moves: 2,
+  },
   rotation: stored(),
   fundings: [],
   createdAt: 1,
@@ -132,6 +141,16 @@ describe("BackupRotationStore", () => {
     expect(await storage.getItem(BACKUP_ROTATION_STORAGE_KEY)).toContain("published")
   })
 
+  it("reads a plan with no deposited amount", async () => {
+    const storage = new InMemoryStorageAdapter()
+    await new BackupRotationStore(storage).put(
+      record({ plan: { ...record().plan!, deposited: undefined } }),
+    )
+    const plan = (await new BackupRotationStore(storage).get(OWNER))?.plan
+    expect(plan?.fundingAmount).toBe("2000")
+    expect(plan?.deposited).toBeUndefined()
+  })
+
   it("round-trips every phase and every attention reason with its fields", async () => {
     const full = (phase: BackupRotationPhase): BackupRotationRecord =>
       record({
@@ -164,6 +183,7 @@ describe("BackupRotationStore", () => {
               plannedAt: 60,
               m: 2,
               depositBound: true,
+              declined: true,
               chunks: [
                 {
                   token: addr(50),
@@ -264,9 +284,14 @@ describe("BackupRotationStore", () => {
         rotation: stored({ intent: { ...stored().intent, callData: "0xabc" } }),
       }),
       blob(key, { ...saved, plan: { ...saved.plan, fundingAmount: "oops" } }),
+      blob(key, { ...saved, plan: { ...saved.plan, deposited: "oops" } }),
       blob(key, { ...saved, publish: { count: 1, history: [{ txHash: word(1) }] } }),
       blob(key, { ...saved, sweep: { index: 3, blockHash: word(1), credited: "1" } }),
       blob(key, { ...saved, move: { runs: [{ plannedAt: 1, m: 1, depositBound: false }] } }),
+      blob(key, {
+        ...saved,
+        move: { runs: [{ plannedAt: 1, m: 1, depositBound: false, declined: false, chunks: [] }] },
+      }),
       blob(key, {
         ...saved,
         move: {
@@ -494,5 +519,51 @@ describe("moveProgress", () => {
         },
       }),
     ).toEqual({ included: 1, total: 2, depositBound: false })
+  })
+})
+
+describe("rerootAhead", () => {
+  const at = (phase: BackupRotationPhase, over: Partial<BackupRotationRecord> = {}) =>
+    rerootAhead({ phase, ...over })
+
+  it("holds from the backup's creation until the re-root switches the wallet", () => {
+    for (const phase of ["created", "signed", "published", "funded"] as const) {
+      expect(at(phase)).toBe(true)
+    }
+    expect(at("swept")).toBe(true)
+    expect(at("installed", { reroot: { batch: "0x01" } })).toBe(true)
+    expect(at("swept", { reroot: { switched: true } })).toBe(false)
+    expect(at("installed", { reroot: { switched: true } })).toBe(false)
+  })
+
+  it("ends once the wallet runs on the two-key account, or the rotation will not run", () => {
+    for (const phase of ["rerooted", "moved", "done", "conflict", "recovered"] as const) {
+      expect(at(phase)).toBe(false)
+    }
+  })
+
+  it("reads an attention by the phase it interrupted", () => {
+    expect(at("attention", { attention: "route", suspended: "published" })).toBe(true)
+    expect(at("attention", { attention: "move", suspended: "rerooted" })).toBe(false)
+    expect(at("attention", { attention: "corrupt" })).toBe(false)
+  })
+})
+
+describe("movesBalance", () => {
+  it("holds from the re-root's switch until the move ends", () => {
+    for (const phase of ["created", "signed", "published", "funded", "swept", "installed"] as const)
+      expect(movesBalance({ phase })).toBe(false)
+    for (const phase of ["swept", "installed"] as const) {
+      expect(movesBalance({ phase, reroot: { batch: word(1) } })).toBe(false)
+      expect(movesBalance({ phase, reroot: { switched: true } })).toBe(true)
+    }
+    expect(movesBalance({ phase: "rerooted" })).toBe(true)
+    expect(movesBalance({ phase: "moved" })).toBe(true)
+    for (const phase of ["done", "recovered", "conflict"] as const)
+      expect(movesBalance({ phase, reroot: { switched: true } })).toBe(false)
+  })
+
+  it("lets a move parked for the user hold nothing", () => {
+    expect(movesBalance({ phase: "attention", reroot: { switched: true } })).toBe(false)
   })
 })

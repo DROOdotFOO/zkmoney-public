@@ -6,20 +6,20 @@ import {
   TxContext,
   TxExecutionRequest,
 } from "@aztec-labs/stdlib/tx"
-import { ChainInfo, EntrypointInterface } from "@aztec-labs/entrypoints/interfaces"
+import type { ChainInfo, EntrypointInterface } from "@aztec-labs/entrypoints/interfaces"
 import { CAPSULE_SLOT } from "../../../utils/constants.js"
-import { DefaultAccountEntrypointOptions } from "@aztec-labs/entrypoints/account"
-import { GasSettings } from "@aztec-labs/stdlib/gas"
+import type { DefaultAccountEntrypointOptions } from "@aztec-labs/entrypoints/account"
+import type { GasSettings } from "@aztec-labs/stdlib/gas"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
   encodeArguments,
-  FunctionAbi,
+  type FunctionAbi,
   FunctionCall,
   FunctionSelector,
   getFunctionReturnType,
 } from "@aztec-labs/stdlib/abi"
-import { AlphaAuthProvider } from "../auth/AlphaAuthProvider.js"
+import type { AlphaAuthProvider } from "../auth/AlphaAuthProvider.js"
 import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
 import { DomainSeparator } from "@aztec-labs/constants"
 import { computeOuterAuthWitHash } from "@aztec-labs/stdlib/auth-witness"

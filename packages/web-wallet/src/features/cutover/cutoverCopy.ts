@@ -21,8 +21,10 @@ export const chooseCopy = {
   pills: ["Faster deposits", "Faster withdrawals", "Higher limits"],
   upgrade: "Upgrade now",
   withdraw: "Withdraw funds instead",
-  /** Above the disabled Upgrade while the check runs. */
+  /** Above the disabled Upgrade while the check runs: first the balance, then the rest. */
+  reading: "Reading your balance",
   preparing: "Preparing your upgrade",
+  slow: "This can take a few minutes.",
 }
 
 /** Figma 388:30582 / 409:33997. */

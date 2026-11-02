@@ -20,7 +20,7 @@ import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
 import { Warning } from "../../ui/Warning"
 import { useL1Wallet } from "../deposit/l1Wallet"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { WithdrawToWalletModal } from "./WithdrawToWalletModal"
+import { WithdrawToWalletModal } from "./WithdrawToWalletModal/WithdrawToWalletModal"
 import { useFreshAddressAvailable } from "./freshAddressAvailability"
 import {
   FRESH_ADDRESS_VERDICT_COPY,

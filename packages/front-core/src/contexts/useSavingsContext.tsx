@@ -8,14 +8,13 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { BalanceStorage } from "../core/storages/BalanceStorage"
 import { savingsValue } from "../core/services/savings/savingsMath"
 import type { SavingsPosition, SavingsPrice, SavingsSource } from "../core/services/savings/types"
-import { useCachedRecords } from "../hooks/useCachedRecords"
+import { selectEntry, type BalanceRecords } from "../engine/balances"
+import type { ReadonlyStore } from "../engine/store"
+import { useStore } from "../hooks/useStore"
 
 export const SAVINGS_PRICE_INTERVAL_MS = 60_000
-
-const NO_BALANCES = { load: async () => {}, list: () => [], onListChanged: () => () => {} }
 
 interface SavingsContextValue {
   /** Null where the profile lists no savings asset; `useSavings` then reports `available: false`. */
@@ -39,26 +38,22 @@ const SavingsContext = createContext<SavingsContextValue>({
  */
 export function SavingsProvider({
   source,
+  balances,
   children,
 }: {
   source: SavingsSource | null
+  balances: ReadonlyStore<BalanceRecords>
   children: ReactNode
 }) {
-  const { records: balances } = useCachedRecords(
-    useMemo(() => (source ? BalanceStorage.get() : NO_BALANCES), [source]),
+  const entry = useStore(
+    balances,
+    useCallback(
+      (records: BalanceRecords) =>
+        source && selectEntry(records, source.balance.scope, source.balance.tokenAddress),
+      [source],
+    ),
   )
-  const record =
-    source &&
-    balances.find(
-      (b) => b.scope === source.balance.scope && b.tokenAddress === source.balance.tokenAddress,
-    )
-  const shares = useMemo(() => {
-    try {
-      return record ? BigInt(record.balance) : undefined
-    } catch {
-      return undefined
-    }
-  }, [record])
+  const shares = entry?.atomic
 
   // Tagged with its source, so a new source starts unread; only the latest read lands.
   const [read, setRead] = useState<{ source: SavingsSource; price: SavingsPrice | null }>()
@@ -94,10 +89,10 @@ export function SavingsProvider({
             shares,
             value: savingsValue(shares, price.sharePrice),
             ...price,
-            sharesReadAt: record?.readAt ?? record?.updatedAt,
+            sharesReadAt: entry?.readAt,
           }
         : null,
-    [price, shares, record?.readAt, record?.updatedAt],
+    [price, shares, entry?.readAt],
   )
   const value = useMemo(
     () => ({ source, position, hydrated, refresh }),

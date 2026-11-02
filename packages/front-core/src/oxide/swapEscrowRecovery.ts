@@ -23,11 +23,11 @@ import {
   type SwapEscrowReader,
   type SwapRecovery,
 } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 import { swapEscrowTarget } from "../core/services/bridge/swapEscrowArgs"
 import type { WithdrawalRecord } from "../core/services/bridge/types"
-import type { WithdrawalStorage } from "../core/services/bridge/WithdrawalStorage"
+import type { Withdrawals } from "../engine/withdrawals"
 
 /** How long a recovery signature stays valid after signing, in chain seconds. */
 export const SWAP_ESCROW_RECOVERY_DEADLINE_S = 60n * 60n
@@ -43,7 +43,7 @@ export interface SwapEscrowExitDeps {
   record: WithdrawalRecord
   channel: SwapEscrowExitChannel
   reader: Pick<SwapEscrowReader, "daiBalance" | "isDeployed">
-  store: Pick<WithdrawalStorage, "patch">
+  store: Pick<Withdrawals, "apply">
 }
 
 export interface SwapEscrowRecoveryDeps extends SwapEscrowExitDeps {
@@ -102,10 +102,9 @@ export async function runSwapEscrowExecute(deps: SwapEscrowExitDeps): Promise<He
   if (!(await deps.channel.waitForReceipt(hash))) {
     throw new Error(`swap transaction ${hash} reverted`)
   }
-  await deps.store.patch(recordKey(record), {
-    phase: "done",
-    swapExecuteTxHash: hash,
-    reorgEpoch: record.reorgEpoch,
+  await deps.store.apply(recordKey(record), {
+    type: "patch",
+    fields: { phase: "done", swapExecuteTxHash: hash, reorgEpoch: record.reorgEpoch },
   })
   logger.log(`[swapEscrow] executed ${target.escrow.slice(0, 10)}… in tx ${hash}`)
   return hash
@@ -178,11 +177,14 @@ export async function runSwapEscrowRecovery(deps: SwapEscrowRecoveryDeps): Promi
   if (!(await deps.channel.waitForReceipt(hash))) {
     throw new Error(`recovery transaction ${hash} reverted`)
   }
-  await deps.store.patch(recordKey(record), {
-    phase: "recovered",
-    recoveryTxHash: hash,
-    recoveryTarget: deps.target,
-    reorgEpoch: record.reorgEpoch,
+  await deps.store.apply(recordKey(record), {
+    type: "patch",
+    fields: {
+      phase: "recovered",
+      recoveryTxHash: hash,
+      recoveryTarget: deps.target,
+      reorgEpoch: record.reorgEpoch,
+    },
   })
   logger.log(`[swapEscrow] recovered ${target.escrow.slice(0, 10)}… in tx ${hash}`)
   return hash

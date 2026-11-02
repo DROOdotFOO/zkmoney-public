@@ -40,7 +40,7 @@ export interface ActiveTabDeps<T extends OpenedStorage> {
   open(): Promise<T>
   isBusy(error: unknown): boolean
   /** Runs once the tab is active, before it reports ready. */
-  prepare(): Promise<void>
+  prepare(opened: T): Promise<void>
   /** Marks this page as the one running the wallet (`activeTab.ts`). */
   activate(): void
   /** Marks this page as no longer running the wallet, for good. */
@@ -161,7 +161,7 @@ export class ActiveTabLifecycle<T extends OpenedStorage> {
       const opened = await this.openWhenFree(attempt)
       if (!opened || !attempt.live) return
       this.deps.activate()
-      await this.deps.prepare()
+      await this.deps.prepare(opened)
       if (!attempt.live) return
       this.clearTimers(attempt)
       this.set({ kind: "ready", opened, activeSince: Date.now() })

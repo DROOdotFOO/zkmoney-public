@@ -2,7 +2,7 @@
 // `packages/sdk/src/index.ts` — external consumers go through
 // `@oxide/oxide-client` directly. See R1/R2 + the file-level headers on
 // the source files for what is vendored vs. re-exported and why.
-export type { L2SubmitContext, Operation } from "./l2_operations.js"
+export type { L2SubmitContext, Operation } from "./token/l2_operations.js"
 
 // The collector is upstream verbatim: accounting effects are namespaced by a leading
 // `ACCOUNTING_EFFECT_IDENTIFIER` field, so upstream's filter already skips the token's
@@ -13,7 +13,7 @@ export {
   NoteStage,
 } from "@oxide/oxide-client/token_operations_collector.js"
 
-export { computeStealthRecipientHash } from "./contentHash.js"
+export { computeStealthRecipientHash } from "./token/contentHash.js"
 
 export type {
   CollectedAccountingEffects,

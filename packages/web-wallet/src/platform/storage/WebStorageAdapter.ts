@@ -7,7 +7,7 @@ import {
 import { CONFIG_STORAGE_KEY_PREFIX } from "@obsidion/core/constants"
 import { getActiveStorageId } from "./activeStorage"
 import { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX } from "./storageKeys"
-import { loadFromOtherDatabases, readFromOtherDatabases, walletStorage } from "./walletStorage"
+import { loadFromOtherDatabases, walletStorage } from "./walletStorage"
 
 export { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX }
 
@@ -52,14 +52,6 @@ export class WebStorageAdapter implements IStorageAdapter {
   }
 
   /**
-   * What this account kept under `key` in every other rollup's database. A database it cannot read
-   * fails the read (`readFromOtherDatabases`'s `strict`).
-   */
-  getItemFromOtherDatabases(key: string): Promise<string[]> {
-    return readFromOtherDatabases(this.scoped(key), { strict: true })
-  }
-
-  /**
    * This account's part of every other rollup's database, each read whole under one open and handed
    * to `read`: `get` is one of the account's keys there, `keys` lists them under a prefix. A database
    * it cannot read fails the read.
@@ -90,19 +82,15 @@ export class WebStorageAdapter implements IStorageAdapter {
   async clear(): Promise<void> {
     const id = getActiveStorageId()
     if (!id) return
-    const prefix = `${WEB_STORAGE_PREFIX}${id}.`
-    await walletStorage.batch(() => {
-      for (const key of walletStorage.keys()) {
-        if (key.startsWith(prefix)) walletStorage.removeItem(key)
-      }
-    })
+    await walletStorage.commitRemoveUnder(`${WEB_STORAGE_PREFIX}${id}.`)
   }
 }
 
 /** Whether this browser holds any account-scoped key for `storageId` on this rollup. */
-export function holdsAccountRecords(storageId: string): boolean {
+export async function holdsAccountRecords(storageId: string): Promise<boolean> {
   const prefix = `${WEB_STORAGE_PREFIX}${storageId}.`
-  return walletStorage.keys().some((key) => key.startsWith(prefix))
+  if (walletStorage.keys().some((key) => key.startsWith(prefix))) return true
+  return (await walletStorage.rangeQueued(`${prefix}acct/`, { limit: 1 })).length > 0
 }
 
 /** The app-wide adapter instance. */

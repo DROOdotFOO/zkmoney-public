@@ -1,9 +1,8 @@
 // Receipt-driven reorg layer. One serialized pass rewrites every non-finalized txHash-bearing
 // record on the active network from its receipt: demote on regression (with a grace-window alert
 // debounce), quiet re-confirm on re-inclusion, terminal-fail on drop/revert, anchor + tier rewrite
-// as the chain advances. The pass runs on demand (boot / foreground / manual) and on a fixed tick
-// while started — the receipt is the source of truth, so reorgs need no separate detection channel.
-// Side effects (withdrawal-finalization re-arm, PXE sync kick) run only on demand passes.
+// as the chain advances. The session's reorg task (engine/reorg.ts) runs the passes — the receipt is
+// the source of truth, so reorgs need no separate detection channel.
 
 import { QueueStatus, TokenActionEnum } from "@obsidion/sdk"
 import {
@@ -13,20 +12,22 @@ import {
   type ReorgNodeLike,
   type ReorgTxReceiptLike,
 } from "../chain/receiptTypes"
-import { getActiveNetworkId } from "../../activeNetworkId"
+import { loadRecords, timeKey } from "../../../engine/persistentStore"
 // type-only store imports: value imports here would close an import cycle through the
-// services barrel (TransactionStorage → services index → coordination → this file)
-import type { TransactionStorage } from "../../storages/TransactionStorage"
-import type { WithdrawalStorage } from "../bridge/WithdrawalStorage"
+// services barrel (a store → services index → coordination → this file). `activity` reaches no
+// services module.
+import { PENDING, type Activity } from "../../../engine/activity"
+import type { Withdrawals } from "../../../engine/withdrawals"
 import type { WithdrawalRecord } from "../bridge/types"
 import type { SIPADepositStore } from "../deposits/SIPADepositStore"
-import type { Transaction } from "src/types"
-import { makeLimiter } from "src/utils/makeLimiter"
+import type { Transaction } from "../../../types"
+import { stampedOn } from "../../../types/networkStamp"
+import { makeLimiter } from "../../../utils/makeLimiter"
 import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
 
 // `reorgEpoch` identifies the reorg episode the outcome belongs to (notification identity).
 // `incoming` marks a payment this wallet received, so the alert speaks to the recipient.
-// `source: "withdrawal"` marks a withdrawal record's burn; its own producer reports the failure and the corrective says so.
+// `source: "withdrawal"` marks a withdrawal record's burn; its record reports the failure and the corrective says so.
 export type ConfirmationOutcome = { txHash: string } & (
   | { type: "demoted" }
   | { type: "re-confirmed"; hadAlerted: boolean; reorgEpoch?: number; source?: "withdrawal" }
@@ -38,32 +39,27 @@ export type ConfirmationOutcome = { txHash: string } & (
 export type ConfirmationListener = (outcome: ConfirmationOutcome) => void
 
 export type ReorgTransactionStore = Pick<
-  TransactionStorage,
-  "getTransactions" | "demoteByTxHash" | "updateByTxHash" | "updateTransaction"
+  Activity,
+  "query" | "byHash" | "apply" | "demoteByTxHash" | "settleByHash"
 >
-export type ReorgWithdrawalStore = Pick<
-  WithdrawalStorage,
-  "load" | "list" | "demote" | "reviveDroppedBurn" | "setBurnDroppedAt"
->
+export type ReorgWithdrawalStore = Pick<Withdrawals, "all" | "apply">
 export type ReorgSipaStore = Pick<SIPADepositStore, "load" | "list" | "demote">
 
-export interface ReorgMonitorDeps {
+/** What a pass reads the chain through. */
+export interface ReorgChain {
   node: ReorgNodeLike
+  /** Only records stamped with it are checked: a node that never saw a hash reads it as dropped. */
+  networkId: string
+}
+
+export interface ReorgMonitorDeps {
   /** Injected store surfaces; an omitted store's surface is skipped. */
   transactionStorage?: ReorgTransactionStore
   withdrawalStorage?: ReorgWithdrawalStore
   sipaDepositStore?: ReorgSipaStore
-  /** Cold-start re-arm of the withdrawal phase watcher. Runs on side-effect passes only. */
-  rerunWithdrawalFinalization?: () => Promise<void>
-  /** Invoked once after all record writes, on side-effect passes only. */
-  kickPxeSync?: () => Promise<void>
-  /** Defaults to getActiveNetworkId(); records with a differing stamped networkId are skipped. */
-  networkId?: string
   concurrency?: number
-  pollIntervalMs?: number
   /** How long a demoted payment may stay un-re-included before the alert fires. */
   graceWindowMs?: number
-  /** Per-record outcome hook; equivalent to subscribe(). */
   onOutcome?: ConfirmationListener
   /** Optional clock for tests; defaults to `Date.now`. */
   now?: () => number
@@ -77,8 +73,9 @@ export interface ReorgPassSummary {
 }
 
 const DEFAULT_CONCURRENCY = 8
-const DEFAULT_POLL_INTERVAL_MS = 30_000
 const DEFAULT_GRACE_WINDOW_MS = 90_000
+/** How far back a pass reads settled rows; a pending row is read at any age. */
+export const REORG_MARGIN_MS = 24 * 60 * 60 * 1000
 /**
  * How long to wait before believing a "dropped" answer for a tx that is still being sent. Shorter
  * than the poll interval, so the very next poll is the one that decides: if the node still says
@@ -96,110 +93,36 @@ const DROPPED_BURN_SETTLE_MS = 5 * 60_000
 
 export class ReorgMonitor {
   private readonly deps: ReorgMonitorDeps
-  private readonly pollIntervalMs: number
   private readonly graceWindowMs: number
   private readonly now: () => number
 
-  private readonly listeners = new Set<ConfirmationListener>()
   /** txHash (lowercase) → alert debounce for a demoted payment. In-memory: a restart re-seeds a fresh window. */
   private readonly grace = new Map<string, { deadline: number; alerted: boolean }>()
 
-  private intervalHandle: ReturnType<typeof setInterval> | null = null
-  private passRunning = false
-  private passQueued = false
-  private queuedSideEffects = false
-
   constructor(deps: ReorgMonitorDeps) {
     this.deps = deps
-    this.pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.graceWindowMs = deps.graceWindowMs ?? DEFAULT_GRACE_WINDOW_MS
     this.now = deps.now ?? Date.now
-    if (deps.onOutcome) this.listeners.add(deps.onOutcome)
-  }
-
-  subscribe(listener: ConfirmationListener): () => void {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
-  }
-
-  start(): void {
-    if (this.intervalHandle) return
-    this.intervalHandle = setInterval(() => this.requestPass(), this.pollIntervalMs)
-  }
-
-  stop(): void {
-    if (!this.intervalHandle) return
-    clearInterval(this.intervalHandle)
-    this.intervalHandle = null
-  }
-
-  /**
-   * Fire-and-forget pass trigger with a trailing edge: a trigger landing mid-pass queues exactly
-   * one re-run instead of interleaving receipt walks. Side-effect requests survive coalescing.
-   */
-  requestPass(opts: { sideEffects?: boolean } = {}): void {
-    if (this.passRunning) {
-      this.passQueued = true
-      this.queuedSideEffects ||= opts.sideEffects ?? false
-      return
-    }
-    void (async () => {
-      this.passRunning = true
-      let sideEffects = opts.sideEffects ?? false
-      try {
-        do {
-          this.passQueued = false
-          await this.doRunPass(sideEffects).catch((err) => {
-            console.warn("[ReorgMonitor] pass failed:", err)
-          })
-          sideEffects = this.queuedSideEffects
-          this.queuedSideEffects = false
-        } while (this.passQueued)
-      } finally {
-        this.passRunning = false
-      }
-    })()
-  }
-
-  /** One awaited pass; test-facing. Concurrent callers coalesce onto requestPass instead. */
-  async runPass(opts: { sideEffects?: boolean } = {}): Promise<ReorgPassSummary | null> {
-    if (this.passRunning) {
-      this.requestPass(opts)
-      return null
-    }
-    this.passRunning = true
-    try {
-      return await this.doRunPass(opts.sideEffects ?? false)
-    } finally {
-      this.passRunning = false
-    }
   }
 
   private emit(outcome: ConfirmationOutcome): void {
-    for (const listener of this.listeners) {
-      try {
-        listener(outcome)
-      } catch (err) {
-        console.warn("[ReorgMonitor] listener threw:", err)
-      }
+    try {
+      this.deps.onOutcome?.(outcome)
+    } catch (err) {
+      console.warn("[ReorgMonitor] listener threw:", err)
     }
   }
 
-  private async doRunPass(sideEffects: boolean): Promise<ReorgPassSummary | null> {
+  /** One pass; its caller runs one at a time. */
+  async runPass({ node, networkId }: ReorgChain): Promise<ReorgPassSummary> {
     const summary: ReorgPassSummary = { checked: 0, demoted: 0, failed: 0, reConfirmed: 0 }
-    const networkId = this.deps.networkId ?? getActiveNetworkId()
-    // Ownership is positive: once the active network is known, an unstamped legacy record is
-    // never reconciled — a node that has never seen its hash reads it as dropped and would
-    // terminal-fail real history from another network.
-    const isActiveNetwork = (recordNetworkId: string | undefined) =>
-      networkId === undefined || recordNetworkId === networkId
     const limit = makeLimiter(this.deps.concurrency ?? DEFAULT_CONCURRENCY)
 
     // Throw → null: transient RPC failure leaves the record unchanged, never classifies as dropped.
     const fetchReceipt = async (txHash: string): Promise<ReorgTxReceiptLike | null> => {
       summary.checked++
       try {
-        return await this.deps.node.getTxReceipt(txHash)
+        return await node.getTxReceipt(txHash)
       } catch {
         return null
       }
@@ -214,17 +137,22 @@ export class ReorgMonitor {
       )
     }
 
-    // --- TransactionStorage rows: every txHash-bearing row across all kinds, including
+    // --- Activity rows: every txHash-bearing row across all kinds, including
     // failed rows for the re-inclusion corrective path. CANCELLED rows were aborted before
     // submit and carry no receipt to reconcile.
     const txStore = this.deps.transactionStorage
     if (txStore) {
-      const rows = (await txStore.getTransactions()).filter(
+      const [recent, pending] = await Promise.all([
+        loadRecords(txStore.query("time", { after: timeKey(this.now() - REORG_MARGIN_MS) })),
+        loadRecords(txStore.query("pending", PENDING)),
+      ])
+      const read = new Map([...recent, ...pending].map((row) => [row.id, row]))
+      const rows = [...read.values()].filter(
         (tx) =>
           !!tx.txHash &&
           tx.tier !== TxStatus.FINALIZED &&
           tx.detailedStatus !== QueueStatus.CANCELLED &&
-          isActiveNetwork(tx.networkId),
+          stampedOn(tx, networkId),
       )
       for (const row of rows) {
         push(() => this.reconcileTxRow(txStore, row, fetchReceipt, summary))
@@ -244,21 +172,18 @@ export class ReorgMonitor {
       })
 
     // Withdrawals: post-mine phases re-verify the burn receipt, and a dropped-burn failure stays
-    // in the walk so its burn showing up revives it. Phase advancement stays owned by
-    // WithdrawalTrackingService.
+    // in the walk so its burn showing up revives it. Phase advancement stays owned by the
+    // withdrawal tracker.
     const withdrawalStore = this.deps.withdrawalStorage
     if (withdrawalStore) {
-      await withdrawalStore.load()
-      const rows = withdrawalStore
-        .list()
-        .filter(
-          (r) =>
-            !!r.l2TxHash &&
-            r.phase !== "done" &&
-            (r.phase !== "failed" || !!r.droppedBurn) &&
-            r.phase !== "submitting" &&
-            isActiveNetwork(r.networkId),
-        )
+      const rows = (await withdrawalStore.all()).filter(
+        (r) =>
+          !!r.l2TxHash &&
+          r.phase !== "done" &&
+          (r.phase !== "failed" || !!r.droppedBurn) &&
+          r.phase !== "submitting" &&
+          stampedOn(r, networkId),
+      )
       for (const row of rows) {
         push(() => this.reconcileWithdrawal(withdrawalStore, row, fetchReceipt, summary))
       }
@@ -270,7 +195,7 @@ export class ReorgMonitor {
       await sipaStore.load()
       const rows = sipaStore
         .list()
-        .filter((r) => r.phase === "claimed" && !!r.claimTxHash && isActiveNetwork(r.networkId))
+        .filter((r) => r.phase === "claimed" && !!r.claimTxHash && stampedOn(r, networkId))
       for (const row of rows) {
         checkRegression(row.claimTxHash as string, async () => {
           await sipaStore.demote(row.sipaAddress, "pendingClaim")
@@ -281,24 +206,6 @@ export class ReorgMonitor {
     }
 
     await Promise.all(jobs)
-
-    if (sideEffects && this.deps.rerunWithdrawalFinalization) {
-      try {
-        await this.deps.rerunWithdrawalFinalization()
-      } catch (err) {
-        console.warn("[ReorgMonitor] withdrawal re-check failed:", err)
-      }
-    }
-
-    // Records are settled; now let note state catch up.
-    if (sideEffects) {
-      try {
-        await this.deps.kickPxeSync?.()
-      } catch (err) {
-        console.warn("[ReorgMonitor] PXE sync kick failed:", err)
-      }
-    }
-
     return summary
   }
 
@@ -330,14 +237,14 @@ export class ReorgMonitor {
         (receipt.blockNumber !== undefined && row.blockNumber !== receipt.blockNumber) ||
         (receipt.blockHash !== undefined && row.blockHash !== receipt.blockHash)
       if (!changed) return
-      await store.updateTransaction(
-        (tx) => (tx.txHash ?? "").toLowerCase() === key,
-        (tx) => {
-          if (receipt.blockNumber !== undefined) tx.blockNumber = receipt.blockNumber
-          if (receipt.blockHash !== undefined) tx.blockHash = receipt.blockHash
-          tx.tier = tier
-        },
-      )
+      const current = await store.byHash(txHash)
+      if (!current) return
+      await store.apply(current.id, {
+        type: "anchored",
+        tier,
+        blockNumber: receipt.blockNumber,
+        blockHash: receipt.blockHash,
+      })
     }
 
     if (status === TxStatus.DROPPED || isRevertedInclusion(receipt)) {
@@ -358,7 +265,7 @@ export class ReorgMonitor {
         if (demoted) {
           // Already inside a reorg episode: terminalize without opening a new one, so the
           // failure alert shares the episode's epoch and dedupes against a grace-expired alert.
-          await store.updateByTxHash(txHash, QueueStatus.FAILED, this.now(), epoch)
+          await store.settleByHash(txHash, QueueStatus.FAILED, this.now(), epoch)
           summary.failed++
           this.grace.delete(key)
           this.emit({ type: "failed", txHash, reorgEpoch: epoch, ...incoming })
@@ -392,7 +299,7 @@ export class ReorgMonitor {
         if (row.status === "failed" && !canCorrectFailed) return
         const hadAlerted = row.status === "failed" || (this.grace.get(key)?.alerted ?? false)
         await writeAnchor(status)
-        await store.updateByTxHash(txHash, QueueStatus.SUCCESS, this.now(), epoch)
+        await store.settleByHash(txHash, QueueStatus.SUCCESS, this.now(), epoch)
         summary.reConfirmed++
         this.grace.delete(key)
         this.emit({ type: "re-confirmed", txHash, hadAlerted, reorgEpoch: epoch })
@@ -403,8 +310,8 @@ export class ReorgMonitor {
 
     if (status === TxStatus.PENDING) {
       // A confirmed row regressed to the mempool: demote and start the grace window.
-      // Still-pending in-flight rows stay with TxLifecycleService (its epoch-less SUCCESS
-      // write must not be fenced by a needless demote); failed rows wait for inclusion.
+      // Still-pending in-flight rows stay with their flow (its epoch-less settle must not be
+      // fenced by a needless demote); failed rows wait for inclusion.
       if (row.status === "success") {
         await store.demoteByTxHash(txHash)
         summary.demoted++
@@ -439,7 +346,7 @@ export class ReorgMonitor {
       // The vouching a payment's corrective needs: an included receipt that says SUCCESS.
       const included = status === TxStatus.FINALIZED || INCLUDED_TIERS.has(status)
       if (!included || receipt.executionResult !== TxExecutionResult.SUCCESS) return
-      if (!(await store.reviveDroppedBurn(row.localId))) return
+      if (!(await store.apply(row.localId, { type: "revived" }))) return
       summary.reConfirmed++
       // The failure's epoch, so the corrective pairs with the alert it answers.
       this.emit({
@@ -456,25 +363,24 @@ export class ReorgMonitor {
       // The node answers "dropped" for any hash it has not seen, and a replica may not have seen
       // a burn mined moments ago. Fail only if a look past the settle window still reads dropped.
       if (row.burnDroppedAt === undefined) {
-        await store.setBurnDroppedAt(row.localId, this.now())
+        await store.apply(row.localId, { type: "burnDropped", at: this.now() })
         return
       }
       if (this.now() - row.burnDroppedAt < DROPPED_BURN_SETTLE_MS) return
     }
 
-    // The store refuses a released record; only a record it changed is reported.
+    // The transition refuses a released record; only a record it changed is reported.
     if (status === TxStatus.DROPPED || isRevertedInclusion(receipt)) {
-      const failed = await store.demote(row.localId, { droppedBurn: true })
-      if (failed.phase !== "failed") return
+      const failed = await store.apply(row.localId, { type: "demoted", droppedBurn: true })
+      if (!failed) return
       summary.failed++
       this.emit({ type: "failed", txHash, reorgEpoch: failed.reorgEpoch, source: "withdrawal" })
     } else if (status === TxStatus.PENDING) {
-      const demoted = await store.demote(row.localId)
-      if (demoted.reorgEpoch === row.reorgEpoch) return
+      if (!(await store.apply(row.localId, { type: "demoted" }))) return
       summary.demoted++
       this.emit({ type: "demoted", txHash })
     } else if (row.burnDroppedAt !== undefined) {
-      await store.setBurnDroppedAt(row.localId, undefined)
+      await store.apply(row.localId, { type: "burnDropped", at: undefined })
     }
   }
 }

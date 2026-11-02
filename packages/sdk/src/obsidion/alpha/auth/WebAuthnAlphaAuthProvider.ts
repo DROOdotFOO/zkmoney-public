@@ -1,6 +1,6 @@
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
-import { AlphaAuthProvider } from "./AlphaAuthProvider.js"
+import type { AlphaAuthProvider } from "./AlphaAuthProvider.js"
 import { MAX_WITNESS_LEN, PASSKEY_SET_INDEX } from "../../../utils/constants.js"
 import {
   type AlphaPasskeySet,
@@ -79,7 +79,7 @@ export class WebAuthnAlphaAuthProvider implements AlphaAuthProvider {
     return this.signFn(challenge, opts)
   }
 
-  async createAuthWit(messageHash: Fr): Promise<AuthWitness> {
+  async createAuthWit(messageHash: Fr, opts?: SignChallengeOptions): Promise<AuthWitness> {
     const set = await this.getPasskeySet()
     const witness: Fr[] = new Array(MAX_WITNESS_LEN).fill(Fr.ZERO)
 
@@ -88,7 +88,7 @@ export class WebAuthnAlphaAuthProvider implements AlphaAuthProvider {
       witness[PUBKEY_Y_INDEX + i] = new Fr(this.pubkeyY[i]!)
     }
 
-    const result = await this.signFn(messageHash.toBuffer())
+    const result = await this.signFn(messageHash.toBuffer(), opts)
 
     // Everything the authenticator signed has to fit the witness, or the digest the account
     // contract rebuilds is not the one that was signed and the signature cannot verify. Refusing

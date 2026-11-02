@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import type { Hex } from "viem"
-import { useAccountContext, useAztecContext } from "@obsidion/front-core"
+import { useResource } from "@obsidion/front-core"
 import {
   GradientSpinner,
   GradientText,
@@ -19,6 +19,7 @@ import { ADDRESS_RE, PastUserAddressInput, type LookupState } from "./PastUserAd
 import { lookupPastUser } from "./pastUserProver"
 import { rememberRegistrationRoute } from "./registrationFunnel"
 import { setVerifyOpen, usePastUserCheck } from "./usePastUserCheck"
+import { useSession } from "../../platform/session"
 
 /** Text that can still become an address as the user types. */
 const ADDRESS_PREFIX_RE = /^0(x[0-9a-fA-F]{0,40})?$/
@@ -74,8 +75,8 @@ export function VerifyPastUserModal(props: {
 }) {
   const { state, check, reset } = usePastUserCheck()
   const wallet = useL1Wallet()
-  const { obsidionAccount } = useAccountContext()
-  const { obsidionWallet } = useAztecContext()
+  const obsidionAccount = useResource(useSession().account)
+  const obsidionWallet = useResource(useSession().wallet)
   const [address, setAddress] = useState<string>(state.account ?? "")
   const [lookup, setLookup] = useState<LookupState>({ kind: "idle" })
   const [attempt, setAttempt] = useState(0)

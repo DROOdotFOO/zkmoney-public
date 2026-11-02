@@ -5,7 +5,7 @@ import { getPendingStore } from "../../../src/features/onboarding/webRegistratio
 import { webStorage } from "../../../src/platform/storage/WebStorageAdapter"
 import { DEMO_L1_TOKEN, DEMO_L2_ADDRESS } from "../../../src/dev/demoFixtures"
 import { seedRegistration } from "./registration-seed"
-import { SIPA, field } from "./data"
+import { ROLLUP, SIPA, field } from "./data"
 import { DEMO_ORIGIN } from "./processing-origin"
 
 const MAINNET_USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address
@@ -28,6 +28,7 @@ export async function seedProcessing(kind: string) {
     recoveryAddress: DEMO_ORIGIN.protocol === "legacy-eoa" ? DEMO_ORIGIN.recoveryAddress : "",
     origin: DEMO_ORIGIN,
     l1ChainId,
+    networkId: ROLLUP,
   }
   if (kind === "conversion") {
     await deposits.upsert(

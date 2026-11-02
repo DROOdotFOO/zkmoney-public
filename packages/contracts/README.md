@@ -10,7 +10,7 @@ loads compiled artifacts into PXE. Specifically:
 - `ContractService` and `ServiceContractBase` — the artifact loader
   and the base class every per-contract service inherits from.
 - The transformed-injectable artifact format produced by
-  `scripts/transform-artifact.js` and the loader on the consumer side.
+  `scripts/transform-artifact.cjs` and the loader on the consumer side.
 - Backward-compat re-exports of `@obsidion/core` types/constants so
   consumers that pull them from `@obsidion/contracts` keep working.
 - The offline paylink codegen under `scripts/` (see below).

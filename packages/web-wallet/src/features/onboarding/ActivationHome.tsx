@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react"
 import type { InviteNotice } from "./steps/TagAvailabilityNotes"
 import { formatUnits } from "viem"
-import { depositOwed, useAccountContext, useAztecContext } from "@obsidion/front-core"
+import { depositOwed, useResource } from "@obsidion/front-core"
 import { GradientHeroCard, GradientSpinner, Icon, TopNavIconButton } from "@obsidion/web-ds"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import { getConfig } from "../../config/env"
@@ -38,6 +38,7 @@ import { SecureNameNoticeCard } from "./SecureNameNoticeCard"
 import { saveTagDraft } from "./tagPick"
 import { VerifyPastUserModal } from "./VerifyPastUserModal"
 import { DepositScreen } from "../deposit/DepositScreen"
+import { useSession } from "../../platform/session"
 
 // A drawn tag is free, so its deposit is the earned-tag total.
 const RANDOM_TAG_DEPOSIT = usdFigure(formatUnits(askedTotal("earned_tag"), 18))
@@ -326,11 +327,12 @@ export function ActivationHome() {
   const verified = usePastUserVerified()
   const verifying = useVerifyOpen()
   const free = usePastUserCheck().state.step === "confirmed"
-  const { obsidionAccount } = useAccountContext()
-  const { obsidionWallet } = useAztecContext()
+  const obsidionAccount = useResource(useSession().account)
+  const obsidionWallet = useResource(useSession().wallet)
   const [own, setOwn] = useState(false)
   const [depositing, setDepositing] = useState(false)
-  if (!open || open.stage === "failed") return null
+  // Unknown while the withdrawals load: Home waits rather than ask for a deposit already funded.
+  if (!open || open.stage === undefined || open.stage === "failed") return null
   const { record } = open
   const route = registrationRouteFor(record.tag)
   const pastUser = route === "past_user"

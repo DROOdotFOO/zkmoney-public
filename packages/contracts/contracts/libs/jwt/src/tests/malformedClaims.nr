@@ -15,7 +15,7 @@ use crate::{verifyJwt::{VerifiedJwtClaims, verify_jwt}};
 // Valid sender address for all tests
 global VALID_SENDER: Field = 0x08cad1e03676948f661bc00df74eadac619fc961aa8bf9ee7ca9e9b64291485c;
 
-// 1. Run: pnpm tsx test/utils/malformedJwtGenerator.ts (or create a test that calls generateAllMalformedJwtFixtures())
+// 1. Run: pnpm tsx test/utils/jwt/malformedJwtGenerator.ts (or create a test that calls generateAllMalformedJwtFixtures())
 // 2. Run: node scripts/sync-malformed-jwt-to-noir.mjs
 // 3. Uncomment the tests below
 

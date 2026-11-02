@@ -70,7 +70,7 @@ import {
   assertSubsidySweepsSipa,
   readSweepRouteLiveness,
   readUserOpSIPAImplementation,
-} from "./sipaIntents.js"
+} from "./sipa/sipaIntents.js"
 
 /** The deployment a rotation runs on. A `MetadataDestination` satisfies it. */
 export interface BackupRotationTuple {
@@ -507,13 +507,16 @@ export interface PersistedRotation {
   signature: Hex
 }
 
-/** What this device knows on its own; the record is bound to it, never to the chain. */
+/**
+ * What this device knows on its own; the record is bound to it, never to the chain. The resolver
+ * operator is not here: the device cannot derive the account's own, and the root key's signature
+ * already covers the one the record was built over.
+ */
 export interface RotationLocalTruth {
   /** The L2 address of a passkey set under this wallet's master key. */
   derive: (keys: readonly R1PublicKeyArg[]) => Promise<AztecAddress> | AztecAddress
   /** The stealth public key the registration wrote into the record. */
   publicKey: { x: bigint; y: bigint }
-  resolverOperator: Address
 }
 
 export type PersistedRotationVerdict =
@@ -657,9 +660,6 @@ export async function verifyPersistedRotation(
   }
   if (builtOver.publicKey.x !== truth.publicKey.x || builtOver.publicKey.y !== truth.publicKey.y) {
     return corrupt("the record built over names another public key")
-  }
-  if (!sameHex(builtOver.resolverOperator, truth.resolverOperator)) {
-    return corrupt("the record built over names another resolver operator")
   }
   const preconditionHash = conditionHash(
     encodeFunctionResult({

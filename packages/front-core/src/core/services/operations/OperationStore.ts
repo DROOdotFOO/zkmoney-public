@@ -13,7 +13,7 @@ import { TxHash } from "@aztec-labs/stdlib/tx"
 import type { AztecNode } from "@aztec-labs/stdlib/interfaces/client"
 import type { IStorageAdapter } from "../../storages/adapter"
 import { RecordStorage } from "../bridge/RecordStorage"
-import { logger } from "src/utils/logger"
+import { logger } from "../../../utils/logger"
 import { isFailedSubmission } from "../transactions/trackSubmission"
 
 /**

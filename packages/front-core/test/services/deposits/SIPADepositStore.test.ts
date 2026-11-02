@@ -7,14 +7,16 @@ import {
   SIPADepositStore,
   isUnfundedSipaDeposit,
   type SIPADepositPhase,
+  type SIPADepositFields,
   type SIPADepositRecord,
 } from "../../../src/core/services/deposits/SIPADepositStore"
 
 const SIPA_ADDR = "0xAbCdEf0123456789abcdef0123456789abcdef01" as Address
 const RECIPIENT = "0x2589c51355cabd0722def6dabd818a309c4a8fc2d4cbc3ce2bf2eaaf59318456"
 
-function makeFallback(): Omit<SIPADepositRecord, "sipaAddress" | "phase"> {
+function makeFallback(): SIPADepositFields {
   return {
+    networkId: "0xnet",
     recipientL2Address: RECIPIENT,
     messageSecret: "0x" + "11".repeat(32),
     recipientHash: "0x" + "22".repeat(32),
@@ -326,6 +328,14 @@ describe("SIPADepositStore version 2 migration", () => {
     })
     // A second run finds nothing left to migrate.
     expect(await store.migrateSweepRows(NETWORK, PINNED)).toEqual([])
+  })
+
+  it("migrates a record with no stamp, or with this network's in another case", async () => {
+    const store = await storeWith([
+      v1({ networkId: undefined }),
+      v1({ sipaAddress: `0x${"be".repeat(20)}`, networkId: NETWORK.toUpperCase() }),
+    ])
+    expect(await store.migrateSweepRows(NETWORK, PINNED)).toHaveLength(2)
   })
 
   it("gives the latest sweep the record's fee, and no older sweep a guessed one", async () => {

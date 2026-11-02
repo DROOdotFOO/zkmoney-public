@@ -1,47 +1,25 @@
-import { ReactNode } from "react"
-import {
-  AztecProvider,
-  ContractServiceProvider,
-  AccountProvider,
-  AssetProvider,
-  useContractServiceContext,
-  OidcKeyRegistryProvider,
-} from "./"
-import type { IContractServiceStorage, ContractServiceOptions } from "@obsidion/sdk"
-import type { IStorageAdapter, NetworkStorageConfig } from "src/core"
-import type { UseAuthenticator, UseAssetOptions } from "src/hooks"
+import type { ReactNode } from "react"
+import { ContractServiceProvider } from "./useContractServiceContext"
+import type { ContractService } from "@obsidion/sdk"
+import type { IStorageAdapter, NetworkStorageConfig } from "../core"
+import type { Resource } from "../engine/resource"
 import { StorageProvider, useStorageContext } from "./useStorageContext"
 
-/**
- * ObsidionCoreProvider wraps the core infrastructure providers needed for the Obsidion application:
- * - AztecProvider: Manages PXE, Aztec node, and network connections
- * - ContractServiceProvider: Manages contract services and interactions
- */
+/** The storage singletons and the page's contract service. */
 export const ObsidionCoreProvider = ({
   children,
   networkConfig,
   storageAdapter,
-  contractServiceStorage,
-  contractServiceOptions,
-  isTestAccount,
-  registerSponsorFpc,
+  contractService,
 }: {
   children: ReactNode
   networkConfig: NetworkStorageConfig
   storageAdapter: IStorageAdapter
-  contractServiceStorage: IContractServiceStorage
-  contractServiceOptions: ContractServiceOptions
-  isTestAccount?: boolean
-  registerSponsorFpc?: boolean
+  contractService: Resource<ContractService>
 }) => {
   return (
     <StorageProvider networkConfig={networkConfig} storageAdapter={storageAdapter}>
-      <ObsidionCoreProviderInner
-        contractServiceStorage={contractServiceStorage}
-        contractServiceOptions={contractServiceOptions}
-        isTestAccount={isTestAccount}
-        registerSponsorFpc={registerSponsorFpc}
-      >
+      <ObsidionCoreProviderInner contractService={contractService}>
         {children}
       </ObsidionCoreProviderInner>
     </StorageProvider>
@@ -50,56 +28,14 @@ export const ObsidionCoreProvider = ({
 
 const ObsidionCoreProviderInner = ({
   children,
-  contractServiceStorage,
-  contractServiceOptions,
-  isTestAccount,
-  registerSponsorFpc,
+  contractService,
 }: {
   children: ReactNode
-  contractServiceStorage: IContractServiceStorage
-  contractServiceOptions: ContractServiceOptions
-  isTestAccount?: boolean
-  registerSponsorFpc?: boolean
+  contractService: Resource<ContractService>
 }) => {
   const { storageAdapter } = useStorageContext()
   if (!storageAdapter) return null
   return (
-    <AztecProvider isTestAccount={isTestAccount}>
-      <ContractServiceProvider
-        storage={contractServiceStorage}
-        options={contractServiceOptions}
-        registerSponsorFpc={registerSponsorFpc}
-      >
-        {children}
-      </ContractServiceProvider>
-    </AztecProvider>
-  )
-}
-
-/**
- * ObsidionAppProvider wraps all the application-level providers:
- * - AccountProvider: Manages user accounts and wallet state
- * - AssetProvider: Manages token assets and balances
- * - OidcKeyRegistryProvider: Exposes the on-chain OidcKeyRegistry surface that
- *   paylink-by-email claim depends on (issuer-scoped JWK / aud validation).
- */
-export const ObsidionAppProvider = ({
-  children,
-  useAuthenticator,
-  assetOptions,
-}: {
-  children: ReactNode
-  useAuthenticator: UseAuthenticator
-  assetOptions?: UseAssetOptions
-}) => {
-  const { contractService } = useContractServiceContext()
-  if (!contractService) return null
-
-  return (
-    <AccountProvider useAuthenticator={useAuthenticator}>
-      <AssetProvider assetOptions={assetOptions}>
-        <OidcKeyRegistryProvider>{children}</OidcKeyRegistryProvider>
-      </AssetProvider>
-    </AccountProvider>
+    <ContractServiceProvider contractService={contractService}>{children}</ContractServiceProvider>
   )
 }

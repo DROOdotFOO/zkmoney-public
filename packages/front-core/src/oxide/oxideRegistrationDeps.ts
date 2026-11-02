@@ -10,7 +10,6 @@ import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
-  type AuthKeyEntry,
   type R1PublicKeyArg,
   type SipaDeployArgs,
   NamePortalAbi,
@@ -37,7 +36,7 @@ import type { SIPADepositStore } from "../core/services/deposits/SIPADepositStor
 import {
   MAX_NONCE,
   deriveRecoveryAddress,
-  Network,
+  type Network,
   SipaSelfResolver,
   deriveSharedSecret,
   readDepositFee,
@@ -48,7 +47,7 @@ import {
   type SipaK1Point,
   type SipaResolverOperatorRecord,
 } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 import { AccountStorage } from "../core/storages/AccountStorage"
 import type {
@@ -197,6 +196,43 @@ export function legacyRegistrationSalt(
   const { day, nonce } = registrationDayNonce(nameHash)
   const scalar = deriveStealthKey(masterSecret).scalar
   return deriveSharedSecret(resolverPublicKey, scalar, day, nonce).toString() as Hex
+}
+
+/**
+ * The salt and recipient commitment of each registration address this wallet may have handed out for
+ * `nameHash`: the self-SIPA key's, then one per resolver key. Neither commits to the fee, so a sweep's
+ * portal deposit is found from these alone. The same resolution as the deriver's.
+ */
+export async function registrationCommitments(
+  masterSecret: FieldLike,
+  nameHash: Hex,
+  l2Address: Hex,
+  resolverPublicKeys: readonly SipaK1Point[],
+): Promise<{ salt: Hex; commitment: Hex }[]> {
+  const { day, nonce } = registrationDayNonce(nameHash)
+  const selfResolver = new SipaSelfResolver(selfSipaResolverKeys(masterSecret))
+  const recipient = AztecAddress.fromStringUnsafe(l2Address)
+  const salts = [
+    undefined,
+    ...resolverPublicKeys.map((key) => legacyRegistrationSalt(masterSecret, key, nameHash)),
+  ]
+  const found = await Promise.all(
+    salts.map(async (salt) => {
+      // The recovery account shapes only the recovery commitment, which is not read here.
+      const resolution = await selfResolver.resolve(
+        recipient,
+        day,
+        nonce,
+        EthAddress.ZERO,
+        salt === undefined ? undefined : Fr.fromHexString(salt),
+      )
+      return {
+        salt: resolution.messageSecret.toString() as Hex,
+        commitment: resolution.recipientHash.toString() as Hex,
+      }
+    }),
+  )
+  return [...new Map(found.map((f) => [f.salt, f])).values()]
 }
 
 /**
@@ -419,7 +455,7 @@ export function createRegistrationDepositReader(deps: {
       if (record?.sweeps?.length) return record.sweeps.map((s) => ({ txHash: s.sweepTxHash }))
       return record?.sweepTxHash ? [{ txHash: record.sweepTxHash }] : []
     },
-    floor: async (token, account) => {
+    floor: async (_token, account) => {
       const terms = deps.termsFor?.(account)
       const [schedule, sweep] = await Promise.all([
         terms

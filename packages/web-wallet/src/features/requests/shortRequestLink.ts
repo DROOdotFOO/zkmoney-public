@@ -2,12 +2,11 @@ import { useCallback, useEffect, useMemo, useReducer, useState } from "react"
 import { NO_FROM } from "@aztec-labs/aztec.js/account"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import {
-  RequestStorage,
+  requestLinkOperationId,
   trackSubmission,
   TxInFlightError,
-  useAccountContext,
-  useAztecContext,
   useContractServiceContext,
+  useResource,
 } from "@obsidion/front-core"
 import {
   base64UrlToBytes,
@@ -26,7 +25,6 @@ import {
   shortLinksEnabled,
 } from "@obsidion/sdk"
 import { requestAmountLabel } from "../../ui/format"
-import { requestLinkOperationId } from "../operations/operationEntries"
 import { getOperationStore, runOperation } from "../operations/operations"
 import {
   claimSponsorContext,
@@ -35,6 +33,7 @@ import {
 } from "../onboarding/claimSponsorship"
 import { RAIL_REGISTERED } from "../onboarding/rails"
 import { shortRequestUrl } from "../shortLinks"
+import { session, useSession } from "../../platform/session"
 import type { ReceiveCode } from "../receive/receiveCode"
 
 /** What a short link publishes: a request, its full link and its amount. A Receive code is one. */
@@ -77,7 +76,7 @@ async function announceCode(
     ? await buildClaimSubscribePayload({ ...common, gate: subscribe.gate })
     : await buildClaimSponsorPayload(common)
   // The operation is this tx's only record, and holds its hash once sent.
-  const submission = trackSubmission(operationId, () => {})
+  const submission = trackSubmission(operationId)
   try {
     // The user tags the tx, so the FPC's refreshed SubscriptionNote stays discoverable.
     await wallet.sendTx(payload, {
@@ -92,7 +91,7 @@ async function announceCode(
     if (inFlight) throw new TxInFlightError(inFlight, e)
     throw e
   } finally {
-    await submission.stop()
+    submission.stop()
   }
   if (subscribe) noteSubscribed(account, fpcAddress, railId)
 }
@@ -155,8 +154,8 @@ const changed = () => listeners.forEach((listener) => listener())
  * that states no locator, and in the QR until the short one resolves.
  */
 export function useShortRequestLink(code: ShareableRequest | undefined) {
-  const { obsidionWallet } = useAztecContext()
-  const { obsidionAccount } = useAccountContext()
+  const obsidionWallet = useResource(useSession().wallet)
+  const obsidionAccount = useResource(useSession().account)
   const { contractService } = useContractServiceContext()
   const [, rerender] = useReducer((n: number) => n + 1, 0)
   useEffect(() => {
@@ -193,9 +192,7 @@ export function useShortRequestLink(code: ShareableRequest | undefined) {
         changed()
         // Later shares of this request, from Activity too, use the short link.
         void Promise.resolve()
-          .then(() =>
-            RequestStorage.get().setShortLink(requestId, shortRequestUrl(current.key.seed)),
-          )
+          .then(() => session().requests.setShortLink(requestId, shortRequestUrl(current.key.seed)))
           .catch((e: unknown) => console.warn("[request] short link not saved:", e))
       },
       (e: unknown) => {

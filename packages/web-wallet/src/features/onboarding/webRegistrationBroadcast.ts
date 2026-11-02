@@ -28,7 +28,7 @@ import {
   encodeLegacyRegistrationProofs,
   BroadcasterContract,
   OxideSipaIntent,
-  ContractService,
+  type ContractService,
   ensureContractRegisteredInPXE,
   type ObsidionAccount,
   type ObsidionWallet,

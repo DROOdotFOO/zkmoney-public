@@ -16,11 +16,14 @@ export interface TransactionGroup {
 export function TransactionsSheet({
   groups,
   hydrated,
+  end,
   onClose,
   children,
 }: {
   groups: TransactionGroup[]
   hydrated: boolean
+  /** Shown after the last group: what reads the next page. */
+  end?: ReactNode
   onClose: () => void
   /** The rows' detail sheets, which open over this one. */
   children?: ReactNode
@@ -48,6 +51,7 @@ export function TransactionsSheet({
                 <div className="ww-cutover__txns-rows">{group.rows}</div>
               </div>
             ))}
+          {hydrated && end}
         </div>
       </CutoverSheet>
       {children}

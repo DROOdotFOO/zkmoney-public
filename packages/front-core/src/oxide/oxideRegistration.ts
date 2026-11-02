@@ -59,7 +59,7 @@ import { credentialIdToMetadata } from "./oxideWebAuthn"
 import { consentDigest } from "./oxideRegistrationData"
 import { signAccountDigest, type AccountPasskey } from "./accountSignature"
 import type { SipaOrigin } from "../core/services/deposits/SIPADepositStore"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 /**
  * The shared L1 reader (`createOxideL1Reader`) — used by registration, the passkey-first enter flow,

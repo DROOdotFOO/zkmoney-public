@@ -1,9 +1,3 @@
-.ww-migration {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  padding: 8px 0;
-}
 .ww-migration__lead {
   margin: 0;
   font-size: 16px;
@@ -17,34 +11,6 @@
   line-height: 1.45;
   text-align: center;
   color: var(--text-secondary);
-}
-.ww-migration__residuals {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: 15px;
-  line-height: 1.45;
-  text-align: center;
-  color: var(--text-secondary);
-}
-/* 32px from the text above, as in Figma. */
-.ww-migration > .zkm-primary-btn {
-  margin-top: 12px;
-}
-.zkm-btn-reset.ww-migration__later {
-  align-self: center;
-  min-height: 28px;
-  margin-top: -8px;
-  padding: 2px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-.zkm-btn-reset.ww-migration__later:disabled {
-  opacity: 0.4;
 }
 .ww-upgrade__badge {
   align-self: center;

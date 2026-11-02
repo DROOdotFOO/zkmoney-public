@@ -1,0 +1,50 @@
+export default {
+  status: {
+    registered: "Registered, funds on the way",
+    confirming: "Confirming on-chain",
+    registering: "Registering @{tag}",
+    received: "Deposit received, waiting for the sweep",
+    refund: "Refund needed for earned price",
+  },
+  label: "Registration deposit details",
+  title: "Registration deposit",
+  close: "Close",
+  rows: {
+    name: "Name",
+    tag: "{tag}.zk.money",
+    started: "Started",
+    seen: "Deposit seen",
+    swept: "Swept",
+    deposited: "Deposited",
+    fee: "Registration fee",
+    reserved: "Reserved until",
+    address: "Deposit address",
+    funder: "Funder",
+    funding: "Funding transaction",
+    sweep: "Sweep transaction",
+  },
+  sweepNote:
+    "The sweep registers the name and bridges what is left after the fee into this wallet.",
+  admitted: {
+    recovered: "This deposit was recovered. Register again at the earned price.",
+    recover:
+      "Your wallet is open. Recover this deposit before registering at the earned price. Do not send more to this address.",
+    pending:
+      "Your deposit opened the wallet. Registration is still pending. Do not send another deposit.",
+    register: "Register at earned price",
+    recoverAction: "Recover registration deposit",
+    check: "Check registration status",
+  },
+  limitInfo: "About the deposit limit",
+  sweepStage: {
+    signing: "Waiting for your wallet…",
+    browser: "Finish in your browser…",
+    confirming: "Confirming…",
+  },
+  walletStarting: "The wallet is still starting. Try again in a moment.",
+  sweepFailed: "The sweep didn't go through.",
+  destination: "Ethereum address for the network tip",
+  passkey: "Confirm your passkey…",
+  sweep: "Sweep manually",
+  connectFirst: "Connect wallet first.",
+} as const

@@ -1,11 +1,11 @@
-import { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
+import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
 import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import { getContractInstanceFromInstantiationParams } from "@aztec-labs/stdlib/contract"
 import { SPONSORED_FPC_SALT } from "@aztec-labs/constants"
-import { PXE } from "@aztec-labs/pxe/client/lazy"
+import type { PXE } from "@aztec-labs/pxe/client/lazy"
 import { SponsoredFeePaymentMethod } from "@aztec-labs/aztec.js/fee"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 export async function getSponsoredFeePaymentMethod(pxe: PXE) {
   const paymentContract = await getDeployedSponsoredFPCAddress(pxe)

@@ -1,9 +1,9 @@
 import { useCallback, useState } from "react"
 import type { Address } from "viem"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
+import { useStore } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { ticketActivation } from "../paylink/ticketContinuation"
-import { getWithdrawalStore } from "../withdraw/withdrawGateway"
 import { useOpenRegistration } from "./openRegistration"
 import {
   quoteExpired,
@@ -20,6 +20,7 @@ import {
 import { formatDepositDue, formatDepositSeen } from "./steps/DepositTermsRows"
 import { useDepositWatch } from "./useDepositWatch"
 import { useRegistrationPublishStalled } from "./webRegistration"
+import { session } from "../../platform/session"
 
 export interface RegistrationAsk {
   /** The asked total, undefined while it is read. */
@@ -52,9 +53,11 @@ export function useRegistrationAsk(): RegistrationAsk | null {
   useChainReadRetry(readSchedule && chainAmounts === undefined, retryReads)
   const watch = useDepositWatch(record ? (record.sipaAddress as Address) : null)
   const stalled = useRegistrationPublishStalled(record)
-  if (!record || stalled || record.l1ChainId !== config.l1ChainId) return null
+  const burns = useStore(session().withdrawals.list)
+  // Unknown while the withdrawals load: a ticket's burn may already fund it.
+  if (!record || !burns.hydrated || stalled || record.l1ChainId !== config.l1ChainId) return null
   if (quoteExpired(terms, Date.now()) || (unsignedFallback && chainAmounts === null)) return null
-  if (ticketActivation(record, terms, getWithdrawalStore().list())) return null
+  if (ticketActivation(record, terms, burns.records)) return null
   const schedule = scheduleForRecord(
     terms,
     unsignedFallback ? chainAmounts ?? undefined : undefined,

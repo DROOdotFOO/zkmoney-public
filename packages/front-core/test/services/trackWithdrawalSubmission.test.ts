@@ -1,17 +1,17 @@
+import { memoryBackend } from "../../src/engine/memoryBackend"
+import { openDatabase } from "../../src/engine/database"
 import { beforeEach, expect, it, vi } from "vitest"
 import { TxStatus, TxExecutionResult } from "@aztec-labs/stdlib/tx"
 import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
-import { WithdrawalStorage } from "../../src/core/services/bridge/WithdrawalStorage"
-import { trackWithdrawalSubmission } from "../../src/core/services/bridge/WithdrawalTrackingService"
-import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
-import { resetSingleton } from "../__test-helpers__/resetSingleton"
+import { createWithdrawals, type Withdrawals } from "../../src/engine/withdrawals"
+import { trackWithdrawalSubmission } from "../../src/engine/withdrawalTracker"
 
 const hash = `0x${"11".repeat(32)}` as const
-let store: WithdrawalStorage
+let store: Withdrawals
 beforeEach(async () => {
-  resetSingleton(WithdrawalStorage as unknown as { instance: WithdrawalStorage | null })
-  store = WithdrawalStorage.get(new InMemoryStorageAdapter())
+  store = createWithdrawals({ db: openDatabase(memoryBackend()) })
   await store.create({
+    networkId: "0xnet",
     localId: "test",
     recipient: `0x${"22".repeat(20)}`,
     recipientProvenance: "saved-recipient",
@@ -34,7 +34,7 @@ it.each([TxStatus.DROPPED, TxStatus.PROVEN])(
       }
       expect(await monitor.recover(node as never)).toBeNull()
     } finally {
-      await monitor.stop()
+      monitor.stop()
     }
   },
 )
@@ -49,22 +49,15 @@ it("keeps an ambiguous transport failure and ignores unrelated operations", asyn
   try {
     provingProgress.emitStageStart(ProvingStage.Mining, "unrelated", hash)
     expect(await monitor.recover(node as never)).toBeNull()
+    await monitor.stamp(hash)
     provingProgress.emitStageStart(ProvingStage.Mining, "op", hash)
     expect(await monitor.recover(node as never)).toMatchObject({
       phase: "submitting",
       l2TxHash: hash,
     })
   } finally {
-    await monitor.stop()
+    monitor.stop()
   }
   provingProgress.emitStageStart(ProvingStage.Mining, "op", `0x${"33".repeat(32)}`)
-  expect(store.get("test")?.l2TxHash).toBe(hash)
-})
-
-it("does not fail a mined burn when persisting the broadcast hash fails", async () => {
-  const patch = vi.spyOn(store, "patch").mockRejectedValueOnce(new Error("Storage unavailable"))
-  const monitor = trackWithdrawalSubmission(store, "test", "op")
-  provingProgress.emitStageStart(ProvingStage.Mining, "op", hash)
-  await expect(monitor.stop()).resolves.toBeUndefined()
-  patch.mockRestore()
+  expect((await store.get("test"))?.l2TxHash).toBe(hash)
 })

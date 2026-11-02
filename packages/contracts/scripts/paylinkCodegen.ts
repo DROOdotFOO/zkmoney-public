@@ -145,7 +145,7 @@ export async function refreshZkJwtVkeyHash(): Promise<ZkJwtVkeyHashRefreshResult
   //     Without this copy the two diverge: paylink_email gets compiled against the
   //     fresh VKEY_HASH while clients generate proofs against the stale artifact,
   //     causing `Recursive Ultra Verifier: VK Hash Mismatch` at claim time.
-  //     `bash scripts/build_contracts.sh` does an equivalent copy for paylinks
+  //     `bash packages/contracts/scripts/build_contracts.sh` does an equivalent copy for paylinks
   //     ("Copying compiled outputs … to src/artifacts/target/paylink_*"); this
   //     mirrors that behavior for the zkJWT circuit.
   const zkJwtCanonicalDir = resolve(repoRoot, "packages/contracts/src/artifacts/target/zkJWT")
@@ -258,7 +258,7 @@ export async function compilePaylinks(contractDirs: string[]): Promise<PaylinkCo
 
   for (const contractDir of contractDirs) {
     console.log(`   Compiling ${contractDir}...`)
-    execSync(`bash ${repoRoot}/scripts/build_contracts.sh -c ${contractDir}`, {
+    execSync(`bash ${repoRoot}/packages/contracts/scripts/build_contracts.sh -c ${contractDir}`, {
       cwd: repoRoot,
       stdio: "inherit",
     })

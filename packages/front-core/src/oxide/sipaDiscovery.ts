@@ -6,7 +6,7 @@ import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
 import type { Address, PublicClient } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
-  Network,
+  type Network,
   ensureContractRegisteredInPXE,
   fetchHistoricalSipaResolverOperators,
   getBroadcasterArtifact,

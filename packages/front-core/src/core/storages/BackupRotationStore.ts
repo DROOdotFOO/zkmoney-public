@@ -4,6 +4,7 @@ import type { PersistedRotation } from "@obsidion/sdk"
 import type { Address, Hex } from "viem"
 import { PASSKEY_ENVELOPE_BYTES } from "../../oxide/passkeyEnvelope.js"
 import { RecordStorage } from "../services/bridge/RecordStorage.js"
+import type { SipaOrigin } from "../services/deposits/SIPADepositStore.js"
 import { BACKUP_ROTATION_STORAGE_KEY } from "./storage-constants.js"
 import type { IStorageAdapter } from "./adapter.js"
 
@@ -58,6 +59,11 @@ export interface BackupRotationPlan {
   address: string
   /** Atomic token units, as decimal strings. */
   fundingAmount: string
+  /**
+   * What reaches the deposit address: the funding less the withdrawal's own charges. The recovery
+   * card shows this, not the funding, which never all lands. A record without it shows no amount.
+   */
+  deposited?: string
   credited: string
   /** Prompts now, then prompts to move the balance. */
   approvals: number
@@ -161,6 +167,29 @@ export function storeRotation(rotation: PersistedRotation): BackupRotationStored
       envelope: rotation.add.envelope,
     },
     signature: rotation.signature,
+  }
+}
+
+/**
+ * The deposit address's CREATE2 origin, as its recovery needs it: the args that deploy the user-op
+ * clone when no sweep has, and the account whose signature, with the salt, the clone accepts.
+ */
+export function rotationDepositOrigin(
+  rotation: Pick<BackupRotationStored, "owner" | "deployArgs">,
+  factories: { sipaFactory: Address; accountFactory: Address },
+): SipaOrigin {
+  const { deployArgs } = rotation
+  return {
+    protocol: "account",
+    sipaFactory: factories.sipaFactory,
+    implementation: deployArgs.implementation,
+    intentHash: deployArgs.intentHash,
+    recoveryCommitment: deployArgs.recoveryCommitment,
+    rollupVersion: deployArgs.rollupVersion,
+    resweepable: deployArgs.resweepable,
+    forwardingTable: deployArgs.forwardingTable,
+    recoveryAccount: rotation.owner,
+    accountFactory: factories.accountFactory,
   }
 }
 
@@ -271,6 +300,8 @@ export interface MoveRun {
   m: number
   /** `m` is an upper bound: deposits were planned over. */
   depositBound: boolean
+  /** The user closed the prompt for the next chunk; nothing is sent until they ask again. */
+  declined?: true
   chunks: MoveChunkRecord[]
 }
 
@@ -296,6 +327,7 @@ export interface BackupRotationRecord {
   sweep?: { index: string; blockHash: Hex; credited: string }
   /** Money held at the deposit address when the change ran without a sweep: reported as stranded once the attempt ends, the salt kept for its recovery. */
   unswept?: true
+  /** The L1 transaction that sent the deposit address's money back out. */
   recovery?: { txHash: Hex }
   /** The re-root's checkpoints, each written as it completes. */
   reroot?: { batch?: Hex; switched?: boolean; rebound?: boolean; receiveCode?: boolean }
@@ -358,6 +390,7 @@ function isPlan(v: unknown): v is BackupRotationPlan {
     isObj(v) &&
     isStr(v.address) &&
     isDecimal(v.fundingAmount) &&
+    optional(v.deposited, isDecimal) &&
     isDecimal(v.credited) &&
     isNum(v.approvals) &&
     isNum(v.moves)
@@ -466,6 +499,7 @@ const isRun = (v: unknown): v is MoveRun =>
   isNum(v.plannedAt) &&
   isNum(v.m) &&
   isBool(v.depositBound) &&
+  optional(v.declined, (d) => d === true) &&
   arrayOf(v.chunks, isChunk)
 
 /** Whether a saved value is a record every reader can act on, stored under its own key. */
@@ -532,6 +566,27 @@ export const fundingLanding = (funding: BackupFunding): boolean =>
 export const fundingStarted = (record: Pick<BackupRotationRecord, "fundings">): boolean =>
   record.fundings.length > 0
 
+/**
+ * Whether the rotation has yet to switch the wallet onto the two-key account. Until then the wallet
+ * acts as the one-key account, so a paylink made now could be refunded only to that account.
+ */
+export function rerootAhead(
+  record: Pick<BackupRotationRecord, "phase" | "suspended" | "reroot">,
+): boolean {
+  switch (record.phase === "attention" ? record.suspended : record.phase) {
+    case "created":
+    case "signed":
+    case "published":
+    case "funded":
+      return true
+    case "swept":
+    case "installed":
+      return record.reroot?.switched !== true
+    default:
+      return false
+  }
+}
+
 /** The latest run's progress as "n of m": its included or mined chunks over its plan. */
 export function moveProgress(
   record: Pick<BackupRotationRecord, "move">,
@@ -542,6 +597,28 @@ export function moveProgress(
     (c) => c.state === "mined" || (c.state === "included" && c.effect !== "reverted"),
   ).length
   return { included, total: run.m, depositBound: run.depositBound }
+}
+
+/** Whether the move waits for the user to ask again after they closed a chunk's prompt. */
+export const moveDeclined = (record: Pick<BackupRotationRecord, "phase" | "move">): boolean =>
+  (record.phase === "rerooted" || record.phase === "moved") && !!record.move?.runs.at(-1)?.declined
+
+/**
+ * Whether the balance move can be spending now: from the re-root's switch until the move ends. Its
+ * chunks pay with the one-key account's subscription note, the same note the two-key account's
+ * sponsored sends pay with. A move parked at `attention` sends nothing until the user retries it.
+ */
+export function movesBalance(record: Pick<BackupRotationRecord, "phase" | "reroot">): boolean {
+  switch (record.phase) {
+    case "swept":
+    case "installed":
+      return record.reroot?.switched === true
+    case "rerooted":
+    case "moved":
+      return true
+    default:
+      return false
+  }
 }
 
 /**

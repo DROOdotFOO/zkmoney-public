@@ -19,6 +19,7 @@ import {
   type RecoveryMetadata,
 } from "@obsidion/sdk"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
+import { SessionChangedError } from "../../platform/auth/sessionErrors"
 import {
   holdsSubscription,
   type SponsorAccounts,
@@ -71,7 +72,7 @@ export async function sponsorAccounts(
   const keys = record.passkeySet ?? [record.pubkey]
   if (keys.length < 2 || (await deps.holdsSubscription(acting))) return self
   const found = await discoverFeePayer(keys, async (passkey) => {
-    const account = await accountFor(deps, record, passkey)
+    const account = await singleKeyAccount(deps, record, passkey)
     return {
       address: account.getAddress().toString(),
       subscribed: await deps.holdsSubscription(account),
@@ -90,26 +91,56 @@ async function payerAccount(
   record: RecoveryMetadata,
   entry: FeePayerEntry,
 ): Promise<ObsidionAccount> {
-  const account = await accountFor(deps, record, entry.passkey)
+  const account = await singleKeyAccount(deps, record, entry.passkey)
   if (!sameAddress(entry.address, account.getAddress())) {
     throw new Error("the fee payer's key does not derive the account it names")
   }
   return account
 }
 
-/** The single-key account of `passkey`: what the wallet holds at its address, else registered now. */
-async function accountFor(
-  deps: SponsorAccountsDeps,
+/** Registrations of one address, per wallet: each starts once the one before it settled. */
+const registrations = new WeakMap<ObsidionWallet, Map<string, Promise<unknown>>>()
+
+function oneAtATime<T>(wallet: ObsidionWallet, address: string, run: () => Promise<T>): Promise<T> {
+  const byAddress = registrations.get(wallet) ?? new Map<string, Promise<unknown>>()
+  registrations.set(wallet, byAddress)
+  const key = address.toLowerCase()
+  const next = (byAddress.get(key) ?? Promise.resolve()).then(run, run)
+  const settled = next.catch(() => {})
+  byAddress.set(key, settled)
+  void settled.then(() => byAddress.get(key) === settled && byAddress.delete(key))
+  return next
+}
+
+/**
+ * The single-key account of `passkey`, registered one at a time per address. `held` takes the
+ * account the wallet holds, else registers it with `providerOver`'s signer; `sign` registers it
+ * with the session's own signer every time, so a refusing one an earlier session left is replaced.
+ * A registration whose session signer changed on the way throws `SessionChangedError`, so it never
+ * lands after a newer session's.
+ */
+export async function singleKeyAccount(
+  deps: Pick<SponsorAccountsDeps, "wallet" | "session">,
   record: RecoveryMetadata,
   passkey: string,
+  mode: "held" | "sign" = "held",
 ): Promise<ObsidionAccount> {
   const keys = await deps.session.sessionKeys()
   if (!keys) throw new Error("wallet is locked — cannot resolve the fee payer")
   const address = await deps.wallet.deriveAccountAddress(keys.secretKey, [passkey])
-  const held = await heldAccount(deps.wallet, address)
-  if (held) return held
-  const provider = await providerOver(deps.session, keys.authProvider, record, passkey)
-  return deps.wallet.createObsidionAccount(keys.secretKey, provider)
+  return oneAtATime(deps.wallet, address.toString(), async () => {
+    if (mode === "held") {
+      const held = await heldAccount(deps.wallet, address)
+      if (held) return held
+    }
+    const signs = await signsFor(keys.authProvider, record, passkey)
+    if (mode === "sign" && !signs) throw new Error("this session's passkey cannot sign for it")
+    const provider = providerOver(deps.session, record, passkey, signs)
+    if ((await deps.session.sessionKeys())?.authProvider !== keys.authProvider) {
+      throw new SessionChangedError()
+    }
+    return deps.wallet.createObsidionAccount(keys.secretKey, provider)
+  })
 }
 
 async function heldAccount(
@@ -124,19 +155,26 @@ async function heldAccount(
   }
 }
 
+/** Whether the session signs for `passkey`'s account: the record's key and its own are that key. */
+async function signsFor(
+  sessionProvider: AlphaAuthProvider,
+  record: RecoveryMetadata,
+  passkey: string,
+): Promise<boolean> {
+  return sameKey(record.pubkey, passkey) && sameKey(await pubkeyHexOf(sessionProvider), passkey)
+}
+
 /**
  * The signer of the single-key account of `passkey`: the session's own passkey when the session
  * signs with that key, else one that refuses to sign, since the account can only read and nullify
  * with the master key.
  */
-async function providerOver(
+function providerOver(
   session: SponsorSession,
-  sessionProvider: AlphaAuthProvider,
   record: RecoveryMetadata,
   passkey: string,
-): Promise<AlphaAuthProvider> {
-  const signs =
-    sameKey(record.pubkey, passkey) && sameKey(await pubkeyHexOf(sessionProvider), passkey)
+  signs: boolean,
+): AlphaAuthProvider {
   if (signs) {
     return session.providerFor({
       credentialId: record.credentialId,

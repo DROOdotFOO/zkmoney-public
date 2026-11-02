@@ -4,16 +4,16 @@
  * never share on-chain state: a file that needs a subscription makes it itself.
  */
 import { computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
-import { BaseAccount } from "@aztec-labs/aztec.js/account"
-import { SponsoredFeePaymentMethod } from "@aztec-labs/aztec.js/fee"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { BaseAccount } from "@aztec-labs/aztec.js/account"
+import type { SponsoredFeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { Contract } from "@aztec-labs/aztec.js/contracts"
 import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import type { PXE } from "@aztec-labs/pxe/server"
 import { keccak256, toBytes, type Hex } from "viem"
 import {
-  TestTokenContract,
+  type TestTokenContract,
   ClaimFPCContract,
   ContractService,
   DEFAULT_CONTRACTS,
@@ -27,8 +27,8 @@ import {
   computeIntentsOnlyAuthWitHash,
   padIntentHashes,
 } from "../../../src/feePaymentMethod/index.js"
-import { ObsidionWalletTest } from "../../../src/obsidion/ObsidionWalletTest.js"
-import { ObsidionAccount } from "../../../src/obsidion/alpha/account/ObsidionAccount.js"
+import type { ObsidionWalletTest } from "../../../src/obsidion/ObsidionWalletTest.js"
+import type { ObsidionAccount } from "../../../src/obsidion/alpha/account/ObsidionAccount.js"
 import { EcdsaK256AlphaAuthProvider } from "../../../src/obsidion/alpha/auth/EcdsaK256AlphaAuthProvider.js"
 import { deployTestToken, mintTokensToPrivate } from "../../utils/index.js"
 import { setupTest } from "../../utils/helper.js"
@@ -45,7 +45,7 @@ import {
   testL1Client,
   testNamePortalAccount,
   type TestRegistrant,
-} from "../../utils/claimFpcFixture.js"
+} from "../../utils/claimFpc/claimFpcFixture.js"
 import { emptyTransferMeta } from "@obsidion/core/constants"
 
 export const TRANSFER_AMOUNT = 10n ** 18n

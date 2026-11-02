@@ -100,6 +100,7 @@ export async function seedRegistrationRail(
   const rail = SIPADepositStore.get(webStorage)
   await rail.load()
   await rail.upsert(sipa, patch, {
+    networkId: "0xnet",
     recipientL2Address: record.l2Address,
     tokenAddress: token,
     tokenSymbol: "DAI",

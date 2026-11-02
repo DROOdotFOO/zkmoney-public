@@ -8,7 +8,7 @@ import {
 } from "@oxide/l1-contracts/sipa_recovery.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { buildDepositIntent, buildSipaRecoverCall, type SipaDeployArgs } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 import { isNativeEth } from "./sipaFunding"
 import {

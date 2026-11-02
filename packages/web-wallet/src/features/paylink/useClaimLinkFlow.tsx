@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { parseUnits } from "viem"
-import { useAztecContext, useContractServiceContext, TxInFlightError } from "@obsidion/front-core"
+import {
+  useContractServiceContext,
+  TxInFlightError,
+  useStore,
+  useResource,
+} from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { EmailMismatchError } from "@obsidion/sdk"
 import {
@@ -16,7 +21,7 @@ import { failureCode, fireEvent } from "../../lib/analytics"
 import { useDepositSkim } from "../onboarding/registrationTerms"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { ClaimReviewStep } from "../onboarding/steps/ClaimReviewStep"
-import { getWithdrawalStore, type WithdrawStage } from "../withdraw/withdrawGateway"
+import type { WithdrawStage } from "../withdraw/withdrawGateway"
 import { usePolledChainSeconds } from "./chainTime"
 import {
   ClaimLinkModal,
@@ -83,6 +88,8 @@ import {
 import type { PaymentLink } from "./types"
 import { useLinkVoucher, usePaylinkDeps } from "./usePaylinkDeps"
 import { useActionGuard, useActionVerdict } from "../actionGate"
+import { balanceMovingCopy } from "../backupPasskey/backupPasskeyCopy"
+import { session, useSession } from "../../platform/session"
 
 export interface ClaimLinkFlow {
   /** The claim prompt, or the sheet for the beats that need the user, when one is on screen. */
@@ -193,13 +200,14 @@ export function useClaimLinkFlow(
   requested = false,
   onReviewClosed?: () => void,
 ): ClaimLinkFlow {
-  const { obsidionWallet, rollupAddress } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
+  const rollupAddress = obsidionWallet?.networkId
   const { contractService } = useContractServiceContext()
   const claimDeps = usePaylinkDeps()
   const chainNow = usePolledChainSeconds(obsidionWallet?.node)
   const guard = useActionGuard()
   const claimVerdict = useActionVerdict("claim")
-  const upgradeFirst = claimVerdict !== "open"
+  const claimHeld = claimVerdict !== "open"
 
   // Claim-funnel top for the Home handoff surface — /link redirects signed-in visitors here
   // without emitting. Once per fragment, as soon as the network identity (part of the join key)
@@ -221,13 +229,13 @@ export function useClaimLinkFlow(
   const [tapped, setTapped] = useState(false)
   // The signup this link paid for, when this account still owes it the claim's burn. Read again at
   // the click: the terms can lapse, and the burn can go out elsewhere, after the render.
+  // Until the burns load, a signup's own burn is missing and it reads as unfunded or funded elsewhere.
+  const burnList = useStore(session().withdrawals.list)
+  const burnsLoaded = burnList.hydrated
+  const burns = burnList.records
   const readContinuation = () =>
-    fragment && claimDeps
-      ? ticketSignupContinuation(
-          fragment,
-          claimDeps.account.getAddress().toString(),
-          getWithdrawalStore().list(),
-        )
+    fragment && claimDeps && burnsLoaded
+      ? ticketSignupContinuation(fragment, claimDeps.account.getAddress().toString(), burns)
       : null
   const continuation = readContinuation()
   // This account's registration still waiting for its deposit, when no registration is this
@@ -235,8 +243,12 @@ export function useClaimLinkFlow(
   // Read off the entered identity too, so the wallet's own boot does not decide the modal.
   const accountAddress = claimDeps?.account.getAddress().toString() ?? loadWalletIdentity()?.address
   const unfunded =
-    fragment && accountAddress && continuation === null && !ticketSignupCommitted(fragment)
-      ? unfundedRegistration(accountAddress, getWithdrawalStore().list())
+    fragment &&
+    accountAddress &&
+    burnsLoaded &&
+    continuation === null &&
+    !ticketSignupCommitted(fragment)
+      ? unfundedRegistration(accountAddress, burns)
       : null
   const [registrationsLoaded, setRegistrationsLoaded] = useState(false)
   useEffect(() => {
@@ -252,7 +264,7 @@ export function useClaimLinkFlow(
   useEffect(() => {
     if (!fragment) return
     const offRegistrations = onTicketRegistrationsChanged(rerender)
-    const offBurns = getWithdrawalStore().onListChanged(rerender)
+    const offBurns = session().withdrawals.list.subscribe(rerender)
     return () => {
       offRegistrations()
       offBurns()
@@ -264,23 +276,12 @@ export function useClaimLinkFlow(
   // The link's registration moved past the claim, its funds seen and the name confirmed: the link
   // is done with, and so is its review.
   useEffect(() => {
-    if (!fragment || !claimDeps || continuation !== null) return
+    if (!fragment || !claimDeps || !burnsLoaded || continuation !== null) return
     if (!ticketSignupCommitted(fragment)) return
-    let live = true
-    // Decided once the burns are loaded: until then, after a reload, the link's own burn is missing
-    // and its registration reads as funded by other means.
-    void getWithdrawalStore()
-      .load()
-      .then(() => {
-        if (!live || readContinuation() !== null || !ticketSignupCommitted(fragment)) return
-        clearClaimStash(fragment)
-        onDone()
-      })
-    return () => {
-      live = false
-    }
+    clearClaimStash(fragment)
+    onDone()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fragment, claimDeps, continuation === null])
+  }, [fragment, claimDeps, burnsLoaded, continuation === null])
   const navigate = useNavigate()
   const config = getConfig()
   const sweepFee = useDepositSkim(config, continuation !== null || !!unfunded)
@@ -418,7 +419,9 @@ export function useClaimLinkFlow(
       !link ||
       link.status !== "unclaimed" ||
       isClaimRunning(fragment) ||
-      (auto ? claimWait : offeredWait) !== 0
+      (auto ? claimWait : offeredWait) !== 0 ||
+      // An entered account's link may fund its registration: nothing is claimed before the burns load.
+      (!!accountAddress && !burnsLoaded)
     )
       return false
     if (continuation) {
@@ -521,8 +524,8 @@ export function useClaimLinkFlow(
   const autoHeld =
     fragment === null
       ? "no link"
-      : upgradeFirst
-      ? "upgrade first"
+      : claimHeld
+      ? `claim ${claimVerdict}`
       : continuation?.activation.state !== "ready"
       ? `ticket ${continuation?.activation.state ?? (claimDeps ? "not this account's" : "unread")}`
       : !link
@@ -749,7 +752,7 @@ export function useClaimLinkFlow(
     continuation === null &&
     !!accountAddress &&
     !detectExpired &&
-    (!registrationsLoaded || (!fundRefused && fundQuote === undefined))
+    (!registrationsLoaded || !burnsLoaded || (!fundRefused && fundQuote === undefined))
   useEffect(() => {
     if (!detecting || !fragment) return
     const timer = setTimeout(() => setDetectExpiredFor(fragment), DETECT_BUDGET_MS)
@@ -926,6 +929,7 @@ export function useClaimLinkFlow(
         countdown={countdown}
         loading={loading}
         mustUpgrade={claimVerdict === "upgrade"}
+        waiting={claimVerdict === "moving" ? balanceMovingCopy.message : undefined}
         onRetryRead={offerRetry ? retryRead : undefined}
         onClose={dismiss}
         onClaim={() => guard("claim", () => void claim())}

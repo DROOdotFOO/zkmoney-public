@@ -125,6 +125,18 @@ describe("scanRefundableDeposits", () => {
     await expect(scanRefundableDeposits(TARGET, [source(A, 1)])).rejects.toThrow("did not derive")
   })
 
+  it("finds a commitment-only source's sweeps without reading a balance at its placeholder", async () => {
+    observe({ [A]: { ...seen([sweep(5n, 60n)]), balances: new Map() } })
+
+    const scan = await scanRefundableDeposits(TARGET, [{ ...source(A, 1), direct: true }])
+
+    expect(observation.observeSipas.mock.calls[0]![1].subjects[0]).toMatchObject({ direct: true })
+    expect(scan.refundable).toEqual([
+      expect.objectContaining({ messageLeafIndex: 5n, amount: 60n }),
+    ])
+    expect(scan.inTransit).toEqual([])
+  })
+
   it("reads nothing for an account with no sources", async () => {
     expect(await scanRefundableDeposits(TARGET, [])).toEqual({ refundable: [], inTransit: [] })
     expect(observation.observeSipas).not.toHaveBeenCalled()

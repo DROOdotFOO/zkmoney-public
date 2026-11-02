@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
-import { useAztecContext, useContractServiceContext } from "@obsidion/front-core"
+import { useContractServiceContext, useResource } from "@obsidion/front-core"
 import {
   DEFAULT_CONTRACTS,
   decodeLinkFragment,
@@ -24,6 +24,7 @@ import { usePolledChainSeconds } from "./chainTime"
 import { withExpiry } from "./claimWindow"
 import type { PaymentLink } from "./types"
 import { useShortLinkLookup } from "../shortLinks"
+import { useSession } from "../../platform/session"
 
 /**
  * `/link#fragment`. A short link's fragment is looked up on chain first and replaced by the full
@@ -41,7 +42,7 @@ export function LinkViewScreen() {
 
 function ShortLinkView({ seed }: { seed: Uint8Array }) {
   const navigate = useNavigate()
-  const { obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
   const { contractService } = useContractServiceContext()
   const node = obsidionWallet?.node
   const resolve = useMemo(() => {
@@ -90,7 +91,8 @@ function ShortLinkView({ seed }: { seed: Uint8Array }) {
  */
 function FullLinkView({ fragment }: { fragment: string }) {
   const navigate = useNavigate()
-  const { obsidionWallet, rollupAddress } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
+  const rollupAddress = obsidionWallet?.networkId
   const { contractService } = useContractServiceContext()
 
   const [decoded, unsupported] = useMemo((): [PaymentLink | null, boolean] => {

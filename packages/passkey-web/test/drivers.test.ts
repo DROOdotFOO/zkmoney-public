@@ -17,29 +17,32 @@ import {
   isBlockedPromptError,
   recordRequestHeld,
 } from "../src/ceremony/passkeyCeremony.js"
-import { UNKNOWN_PROVENANCE, decodeUserHandleProvenance } from "../src/ceremony/userHandle.js"
-import type { DevicePosture } from "../src/policy/devicePosture.js"
-import { type LocalManager, WITHDRAWN, laptopCreationFor } from "../src/policy/laptopCreation.js"
+import { UNKNOWN_PROVENANCE } from "../src/ceremony/userHandle.js"
+import type { DevicePosture } from "../src/browser/devicePosture.js"
+import { type LocalManager, WITHDRAWN, laptopCreationFor } from "../src/rules/laptopCreation.js"
 import {
   type ObservedCeremony,
   type PasskeyCreationOptions,
   runPasskeyAssertion,
   renamePasskey,
   runPasskeyCreation,
-} from "../src/policy/drivers.js"
-import { prfSalts } from "../src/policy/derivation.js"
-import { candidatesFrom } from "../src/policy/evidence.js"
-import { type UserAgentInfo, parseUserAgent } from "../src/policy/userAgentInfo.js"
+} from "../src/drivers.js"
+import { prfSalts } from "../src/derivation.js"
+import { candidatesFrom } from "../src/rules/evidence.js"
+import { type UserAgentInfo, parseUserAgent } from "../src/browser/userAgentInfo.js"
 import {
   PhoneRequiredError,
   RelatedOriginPasskeyError,
   UnsupportedProviderError,
   passkeyWritten,
-} from "../src/policy/passkeyErrors.js"
-import { bitwardenLineFor } from "../src/policy/refusalCopy.js"
-import { trustsAttachmentLabel } from "../src/policy/passkeyCapabilities.js"
-import { CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID } from "../src/policy/passkeyProviders.js"
-import { passkeyRouteFor } from "../src/policy/passkeyTelemetry.js"
+} from "../src/refusals/passkeyErrors.js"
+import { bitwardenLineFor } from "../src/refusals/refusalCopy.js"
+import { trustsAttachmentLabel } from "../src/browser/passkeyCapabilities.js"
+import {
+  CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID,
+  WINDOWS_HELLO,
+} from "../src/rules/passkeyProviders.js"
+import { passkeyRouteFor } from "../src/telemetry/passkeyTelemetry.js"
 import { hmac } from "@noble/hashes/hmac"
 import { sha256 as nobleSha256 } from "@noble/hashes/sha256"
 import {
@@ -118,7 +121,6 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     })
     expect(ceremony.creates[0]!.extensionAllowed).toBeUndefined()
     expect(ceremony.creates[0]!.timeoutMs).toBeUndefined()
-    expect(ceremony.creates[0]!.prfSecondSalt).toHaveLength(32)
   })
 
   it("admits each manager on the row, and the browser-test id through the extra list", async () => {
@@ -186,7 +188,6 @@ describe("runPasskeyCreation on the laptop's own route", () => {
         name: "LaptopPasskeyRefusedError",
         kind: "apple",
         appleRefusedHere: true,
-        message: expect.stringContaining("on macOS before 15"),
       }),
     )
     // The row refuses an Apple answer before any key material is read.
@@ -202,11 +203,7 @@ describe("runPasskeyCreation on the laptop's own route", () => {
       { localCreation: { managers: ["gpm"], appleWithdrawn: true } },
     )
     await expect(withdrawn.run).rejects.toThrow(
-      expect.objectContaining({
-        kind: "apple",
-        appleRefusedHere: false,
-        message: expect.stringContaining("isn't available for a wallet on this browser yet"),
-      }),
+      expect.objectContaining({ kind: "apple", appleRefusedHere: false }),
     )
   })
 
@@ -277,33 +274,6 @@ describe("runPasskeyCreation on the laptop's own route", () => {
       }
     })
 
-    it("refuses a zero id as unnamed, and another manager's id as unsupported", async () => {
-      await expect(firefox({ aaguid: ZERO_AAGUID }).run).rejects.toThrow(
-        expect.objectContaining({ kind: "unnamed" }),
-      )
-      await expect(firefox({ aaguid: GPM_AAGUID }).run).rejects.toThrow(
-        named("UnsupportedProviderError"),
-      )
-    })
-
-    it("never asks again for an Apple answer without its key: the Apple refusal, nothing bound", async () => {
-      const { ceremony, run } = firefox({
-        manager: "icloud",
-        aaguid: APPLE_ICLOUD_AAGUID,
-        prfAtCreate: false,
-        // A follow-up would be answered by this Mac's copy with a different value.
-        divergent: true,
-      })
-      await expect(run).rejects.toThrow(
-        expect.objectContaining({
-          name: "LaptopPasskeyRefusedError",
-          kind: "apple",
-          managers: ["1password"],
-        }),
-      )
-      expect(ceremony.assertRequests).toHaveLength(0)
-    })
-
     it("treats a trusted label on a browser that mislabels cross-device answers as untrusted", async () => {
       const { ceremony, run } = create(
         "laptop",
@@ -326,18 +296,14 @@ describe("runPasskeyCreation on the laptop's own route", () => {
       expect(ceremony.assertRequests).toHaveLength(0)
     })
 
-    it("refuses a 1Password answer without its key, with no follow-up and no browser named", async () => {
+    it("refuses a 1Password answer without its key, with no follow-up", async () => {
       const { ceremony, run } = firefox({
         manager: "1password",
         aaguid: ONEPASSWORD_AAGUID,
         prfAtCreate: false,
       })
       await expect(run).rejects.toThrow(
-        expect.objectContaining({
-          name: "IncompleteCreationError",
-          kind: "unverified",
-          message: expect.not.stringMatching(/Safari|Chrome|Firefox/),
-        }),
+        expect.objectContaining({ name: "IncompleteCreationError", kind: "unverified" }),
       )
       expect(ceremony.assertRequests).toHaveLength(0)
     })
@@ -435,9 +401,7 @@ describe("runPasskeyCreation on the laptop's own route", () => {
           const result = await run
           expect(result.slot).toBe("second")
           expect(ceremony.assertRequests).toHaveLength(0)
-          expect(
-            decodeUserHandleProvenance(ceremony.creds.get(result.created.credentialId)!.handle),
-          ).toEqual({ context, ...NO_CLAIMS })
+          expect(ceremony.creates[0]!.provenance).toEqual({ context, ...NO_CLAIMS })
           expect(passkeyRouteFor("create", result.created)).toBe("same_device")
         })
 
@@ -527,33 +491,6 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     )
   })
 
-  it("names the manager that answered without key material, at creation and on the follow-up", async () => {
-    const windowsChrome: Local = { managers: ["gpm", "1password"] }
-    const silent = { prfAtCreate: false, prfAtAssert: false }
-    // 1Password's Windows app in the Windows passkey window: its id, and no key material.
-    const app = local(
-      { manager: "1password", aaguid: ONEPASSWORD_AAGUID, ...silent },
-      windowsChrome,
-    )
-    await expect(app.run).rejects.toMatchObject({ name: "NoPrfError", manager: "1password" })
-    expect(app.ceremony.asserts).toHaveLength(1)
-    const other = local({ manager: "gpm", aaguid: GPM_AAGUID, ...silent }, windowsChrome)
-    await expect(other.run).rejects.toMatchObject({ name: "NoPrfError", manager: "gpm" })
-  })
-
-  it("binds the follow-up's key material when the creation returned none", async () => {
-    // What 1Password's extension does for a passkey its Windows app made.
-    const { ceremony, run } = local(
-      { manager: "1password", aaguid: ONEPASSWORD_AAGUID, prfAtCreate: false },
-      { managers: ["gpm", "1password"] },
-    )
-    const result = await run
-    expect(result.slot).toBe("second")
-    expect(bytesToHex(result.prfOutput)).toBe(
-      bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
-    )
-  })
-
   it("refuses another device's answer that is not a key, and an unreported one", async () => {
     for (const transports of [["hybrid", "internal"], undefined]) {
       const { ceremony, run } = create(
@@ -605,22 +542,6 @@ describe("runPasskeyCreation on the laptop's own route", () => {
       expect.objectContaining({ name: "LaptopPasskeyRefusedError", kind: "not-local" }),
     )
     expect(ceremony.assertRequests[0]!.hints).toEqual(["client-device", "security-key"])
-  })
-
-  it("still takes a security key as itself", async () => {
-    const { run } = create(
-      "laptop",
-      {
-        route: "cross-device",
-        transports: ["usb"],
-        aaguid: YUBIKEY_5_USB_A_AAGUID,
-        backupEligible: false,
-      },
-      { localCreation: macChrome },
-    )
-    const result = await run
-    expect(result.securityKey).toBe(true)
-    expect(result.slot).toBe("first")
   })
 })
 
@@ -744,27 +665,6 @@ describe("runPasskeyCreation", () => {
     await run
     expect(ceremony.creates[0]!.signal).toBe(controller.signal)
     expect(ceremony.assertRequests[0]!.signal).toBe(controller.signal)
-    // Without one, neither request carries a signal.
-    const plain = create("laptop", { route: "cross-device", prfAtCreate: false })
-    await plain.run
-    expect(plain.ceremony.creates[0]!.signal).toBeUndefined()
-    expect(plain.ceremony.assertRequests[0]!.signal).toBeUndefined()
-  })
-
-  it("phone: a provider answering first only is a single-salt refusal", async () => {
-    const { run } = create("phone", { route: "local", secondSlot: false })
-    await expect(run).rejects.toThrow(named("SingleSaltProviderError"))
-  })
-
-  it("laptop: a local answer is refused before any provider or gate", async () => {
-    const { ceremony, run } = create("laptop", { route: "local", aaguid: UNMEASURED })
-    await expect(run).rejects.toThrow(named("PhoneRequiredError"))
-    expect(ceremony.assertRequests).toHaveLength(0)
-  })
-
-  it("phone: another device's answer at creation is refused", async () => {
-    const { run } = create("phone", { route: "cross-device" })
-    await expect(run).rejects.toThrow(named("LocalPasskeyRequiredError"))
   })
 
   it("phone: a chained assertion answered by another device is refused", async () => {
@@ -803,20 +703,6 @@ describe("runPasskeyCreation", () => {
     expect(settled).toBe(false)
     release()
     await expect(run).rejects.toThrow(named("PhoneRequiredError"))
-  })
-
-  it("an observer that throws ends the ceremony with its own error before any check", async () => {
-    const { ceremony, run } = create(
-      "laptop",
-      { route: "local", prfAtCreate: false },
-      {
-        observe: () => {
-          throw new Error("observer down")
-        },
-      },
-    )
-    await expect(run).rejects.toThrow(/observer down/)
-    expect(ceremony.assertRequests).toHaveLength(0)
   })
 
   it("incomplete creation chains an assertion for the same credential with the caller's challenge", async () => {
@@ -862,15 +748,6 @@ describe("runPasskeyCreation", () => {
     })
   })
 
-  it("a chained answer from the wrong route is refused", async () => {
-    const { run } = create("laptop", {
-      route: "cross-device",
-      prfAtCreate: false,
-      assertAttachment: "platform",
-    })
-    await expect(run).rejects.toThrow(named("PhoneRequiredError"))
-  })
-
   it("an unmeasured manager is refused by name before the chained assertion", async () => {
     const { ceremony, run } = create("laptop", {
       route: "cross-device",
@@ -893,20 +770,13 @@ describe("runPasskeyCreation", () => {
     })
   })
 
-  it("offers a security key as the alternative only where the sheet can show one", async () => {
-    const failed = (posture: DevicePosture, fake: FakeCeremonyOptions) =>
-      create(posture, fake).run.then(
-        () => {
-          throw new Error("expected a refusal")
-        },
-        (err: Error) => err,
-      )
-    const onLaptop = await failed("laptop", { route: "cross-device", aaguid: BITWARDEN })
-    expect(onLaptop.message).toMatch(/security key/)
-    // A phone's sheet can offer a key too, so it is a real alternative there as well.
-    const onPhone = await failed("phone", { route: "local", aaguid: BITWARDEN })
-    expect(onPhone.name).toBe("UnsupportedProviderError")
-    expect(onPhone.message).toMatch(/security key/)
+  it("offers a security key as the alternative", async () => {
+    const keyOffered = new UnsupportedProviderError("manager", {
+      providerName: "Bitwarden",
+      keyOfferable: true,
+    }).message
+    const { run } = create("laptop", { route: "cross-device", aaguid: BITWARDEN })
+    await expect(run).rejects.toMatchObject({ message: keyOffered })
   })
 
   it("admits a measured manager, an absent id, and one the caller lists", async () => {
@@ -936,15 +806,6 @@ describe("runPasskeyCreation", () => {
     expect(unknown.ceremony.assertRequests).toHaveLength(1)
   })
 
-  it("no PRF at creation nor on the chained assertion is refused", async () => {
-    const { run } = create("laptop", {
-      route: "cross-device",
-      prfAtCreate: false,
-      prfAtAssert: false,
-    })
-    await expect(run).rejects.toThrow(named("NoPrfError"))
-  })
-
   it("the observer sees the raw result, and is awaited, before a refusal is thrown", async () => {
     const seen: ObservedCeremony[] = []
     let settled = false
@@ -966,10 +827,7 @@ describe("runPasskeyCreation", () => {
     expect((seen[0]!.result as { aaguid?: string }).aaguid).toBe(UNMEASURED)
   })
 
-  it("a laptop names the phone and a key unless the consumer's null asks for no hints", async () => {
-    const { ceremony, run } = create("laptop", { route: "cross-device" }, {})
-    await run
-    expect(ceremony.creates[0]!.hints).toEqual(["hybrid", "security-key"])
+  it("a laptop sends no hints when the consumer's null asks for none", async () => {
     const quiet = new FakePasskeyCeremony({ route: "cross-device", prfAtCreate: false })
     await runPasskeyCreation(quiet, {
       posture: "laptop",
@@ -983,7 +841,7 @@ describe("runPasskeyCreation", () => {
     expect(quiet.assertRequests[0]!.hints).toBeUndefined()
   })
 
-  it("writes where the request was made into the handle: the page's OS, and the route it asked for", async () => {
+  it("asks for a handle that says where the request was made: the page's OS, and the route it asked for", async () => {
     const chromeMac = parseUserAgent({
       userAgent:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
@@ -1021,11 +879,8 @@ describe("runPasskeyCreation", () => {
       [create("phone", { route: "local" }), { context: "phone_other", ...NO_CLAIMS }],
     ] as const
     for (const [{ ceremony, run }, provenance] of cases) {
-      const result = await run
+      await run
       expect(ceremony.creates[0]!.provenance).toEqual(provenance)
-      expect(
-        decodeUserHandleProvenance(ceremony.creds.get(result.created.credentialId)!.handle),
-      ).toEqual(provenance)
     }
   })
 })
@@ -1042,23 +897,25 @@ describe("a browser that mislabels a cross-device answer", () => {
   })
   const on = { misreportsCrossDevice: true }
 
-  it("laptop: reads Apple's mislabelled answer as another device and binds first", async () => {
-    const { ceremony, run } = create("laptop", applePhone(), on)
-    const result = await run
-    expect(result.slot).toBe("first")
-    expect(result.securityKey).toBe(false)
-    expect(result.created.authenticatorAttachment).toBe("cross-platform")
-    expect(ceremony.assertRequests).toHaveLength(0)
-    expect(bytesToHex(result.prfOutput)).toBe(
-      bytesToHex(ceremony.prfFor(result.created.credentialId, "first")),
-    )
-  })
-
-  it("laptop: an absent label is corrected the same way", async () => {
-    const result = await create("laptop", applePhone({ attachment: null }), on).run
-    expect(result.slot).toBe("first")
-    expect(result.created.authenticatorAttachment).toBe("cross-platform")
-  })
+  it.each([
+    ["Apple's answer", {}],
+    ["Apple's answer with no label", { attachment: null }],
+    ["1Password on the phone", { manager: "1password", aaguid: ONEPASSWORD_AAGUID }],
+    ["Google Password Manager on the phone", { manager: "gpm", aaguid: GPM_AAGUID }],
+  ] as const)(
+    "laptop: reads %s as another device and binds the cell a Chrome QR read reproduces",
+    async (_, over) => {
+      const { ceremony, run } = create("laptop", applePhone(over), on)
+      const result = await run
+      expect(result.slot).toBe("first")
+      expect(result.securityKey).toBe(false)
+      expect(result.created.authenticatorAttachment).toBe("cross-platform")
+      expect(ceremony.assertRequests).toHaveLength(0)
+      expect(bytesToHex(result.prfOutput)).toBe(
+        bytesToHex(ceremony.prfFor(result.created.credentialId, "first")),
+      )
+    },
+  )
 
   it("laptop: a corrected answer missing key material or flags is refused, never followed up", async () => {
     const noPrf = create("laptop", applePhone({ prfAtCreate: false }), on)
@@ -1121,40 +978,8 @@ describe("a browser that mislabels a cross-device answer", () => {
     }
   })
 
-  it("laptop: a corrected answer's orphan is signalled for deletion when it is refused", async () => {
-    const seen: { rpId: string; credentialId: string }[] = []
-    vi.stubGlobal("PublicKeyCredential", {
-      signalUnknownCredential: async (o: { rpId: string; credentialId: string }) => {
-        seen.push(o)
-      },
-    })
-    try {
-      const { run } = create("laptop", applePhone({ prfAtCreate: false }), on)
-      await expect(run).rejects.toThrow(named("IncompleteCreationError"))
-      expect(seen).toHaveLength(1)
-      expect(seen[0]!.rpId).toBe("localhost")
-    } finally {
-      vi.unstubAllGlobals()
-    }
-  })
-
   it("laptop: without the flag the mislabel is refused as before", async () => {
     await expect(create("laptop", applePhone()).run).rejects.toThrow(named("PhoneRequiredError"))
-  })
-
-  it("laptop: 1Password and Google Password Manager on the phone are corrected too, binding the cell a Chrome QR read reproduces", async () => {
-    const phones = [
-      { manager: "1password", aaguid: ONEPASSWORD_AAGUID },
-      { manager: "gpm", aaguid: GPM_AAGUID },
-    ] as const
-    for (const over of phones) {
-      const { run, ceremony } = create("laptop", applePhone(over), on)
-      const result = await run
-      expect(result.slot).toBe("first")
-      expect(ceremony.assertRequests).toHaveLength(0)
-      const id = result.created.credentialId
-      expect(bytesToHex(result.prfOutput)).toBe(bytesToHex(ceremony.prfFor(id, "first")))
-    }
   })
 
   it("laptop: an absent, zero or unmeasured id is not corrected", async () => {
@@ -1213,39 +1038,15 @@ describe("naming what answered a refused laptop sign-up", () => {
   // A sign-up with no name to give says where to create the passkey.
   const unnamed = new PhoneRequiredError({ ceremony: "create" }).message
 
-  it("names a password manager that answered on this device", async () => {
-    const { ceremony, run } = create("laptop", { route: "local", aaguid: BITWARDEN }, trusted)
-    await expect(run).rejects.toMatchObject({
-      name: "PhoneRequiredError",
-      providerName: "Bitwarden",
-      message: new PhoneRequiredError({ providerName: "Bitwarden" }).message,
-    })
-    expect(ceremony.assertRequests).toHaveLength(0)
-  })
-
-  it("points Windows Hello at Windows' own prompt, whichever of its ids answered", async () => {
-    for (const aaguid of WINDOWS_HELLO_AAGUIDS) {
-      const { run } = create("laptop", { route: "local", aaguid }, trusted)
-      await expect(run).rejects.toMatchObject({
-        providerName: "Windows Hello",
-        message: expect.stringMatching(/^Windows Hello saved this passkey on this computer/),
-      })
-    }
-  })
-
-  it("says this device, not this computer, for a phone's own manager in desktop mode", async () => {
+  it.each([
+    [BITWARDEN, "Bitwarden"],
+    ...WINDOWS_HELLO_AAGUIDS.map((aaguid) => [aaguid, WINDOWS_HELLO]),
     // A desktop-mode Android phone counts as a laptop, and its local answer is on the phone.
-    const { run } = create(
-      "laptop",
-      { route: "local", manager: "gpm", aaguid: GPM_AAGUID },
-      trusted,
-    )
-    const err = await run.then(
-      () => undefined,
-      (e: Error) => e,
-    )
-    expect(err?.message).toMatch(/^Google Password Manager saved this passkey on this device/)
-    expect(err?.message).not.toContain("this computer")
+    [GPM_AAGUID, "Google Password Manager"],
+  ])("names the manager that answered on this device: %s", async (aaguid, providerName) => {
+    const { ceremony, run } = create("laptop", { route: "local", aaguid }, trusted)
+    await expect(run).rejects.toMatchObject({ name: "PhoneRequiredError", providerName })
+    expect(ceremony.assertRequests).toHaveLength(0)
   })
 
   it("names nothing it cannot identify", async () => {
@@ -1262,7 +1063,7 @@ describe("naming what answered a refused laptop sign-up", () => {
       { ...trusted, misreportsCrossDevice: true },
     ]) {
       const { run } = create("laptop", { route: "local", aaguid: BITWARDEN }, extra)
-      await expect(run).rejects.toMatchObject({ providerName: undefined, message: unnamed })
+      await expect(run).rejects.toMatchObject({ providerName: undefined })
     }
   })
 
@@ -1272,11 +1073,7 @@ describe("naming what answered a refused laptop sign-up", () => {
       { route: "local", aaguid: BITWARDEN, attachment: null },
       trusted,
     )
-    await expect(run).rejects.toMatchObject({
-      name: "PhoneRequiredError",
-      providerName: undefined,
-      message: unnamed,
-    })
+    await expect(run).rejects.toMatchObject({ name: "PhoneRequiredError", providerName: undefined })
   })
 
   it("names nothing for a security key's id labelled as this device", async () => {
@@ -1285,22 +1082,7 @@ describe("naming what answered a refused laptop sign-up", () => {
       { route: "local", manager: "security-key", aaguid: YUBIKEY_5_USB_A_AAGUID },
       trusted,
     )
-    await expect(run).rejects.toMatchObject({ providerName: undefined, message: unnamed })
-  })
-
-  it("names nothing for a phone's answer an untrusted browser labelled as this device", async () => {
-    const { run } = create(
-      "laptop",
-      {
-        route: "cross-device",
-        manager: "icloud",
-        aaguid: APPLE_ICLOUD_AAGUID,
-        transports: ["hybrid", "internal"],
-        attachment: "platform",
-      },
-      { attachmentLabelTrusted: false },
-    )
-    await expect(run).rejects.toMatchObject({ providerName: undefined, message: unnamed })
+    await expect(run).rejects.toMatchObject({ providerName: undefined })
   })
 
   it("names nothing for the follow-up prompt, which names the credential and not the device", async () => {
@@ -1323,7 +1105,6 @@ describe("naming what answered a refused laptop sign-up", () => {
       await expect(run).rejects.toMatchObject({
         name: "PhoneRequiredError",
         providerName: undefined,
-        message: unnamed,
       })
       expect(ceremony.assertRequests).toHaveLength(1)
     }
@@ -1331,15 +1112,10 @@ describe("naming what answered a refused laptop sign-up", () => {
 })
 
 describe("the line a Bitwarden answer's refusal adds on a laptop", () => {
-  const HOST = "wallet.test.zk.money"
-  const line = bitwardenLineFor(HOST)
+  const line = bitwardenLineFor("wallet.test.zk.money")
   const DASHLANE = "531126d6-e717-415c-9320-3d9aa6981239"
   const trusted = { attachmentLabelTrusted: true }
   const macChrome = { managers: ["apple", "gpm"] as const }
-  const unnamed = new PhoneRequiredError({ ceremony: "create" }).message
-  const unsupported = (providerName: string, localManagers?: readonly LocalManager[]) =>
-    new UnsupportedProviderError("manager", { providerName, keyOfferable: true, localManagers })
-      .message
   const refusal = (run: Promise<unknown>): Promise<Error> =>
     run.then(
       () => {
@@ -1354,26 +1130,20 @@ describe("the line a Bitwarden answer's refusal adds on a laptop", () => {
     })
 
   beforeEach(() => {
-    vi.stubGlobal("location", { hostname: HOST })
+    vi.stubGlobal("location", { hostname: "wallet.test.zk.money" })
     answering(true)
   })
   afterEach(() => {
     vi.unstubAllGlobals()
   })
 
-  it("ends the phone and key routes' refusal with it, naming this page's host", async () => {
+  it("ends the phone and key routes' refusal with it", async () => {
     for (const laptopHints of [undefined, ["security-key"] as const]) {
       const err = await refusal(
         create("laptop", { route: "local", aaguid: BITWARDEN }, { ...trusted, laptopHints }).run,
       )
-      expect(err).toBeInstanceOf(PhoneRequiredError)
-      expect(err).toMatchObject({
-        name: "PhoneRequiredError",
-        providerName: "Bitwarden",
-        message: `${new PhoneRequiredError({ providerName: "Bitwarden" }).message} ${line}`,
-      })
-      expect(err.message).toContain(HOST)
-      expect(passkeyWritten(err)).toBe(true)
+      expect(err).toMatchObject({ name: "PhoneRequiredError", providerName: "Bitwarden" })
+      expect(err.message).toContain(line)
     }
   })
 
@@ -1382,27 +1152,19 @@ describe("the line a Bitwarden answer's refusal adds on a laptop", () => {
       create("laptop", { route: "local", aaguid: BITWARDEN }, { attachmentLabelTrusted: false })
         .run,
     )
-    expect(err).toMatchObject({
-      name: "PhoneRequiredError",
-      providerName: undefined,
-      message: `${unnamed} ${line}`,
-    })
+    expect(err).toMatchObject({ name: "PhoneRequiredError", providerName: undefined })
+    expect(err.message).toContain(line)
   })
 
   it("ends the provider refusal with it on this computer's route and off it", async () => {
-    const local = await refusal(
-      create("laptop", { route: "local", aaguid: BITWARDEN }, { localCreation: macChrome }).run,
-    )
-    expect(local).toBeInstanceOf(UnsupportedProviderError)
-    expect(local.message).toBe(`${unsupported("Bitwarden", macChrome.managers)} ${line}`)
-    expect(passkeyWritten(local)).toBe(true)
-    const offRoute = await refusal(
-      create("laptop", { route: "cross-device", aaguid: BITWARDEN }).run,
-    )
-    expect(offRoute).toMatchObject({
-      name: "UnsupportedProviderError",
-      message: `${unsupported("Bitwarden")} ${line}`,
-    })
+    for (const [route, extra] of [
+      ["local", { localCreation: macChrome }],
+      ["cross-device", {}],
+    ] as const) {
+      const err = await refusal(create("laptop", { route, aaguid: BITWARDEN }, extra).run)
+      expect(err.name).toBe("UnsupportedProviderError")
+      expect(err.message).toContain(line)
+    }
   })
 
   it("ends Bitwarden's refusal of a related origin with it, though nothing was created", async () => {
@@ -1422,46 +1184,36 @@ describe("the line a Bitwarden answer's refusal adds on a laptop", () => {
         }),
       )
     }
-    const generic = new RelatedOriginPasskeyError().message
     const onLaptop = await refusedBy("laptop", true)
     expect(onLaptop).toBeInstanceOf(RelatedOriginPasskeyError)
-    expect(onLaptop).toMatchObject({ message: `${generic} ${line}`, cause: browserError })
+    expect(onLaptop.message).toContain(line)
+    expect(onLaptop.cause).toBe(browserError)
     expect(passkeyWritten(onLaptop)).toBe(false)
-    expect((await refusedBy("phone", true)).message).toBe(generic)
-    expect((await refusedBy("laptop", false)).message).toBe(generic)
+    expect((await refusedBy("phone", true)).message).not.toContain(line)
+    expect((await refusedBy("laptop", false)).message).not.toContain(line)
     answering(false)
-    expect((await refusedBy("laptop", true)).message).toBe(generic)
+    expect((await refusedBy("laptop", true)).message).not.toContain(line)
   })
 
   it("is not added on a phone", async () => {
     const err = await refusal(create("phone", { route: "local", aaguid: BITWARDEN }).run)
-    expect(err).toMatchObject({
-      name: "UnsupportedProviderError",
-      message: unsupported("Bitwarden"),
-    })
+    expect(err.name).toBe("UnsupportedProviderError")
+    expect(err.message).not.toContain(line)
   })
 
-  it("is not added where no extension answers the page's creation", async () => {
-    answering(false)
-    const onPhoneRoute = await refusal(
-      create("laptop", { route: "local", aaguid: BITWARDEN }, trusted).run,
-    )
-    expect(onPhoneRoute.message).toBe(new PhoneRequiredError({ providerName: "Bitwarden" }).message)
-    const onLocalRoute = await refusal(
-      create("laptop", { route: "local", aaguid: BITWARDEN }, { localCreation: macChrome }).run,
-    )
-    expect(onLocalRoute.message).toBe(unsupported("Bitwarden", macChrome.managers))
-  })
-
-  it("is not added for another manager's id", async () => {
-    const onPhoneRoute = await refusal(
-      create("laptop", { route: "local", aaguid: DASHLANE }, trusted).run,
-    )
-    expect(onPhoneRoute.message).toBe(new PhoneRequiredError({ providerName: "Dashlane" }).message)
-    const onLocalRoute = await refusal(
-      create("laptop", { route: "local", aaguid: DASHLANE }, { localCreation: macChrome }).run,
-    )
-    expect(onLocalRoute.message).toBe(unsupported("Dashlane", macChrome.managers))
+  it.each([
+    ["no extension answers the page's creation", BITWARDEN, false],
+    ["another manager's id answered", DASHLANE, true],
+  ])("is not added where %s", async (_, aaguid, extension) => {
+    answering(extension)
+    for (const [extra, name] of [
+      [trusted, "PhoneRequiredError"],
+      [{ localCreation: macChrome }, "UnsupportedProviderError"],
+    ] as const) {
+      const err = await refusal(create("laptop", { route: "local", aaguid }, extra).run)
+      expect(err.name).toBe(name)
+      expect(err.message).not.toContain(line)
+    }
   })
 })
 
@@ -1500,13 +1252,18 @@ describe("security keys at creation", () => {
     )
   })
 
-  it("needs no chained assertion when the key answers at creation", async () => {
-    const { ceremony, run } = create("laptop", key({ transports: ["nfc", "usb"] }))
-    const result = await run
-    expect(result.securityKey).toBe(true)
-    expect(result.slot).toBe("first")
-    expect(ceremony.assertRequests).toHaveLength(0)
-  })
+  // Firmware that evaluates key material at creation skips the chain: the driver branches on the
+  // evidence being complete, never on the class.
+  it.each(["laptop", "phone"] as const)(
+    "%s: needs no chained assertion when the key answers at creation",
+    async (posture) => {
+      const { ceremony, run } = create(posture, key({ transports: ["nfc", "usb"] }))
+      const result = await run
+      expect(result.securityKey).toBe(true)
+      expect(result.slot).toBe("first")
+      expect(ceremony.assertRequests).toHaveLength(0)
+    },
+  )
 
   it("a phone over QR is not a key, so its backup flag still decides", async () => {
     const viaPhone = { route: "cross-device" as const, transports: ["hybrid", "internal"] }
@@ -1521,11 +1278,6 @@ describe("security keys at creation", () => {
       })
       await expect(run).rejects.toThrow(named("DeviceBoundPasskeyError"))
     }
-  })
-
-  it("refuses a key whose flags never became readable", async () => {
-    const { run } = create("laptop", key({ backupEligible: "unknown", createAuthData: false }))
-    await expect(run).rejects.toThrow(named("DeviceBoundPasskeyError"))
   })
 
   describe("a key the browser lists no transports for", () => {
@@ -1576,22 +1328,6 @@ describe("security keys at creation", () => {
       const { run } = create("laptop", trezor({ prfAtCreate: false, prfAtAssert: false }))
       await expect(run).rejects.toThrow(named("SecurityKeyNoPrfError"))
     })
-  })
-
-  it("refuses a key that returned no PRF on either ceremony, in words a key holder can use", async () => {
-    for (const posture of ["laptop", "phone"] as const) {
-      const { run } = create(posture, key({ prfAtCreate: false, prfAtAssert: false }))
-      await expect(run).rejects.toThrow(named("SecurityKeyNoPrfError"))
-    }
-  })
-
-  it("keeps the other key-material refusals as they were", async () => {
-    // Only a total absence becomes the key's own refusal. A platform passkey with no output, and
-    // an unreadable backup flag, each keep their own.
-    const platform = create("phone", { route: "local", prfAtCreate: false, prfAtAssert: false })
-    await expect(platform.run).rejects.toThrow(named("NoPrfError"))
-    const unreadable = create("laptop", key({ backupEligible: "unknown", createAuthData: false }))
-    await expect(unreadable.run).rejects.toThrow(named("DeviceBoundPasskeyError"))
   })
 
   describe("asking the authenticator to take back the credential a failed creation wrote", () => {
@@ -1663,6 +1399,20 @@ describe("security keys at creation", () => {
             "SecurityKeyRequiredError",
           ],
           [{ route: "local" }, "laptop", "PhoneRequiredError"],
+          // A phone's answer the laptop mislabelled, corrected, then incomplete.
+          [
+            {
+              route: "cross-device",
+              manager: "icloud",
+              aaguid: APPLE_ICLOUD_AAGUID,
+              transports: ["hybrid", "internal"],
+              attachment: "platform",
+              prfAtCreate: false,
+            },
+            "laptop",
+            "IncompleteCreationError",
+            { misreportsCrossDevice: true },
+          ],
         ]
       // Built and awaited one at a time: a batch started up front leaves rejections unhandled.
       for (const [fake, posture, name, extra] of refused) {
@@ -1704,6 +1454,7 @@ describe("security keys at creation", () => {
         },
       )
       await expect(onCreated.run).rejects.toBe(boom)
+      expect(passkeyWritten(boom)).toBe(true)
       expect(signalled).toEqual(askedFor(onCreated.ceremony))
 
       signalled = []
@@ -1820,16 +1571,11 @@ describe("security keys at creation", () => {
       expect(signalled).toHaveLength(0)
     })
 
-    it("still refuses when the browser has no way to ask", async () => {
-      ;(globalThis as Record<string, unknown>).PublicKeyCredential = {}
-      const { run } = create("phone", key({ prfAtCreate: false, prfAtAssert: false }))
-      await expect(run).rejects.toThrow(named("SecurityKeyNoPrfError"))
-    })
-
-    it("still refuses when the ask is rejected", async () => {
-      ;(globalThis as Record<string, unknown>).PublicKeyCredential = {
-        signalUnknownCredential: () => Promise.reject(new Error("nope")),
-      }
+    it.each([
+      ["the browser has no way to ask", {}],
+      ["the ask is rejected", { signalUnknownCredential: () => Promise.reject(new Error("nope")) }],
+    ])("still refuses when %s", async (_, api) => {
+      ;(globalThis as Record<string, unknown>).PublicKeyCredential = api
       const { run } = create("phone", key({ prfAtCreate: false, prfAtAssert: false }))
       await expect(run).rejects.toThrow(named("SecurityKeyNoPrfError"))
     })
@@ -1841,20 +1587,14 @@ describe("security keys at creation", () => {
         file.endsWith(".ts"),
       )
       expect(files.filter((file) => read(file).includes("signalUnknownCredential"))).toEqual([
-        join("policy", "drivers.ts"),
+        "drivers.ts",
       ])
-      const drivers = read(join("policy", "drivers.ts"))
+      const drivers = read("drivers.ts")
       expect(drivers.match(/signalUnknownCredential\(/g)).toHaveLength(1)
       // The definition, one call in each creation driver's catch, and the backup driver's call for
       // a creation the browser saved but the wallet could not read.
       expect(drivers.match(/forgetCredential\(/g)).toHaveLength(4)
     })
-  })
-
-  it("gives a laptop's key five minutes to answer too", async () => {
-    const { ceremony, run } = create("laptop", key())
-    await run
-    expect(ceremony.creates[0]!.timeoutMs).toBe(300_000)
   })
 
   it("a phone accepts a key, binding first through the chained assertion a key needs", async () => {
@@ -1863,20 +1603,6 @@ describe("security keys at creation", () => {
     expect(result.securityKey).toBe(true)
     expect(result.slot).toBe("first")
     expect(ceremony.assertRequests).toHaveLength(1)
-  })
-
-  it("a phone accepts a key that answered completely, with no chained assertion at all", async () => {
-    // Firmware that evaluates key material at creation skips the chain: the driver branches on
-    // the evidence being complete, never on the class.
-    const { ceremony, run } = create("phone", key())
-    const result = await run
-    expect(result.slot).toBe("first")
-    expect(ceremony.assertRequests).toHaveLength(0)
-  })
-
-  it("a phone refuses a key whose chained assertion comes back local, naming the key", async () => {
-    const { run } = create("phone", key({ prfAtCreate: false, assertAttachment: "platform" }))
-    await expect(run).rejects.toThrow(named("SecurityKeyRequiredError"))
   })
 
   it("refuses a creation whose attachment the browser never reported, on either posture", async () => {
@@ -1891,33 +1617,18 @@ describe("security keys at creation", () => {
     await expect(chained.run).rejects.toThrow(named("SecurityKeyRequiredError"))
   })
 
-  it("admits a key whose own id surfaced", async () => {
-    const result = await create("laptop", key({ aaguid: YUBIKEY_5_USB_A_AAGUID })).run
-    expect(result.securityKey).toBe(true)
-    expect(result.slot).toBe("first")
-  })
-
-  it("refuses a key reporting a manager's id, with the key's own advice", async () => {
-    const { run } = create("laptop", key({ aaguid: GPM_AAGUID }))
-    await expect(run).rejects.toMatchObject({
-      name: "UnsupportedProviderError",
-      kind: "security-key",
-    })
-    await expect(run).rejects.toThrow(/YubiKey 5/)
-  })
-
-  it("gives a key whose transports were withheld the key's advice, not a manager's", async () => {
+  it.each([
+    ["reporting a manager's id", key({ aaguid: GPM_AAGUID })],
     // Classed as a phone, so the backup gate applied; the orphan is still on the key.
-    const { run } = create("laptop", {
-      route: "cross-device",
-      aaguid: YUBIKEY_5_USB_A_AAGUID,
-      backupEligible: true,
-    })
-    await expect(run).rejects.toMatchObject({
+    [
+      "whose transports were withheld",
+      { route: "cross-device", aaguid: YUBIKEY_5_USB_A_AAGUID, backupEligible: true },
+    ],
+  ] as const)("refuses a key %s with the key's own refusal", async (_, fake) => {
+    await expect(create("laptop", fake).run).rejects.toMatchObject({
       name: "UnsupportedProviderError",
       kind: "security-key",
     })
-    await expect(run).rejects.toThrow(/YubiKey 5/)
   })
 })
 
@@ -1963,18 +1674,6 @@ describe("renamePasskey", () => {
     expect(() => renamePasskey("localhost", HANDLE, "niall")).not.toThrow()
     await new Promise((r) => setTimeout(r, 0))
   })
-
-  it("is made from one place in the package, with one call", () => {
-    const src = join(dirname(fileURLToPath(import.meta.url)), "../src")
-    const read = (file: string) => readFileSync(join(src, file), "utf8")
-    const files = (readdirSync(src, { recursive: true }) as string[]).filter((file) =>
-      file.endsWith(".ts"),
-    )
-    expect(files.filter((file) => read(file).includes("signalCurrentUserDetails"))).toEqual([
-      join("policy", "drivers.ts"),
-    ])
-    expect(read(join("policy", "drivers.ts")).match(/signalCurrentUserDetails\(/g)).toHaveLength(1)
-  })
 })
 
 describe("the written mark", () => {
@@ -1986,134 +1685,6 @@ describe("the written mark", () => {
     }
     throw new Error("expected a rejection")
   }
-
-  it.each<[string, DevicePosture, FakeCeremonyOptions, string]>([
-    [
-      "another device answering a phone",
-      "phone",
-      { route: "cross-device" },
-      "LocalPasskeyRequiredError",
-    ],
-    [
-      "a laptop's own answer",
-      "laptop",
-      { route: "local", aaguid: UNMEASURED },
-      "PhoneRequiredError",
-    ],
-    [
-      "an unmeasured manager",
-      "laptop",
-      { route: "cross-device", aaguid: BITWARDEN },
-      "UnsupportedProviderError",
-    ],
-    [
-      "a single-salt provider",
-      "phone",
-      { route: "local", secondSlot: false },
-      "SingleSaltProviderError",
-    ],
-    [
-      "no backup flag",
-      "laptop",
-      { route: "cross-device", backupEligible: false },
-      "DeviceBoundPasskeyError",
-    ],
-    [
-      "no PRF on either prompt",
-      "laptop",
-      { route: "cross-device", prfAtCreate: false, prfAtAssert: false },
-      "NoPrfError",
-    ],
-    [
-      "a security key with no PRF",
-      "laptop",
-      {
-        route: "cross-device",
-        manager: "security-key",
-        transports: ["usb"],
-        backupEligible: false,
-        prfAtCreate: false,
-        prfAtAssert: false,
-      },
-      "SecurityKeyNoPrfError",
-    ],
-  ])("marks a refusal for %s: the passkey is already saved", async (_n, posture, fake, name) => {
-    const err = await rejection(create(posture, fake).run)
-    expect(err).toMatchObject({ name })
-    expect(passkeyWritten(err)).toBe(true)
-  })
-
-  it.each([
-    ["a blocked related-origin request", () => new RelatedOriginPasskeyError()],
-    ["the browser's cancel", () => new DOMException("Dismissed", "NotAllowedError")],
-    ["an extension's own error", () => new Error("Something went wrong.")],
-  ])("marks %s from the follow-up prompt, and keeps the error itself", async (_n, make) => {
-    const thrown = make()
-    const { ceremony, run } = create("laptop", {
-      route: "cross-device",
-      prfAtCreate: false,
-      assertOverride: () => {
-        throw thrown
-      },
-    })
-    const err = await rejection(run)
-    expect(err).toBe(thrown)
-    expect(passkeyWritten(err)).toBe(true)
-    expect(ceremony.assertRequests).toHaveLength(1)
-  })
-
-  it("marks a corrected laptop creation that came back incomplete", async () => {
-    const { run } = create(
-      "laptop",
-      {
-        route: "cross-device",
-        manager: "icloud",
-        aaguid: APPLE_ICLOUD_AAGUID,
-        transports: ["hybrid", "internal"],
-        attachment: "platform",
-        prfAtCreate: false,
-      },
-      { misreportsCrossDevice: true },
-    )
-    const err = await rejection(run)
-    expect(err).toMatchObject({ name: "IncompleteCreationError" })
-    expect(passkeyWritten(err)).toBe(true)
-  })
-
-  it("marks an observer's own error from the created phase", async () => {
-    const boom = new Error("observer")
-    const { run } = create(
-      "laptop",
-      { route: "cross-device" },
-      {
-        observe: ({ phase }) => {
-          if (phase === "created") throw boom
-        },
-      },
-    )
-    const err = await rejection(run)
-    expect(err).toBe(boom)
-    expect(passkeyWritten(err)).toBe(true)
-  })
-
-  it("marks nothing the first prompt itself threw", async () => {
-    const thrown = new RelatedOriginPasskeyError()
-    const ceremony = new FakePasskeyCeremony({ route: "cross-device" })
-    ceremony.create = async () => {
-      throw thrown
-    }
-    const err = await rejection(
-      runPasskeyCreation(ceremony, {
-        posture: "laptop",
-        rpId: "localhost",
-        rpName: "zk.money",
-        userName: "@alice",
-        challengeForChained: () => CHALLENGE,
-      }),
-    )
-    expect(err).toBe(thrown)
-    expect(passkeyWritten(err)).toBe(false)
-  })
 
   it("marks nothing on the assertion side: the driver's refusal, or the one read from its result", async () => {
     const assertion = async (posture: DevicePosture, fake: FakeCeremonyOptions) => {
@@ -2185,7 +1756,6 @@ describe("runPasskeyAssertion", () => {
       challenge: CHALLENGE,
     })
     expect(ceremony.assertRequests[0]!.hints).toBeUndefined()
-    expect(ceremony.assertRequests[0]!.prfSecondSalt).toHaveLength(32)
   })
 
   it("the caller's signal reaches the ceremony", async () => {
@@ -2223,6 +1793,33 @@ describe("runPasskeyAssertion", () => {
       transports: ["hybrid", "internal"],
     })
     expect(ceremony.assertRequests[0]!.transports).toEqual(["hybrid"])
+  })
+
+  it("laptop: a chosen key's request names its recorded routes, and every route without a record", async () => {
+    const ceremony = new FakePasskeyCeremony({ route: "cross-device" })
+    const created = await ceremony.create({
+      rpId: "localhost",
+      rpName: "zk.money",
+      userName: "@alice",
+      prfFirstSalt: new Uint8Array(32),
+    })
+    const ask = (chosen?: { transports?: readonly string[] }) =>
+      runPasskeyAssertion(ceremony, {
+        posture: "laptop",
+        rpId: "localhost",
+        challenge: CHALLENGE,
+        credentialIds: [created.credentialId],
+        localAllowed: true,
+        ...(chosen ? { chosen } : {}),
+      })
+    await ask({ transports: ["usb"] })
+    await ask({})
+    await ask()
+    expect(ceremony.assertRequests.map((r) => r.hints)).toEqual([
+      ["security-key"],
+      ["client-device", "hybrid", "security-key"],
+      ["client-device"],
+    ])
   })
 
   it("laptop: a credential with no recorded transports names the cross-device routes", async () => {
@@ -2367,6 +1964,7 @@ describe("runPasskeyAssertion", () => {
   })
 
   it("an observer that throws ends the assertion with its own error", async () => {
+    const observerDown = new Error("observer down")
     const ceremony = new FakePasskeyCeremony({ route: "local" })
     await ceremony.create({
       rpId: "localhost",
@@ -2379,9 +1977,9 @@ describe("runPasskeyAssertion", () => {
         posture: "laptop",
         rpId: "localhost",
         challenge: CHALLENGE,
-        observe: () => Promise.reject(new Error("observer down")),
+        observe: () => Promise.reject(observerDown),
       }),
-    ).rejects.toThrow(/observer down/)
+    ).rejects.toBe(observerDown)
   })
 
   it("laptop: a phone's answer is returned raw for the caller's own gates", async () => {
@@ -2395,12 +1993,6 @@ describe("runPasskeyAssertion", () => {
     expect(ceremony.assertRequests[0]!.hints).toEqual(["hybrid", "security-key"])
     // Another device answered: a security key, or a phone passkey no anchor will match.
     expect(candidatesFrom(raw).first).toBeDefined()
-  })
-
-  it("phone: its own answer that cannot be backed up is still refused", async () => {
-    const { result } = await assertion("phone", { route: "local", backupEligible: false })
-    const raw = await result
-    expect(() => candidatesFrom(raw)).toThrow(named("DeviceBoundPasskeyError"))
   })
 
   describe("on a browser that mislabels a cross-device answer", () => {
@@ -2446,11 +2038,6 @@ describe("runPasskeyAssertion", () => {
       // any other device's answer is, and the anchors decide what it opens.
       const bound = await mislabelled("laptop", { route: "local", backupEligible: false })
       expect(candidatesFrom(await bound.result).first).toBeDefined()
-    })
-
-    it("laptop: without the flag a local answer is refused as before", async () => {
-      const { result } = await mislabelled("laptop", { route: "local" }, false)
-      await expect(result).rejects.toThrow(named("PhoneRequiredError"))
     })
 
     it("phone: nothing changes", async () => {

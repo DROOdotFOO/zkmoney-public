@@ -1,0 +1,54 @@
+diff --git a/dest/contract_function_simulator/oracle/private_execution_oracle.js b/dest/contract_function_simulator/oracle/private_execution_oracle.js
+index 9d67c0a..db9e59a 100644
+--- a/dest/contract_function_simulator/oracle/private_execution_oracle.js
++++ b/dest/contract_function_simulator/oracle/private_execution_oracle.js
+@@ -141,7 +141,7 @@ import { UtilityExecutionOracle } from './utility_execution_oracle.js';
+    * which uses an address-derived secret.
+    */ async resolveTaggingStrategy(sender, recipient, deliveryMode) {
+         const [isUnconstrainedSelfSend, chosenStrategy] = await allToCompletion([
+-            this.#isUnconstrainedSelfSend(recipient, deliveryMode),
++            this.#isUnconstrainedSelfSend(sender, recipient, deliveryMode),
+             this.#chooseTaggingSecretStrategy(sender, recipient, deliveryMode)
+         ]);
+         // For unconstrained delivery, a self-send uses a local address-derived secret instead of a non-interactive
+@@ -178,8 +178,10 @@ import { UtilityExecutionOracle } from './utility_execution_oracle.js';
+         }
+         return classId;
+     }
+-    /** Whether this is an unconstrained delivery to one of the wallet's own accounts (a self-send). */ #isUnconstrainedSelfSend(recipient, deliveryMode) {
+-        return deliveryMode === AppTaggingSecretKind.UNCONSTRAINED ? this.keyStore.hasAccount(recipient) : Promise.resolve(false);
++    /** Whether this is an unconstrained delivery from an account to itself (a self-send). */ #isUnconstrainedSelfSend(sender, recipient, deliveryMode) {
++        // zkmoney patch: high-priority change that cannot wait for the next PXE release. A send to another account in
++        // this PXE is not a self-send. See https://github.com/aztec-labs-eng/aztec-node/pull/602.
++        return deliveryMode === AppTaggingSecretKind.UNCONSTRAINED && recipient.equals(sender) ? this.keyStore.hasAccount(recipient) : Promise.resolve(false);
+     }
+     /** Resolves a wallet-provided {@link TaggingSecretStrategy} into the app-siloed secret handed to the contract. */ async #resolveTaggingSecretStrategy(strategy, sender, recipient) {
+         // PXE only performs the derivation; it does not reject a strategy that is unsound for the delivery mode (e.g. an
+diff --git a/src/contract_function_simulator/oracle/private_execution_oracle.ts b/src/contract_function_simulator/oracle/private_execution_oracle.ts
+index 9e1425c..96fcc77 100644
+--- a/src/contract_function_simulator/oracle/private_execution_oracle.ts
++++ b/src/contract_function_simulator/oracle/private_execution_oracle.ts
+@@ -219,7 +219,7 @@ export class PrivateExecutionOracle extends UtilityExecutionOracle implements IP
+     deliveryMode: AppTaggingSecretKind,
+   ): Promise<ResolvedTaggingStrategy> {
+     const [isUnconstrainedSelfSend, chosenStrategy] = await allToCompletion([
+-      this.#isUnconstrainedSelfSend(recipient, deliveryMode),
++      this.#isUnconstrainedSelfSend(sender, recipient, deliveryMode),
+       this.#chooseTaggingSecretStrategy(sender, recipient, deliveryMode),
+     ]);
+ 
+@@ -265,9 +265,11 @@ export class PrivateExecutionOracle extends UtilityExecutionOracle implements IP
+     return classId;
+   }
+ 
+-  /** Whether this is an unconstrained delivery to one of the wallet's own accounts (a self-send). */
+-  #isUnconstrainedSelfSend(recipient: AztecAddress, deliveryMode: AppTaggingSecretKind) {
+-    return deliveryMode === AppTaggingSecretKind.UNCONSTRAINED
++  /** Whether this is an unconstrained delivery from an account to itself (a self-send). */
++  #isUnconstrainedSelfSend(sender: AztecAddress, recipient: AztecAddress, deliveryMode: AppTaggingSecretKind) {
++    // zkmoney patch: high-priority change that cannot wait for the next PXE release. A send to another account in
++    // this PXE is not a self-send. See https://github.com/aztec-labs-eng/aztec-node/pull/602.
++    return deliveryMode === AppTaggingSecretKind.UNCONSTRAINED && recipient.equals(sender)
+       ? this.keyStore.hasAccount(recipient)
+       : Promise.resolve(false);
+   }

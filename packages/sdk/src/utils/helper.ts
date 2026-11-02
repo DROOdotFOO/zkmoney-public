@@ -1,10 +1,10 @@
-import { Account } from "@aztec-labs/aztec.js/account"
-import { TxReceipt } from "@aztec-labs/stdlib/tx"
+import type { Account } from "@aztec-labs/aztec.js/account"
+import type { TxReceipt } from "@aztec-labs/stdlib/tx"
 import { getSponsoredFeePaymentMethod } from "../feePaymentMethod/index.js"
 import type { FeeJuiceContract } from "@aztec-labs/aztec.js/protocol"
 import { Fr } from "@aztec-labs/aztec.js/fields"
-import { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
-import { SendInteractionOptions, TxSendResultMined } from "@aztec-labs/aztec.js/contracts"
+import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
+import type { SendInteractionOptions, TxSendResultMined } from "@aztec-labs/aztec.js/contracts"
 import { sha256 } from "@aztec-labs/foundation/crypto/sha256"
 import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 import { Gas, GasFees, GasSettings } from "@aztec-labs/stdlib/gas"
@@ -290,7 +290,7 @@ export const retryTransactionWait = async <T>(
 }
 
 // Checks `window`, not `process`: browser bundles polyfill `process`.
-export const isNodeJS = () => typeof window === "undefined"
+export const isNodeJS = () => !("window" in globalThis)
 
 /**
  * Hash encrypted data and truncate to 112 bits (14 bytes)

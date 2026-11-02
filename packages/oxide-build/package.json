@@ -5,8 +5,8 @@
   "description": "Build-only adapter for the supported Obsidion subset of the vendored Oxide workspace",
   "type": "module",
   "scripts": {
-    "build": "node ../../scripts/build-oxide-tee.mjs",
-    "build:refund-circuits": "OXIDE_REFUND_CIRCUITS=required node ../../scripts/build-oxide-tee.mjs"
+    "build": "node scripts/build-oxide-tee.mjs",
+    "build:refund-circuits": "OXIDE_REFUND_CIRCUITS=required node scripts/build-oxide-tee.mjs"
   },
   "license": "MIT"
 }

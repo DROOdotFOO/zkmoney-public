@@ -6,6 +6,7 @@ import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapt
 import { resetSingleton } from "../__test-helpers__/resetSingleton"
 import {
   SIPADepositStore,
+  type SIPADepositFields,
   type SIPADepositRecord,
 } from "../../src/core/services/deposits/SIPADepositStore"
 import { sipaSweepAllowed } from "../../src/core/services/deposits/sipaProcessing"
@@ -60,8 +61,9 @@ function snapshot(portal: Address, availableAtomic: bigint): PortalCapacitySnaps
 
 function fallback(
   over: Partial<SIPADepositRecord> = {},
-): Omit<SIPADepositRecord, "sipaAddress" | "phase"> {
+): SIPADepositFields {
   return {
+    networkId: "0xnet",
     recipientL2Address: "0x" + "11".repeat(32),
     messageSecret: "0x" + "22".repeat(32),
     recipientHash: "0x" + "33".repeat(32),

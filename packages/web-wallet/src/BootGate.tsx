@@ -1,6 +1,6 @@
 import React from "react"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
-import { ActiveTabGate } from "./ActiveTabGate"
+import { ActiveTabGate } from "./ActiveTabGate/ActiveTabGate"
 import type { WebBootConfig } from "./config/env"
 import { GOOGLE_CALLBACK_PATH, GoogleCallbackScreen } from "./features/paylink/googleAuth"
 import { getDesktopSettingsPath } from "./platform/desktopBridge"

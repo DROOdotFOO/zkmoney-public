@@ -1,4 +1,4 @@
-import { AUTH_TYPE } from "@obsidion/sdk"
+import type { AUTH_TYPE } from "@obsidion/sdk"
 
 export type WebAuthnData = {
   credentialId: string

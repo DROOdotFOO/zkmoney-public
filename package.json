@@ -3,8 +3,8 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "codegen": "scripts/codegen.sh",
-    "build-contracts": "VERSION=v6.0.0 scripts/build_contracts.sh",
+    "codegen": "packages/contracts/scripts/codegen.sh",
+    "build-contracts": "VERSION=v6.0.0 packages/contracts/scripts/build_contracts.sh",
     "update-versions": "scripts/update_versions.sh --oldVersion v6.0.0-nightly.20261014 --newVersion v6.0.0",
     "build:core": "pnpm --filter '@obsidion/core...' --filter '!@oxide/*' -r --if-present run build",
     "build:contracts": "pnpm --filter '@obsidion/contracts...' --filter '!@oxide/*' -r --if-present run build",
@@ -14,7 +14,7 @@
     "build:front-core": "pnpm --filter '@obsidion/front-core...' --filter '!@oxide/*' -r --if-present run build",
     "build:web-deps": "pnpm --filter '@obsidion/config-client...' --filter '@obsidion/front-core...' --filter '@obsidion/passkey-web...' --filter '@obsidion/web-ds...' --filter '!@oxide/*' -r --if-present run build",
     "build:web-wallet": "pnpm --filter '@obsidion/web-wallet...' --filter '!@oxide/*' -r --if-present run build",
-    "build:relayer": "node scripts/build-oxide-tee.mjs --relayer",
+    "build:relayer": "node packages/oxide-build/scripts/build-oxide-tee.mjs --relayer",
     "build:oxide-circuits": "scripts/build-oxide-circuits.sh"
   },
   "engines": {
@@ -36,6 +36,9 @@
       "zod": "^4.4.3",
       "qr": "0.5.5",
       "@walletconnect/ethereum-provider": "2.23.10"
+    },
+    "patchedDependencies": {
+      "@aztec-labs/pxe@6.0.0": "patches/@aztec-labs__pxe@6.0.0.patch"
     }
   },
   "devDependencies": {

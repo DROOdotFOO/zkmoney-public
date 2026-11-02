@@ -1,8 +1,8 @@
 /**
  * Web implementations of the front-core receiver ports (stage-3 inbox): sender-tag resolution over
  * the Registry (always a fresh manifest — the contact cache never vouches for a sender) and
- * store writes over the web singletons (RequestStorage, ContactStorage). Transfer receive is
- * chain-native (`TransferScannerMount`), not an XMTP port.
+ * store writes over the web stores (requests, ContactStorage). Transfer receive is
+ * chain-native (the `transferScan` task), not an XMTP port.
  */
 
 import {
@@ -14,10 +14,9 @@ import {
   type ContactsByL2,
   type IncomingRequestInput,
   type RequestSenderPolicy,
-  type RequestStorage,
+  type Requests,
   type RequestStoreWrites,
   type RequestTagBindingResolver,
-  type RequestTerminalStatus,
 } from "@obsidion/front-core"
 import { verifyTag } from "../../features/contacts/registryResolution"
 
@@ -103,13 +102,12 @@ export function createRequestSenderPolicy(
   }
 }
 
-/** Receiver writes over the front-core `RequestStorage`, via the shared row mapping. */
-export function createRequestStoreWrites(store: RequestStorage): RequestStoreWrites {
+/** Receiver writes over the requests store, via the shared row mapping. */
+export function createRequestStoreWrites(store: Requests): RequestStoreWrites {
   return {
-    findById: (requestId: string) => store.findById(requestId),
+    findById: async (requestId: string) => (await store.get(requestId)) ?? null,
     addIncomingRequest: (input: IncomingRequestInput) =>
       store.addIfAbsent(incomingRequestToRow(input)),
-    applyStatus: (requestId, status: RequestTerminalStatus, txHash?: string) =>
-      store.applyStatus(requestId, status, txHash),
+    decline: (requestId) => store.decline(requestId),
   }
 }

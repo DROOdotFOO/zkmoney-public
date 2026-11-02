@@ -1,8 +1,8 @@
 /**
  * The DAI value the account holds on retired versions, kept in `BalanceStorage` beside the live balance
  * and never in its scope. Home counts it until an upgrade starts; what is left once the account is
- * upgraded is abandoned. Everything is keyed by the deployment the profile pins, so a repoint never
- * mixes another deployment's old versions in.
+ * upgraded is abandoned, unless a later check offers to move it. Everything is keyed by the deployment
+ * the profile pins, so a repoint never mixes another deployment's old versions in.
  */
 import { useMemo, useSyncExternalStore } from "react"
 import {
@@ -84,6 +84,8 @@ export function upgradeMovedFunds(account: string): boolean | undefined {
 export function markUpgradeMovesFunds(account: string, moves: boolean): void {
   if (upgradeMovedFunds(account) === moves) return
   walletStorage.setItem(fundsKey(account), moves ? "1" : "0")
+  // Home counts an upgraded account's old versions again while a check offers to move their funds.
+  changes.set(changes.get() + 1)
 }
 
 /** Nothing can be read in this page, such as with the wallet locked: Home shows what it has. */
@@ -93,8 +95,10 @@ export function releaseOldHoldingsWait(release: boolean): void {
 
 /**
  * What the signed-in account holds on old versions, and whether Home waits for it: no check has
- * read every old version yet. Home hides the total once the upgrade lock is taken.
- * Recorded amounts keep each account's holdings available for the upgrade snapshot.
+ * read every old version yet. Home hides the total once the upgrade lock is taken, and shows it again
+ * after the upgrade only while the last check offers to move funds: an upgrade that did not see them,
+ * or funds that reached an old version since. Recorded amounts keep each account's holdings
+ * available for the upgrade snapshot.
  */
 export function useOldVersionHoldings(): {
   total: bigint
@@ -125,10 +129,14 @@ export function useOldVersionHoldings(): {
       else recordedMain += BigInt(r.balance)
     }
     const recordedTotal = recordedMain + recordedSavings
+    // A held lock's figure already counts them.
+    const counted =
+      lock === "pending" ||
+      (lock === "released" && !!account && upgradeMovedFunds(account) === true)
     return {
-      total: lock === "pending" ? recordedTotal : 0n,
-      main: lock === "pending" ? recordedMain : 0n,
-      savings: lock === "pending" ? recordedSavings : 0n,
+      total: counted ? recordedTotal : 0n,
+      main: counted ? recordedMain : 0n,
+      savings: counted ? recordedSavings : 0n,
       recordedMain,
       recordedSavings,
       pending:
@@ -138,7 +146,7 @@ export function useOldVersionHoldings(): {
         !free &&
         (!oldHoldingsRead(account) || sources === undefined),
     }
-    // `changed` re-reads the mark.
+    // `changed` re-reads the marks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [records, account, free, changed, lock, sources])
 }

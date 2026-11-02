@@ -1,7 +1,7 @@
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
 import { Ecdsa } from "@aztec-labs/foundation/crypto/ecdsa"
-import { AlphaAuthProvider } from "./AlphaAuthProvider.js"
+import type { AlphaAuthProvider } from "./AlphaAuthProvider.js"
 import { MAX_WITNESS_LEN, PASSKEY_SET_INDEX } from "../../../utils/constants.js"
 import {
   type AlphaPasskeySet,

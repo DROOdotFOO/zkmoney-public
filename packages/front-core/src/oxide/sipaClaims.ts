@@ -62,7 +62,7 @@ import {
   type TokenService,
   type TokenTransfer,
 } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 import { OxidePortalAbi, SipaIntent } from "@oxide/l1-contracts"
 import { computeSIPAAddress as computeAccountSIPAAddress } from "@oxide/oxide-lib/sipa_address.js"
@@ -102,12 +102,13 @@ import {
   directDepositSettled,
   isSettledSipaPhase,
   isUnfundedSipaDeposit,
+  type SIPADepositFields,
   type SIPADepositRecord,
   type SIPAPendingSweep,
   type SIPASweep,
   type SIPADepositStore,
 } from "../core/services/deposits/SIPADepositStore"
-import { globalEventEmitter } from "../core/services/GlobalEventEmitter"
+import { syncCatchUp } from "../engine/catchUp"
 
 /** Node surface for the settlement check (`isL1ToL2MessageReady`) and the consumed check. */
 export interface SipaClaimsNode {
@@ -208,6 +209,12 @@ export interface SipaDepositSyncDeps {
    * for the one account whose passes wrote it. Any other account starts from its history.
    */
   adoptLegacyCursor?: boolean
+  /**
+   * Keeps the pass out of the session's sync catch-up: it neither begins one nor joins one in
+   * progress. For a pass over another account, whose backfill must not hold the session's balance
+   * and activity placeholders.
+   */
+  skipCatchUp?: boolean
   /** The user's stealth public key (`deriveStealthKey(masterSecret).publicKey`). */
   stealthPublicKey: SipaK1Point
   /**
@@ -226,6 +233,8 @@ export interface SipaDepositSyncDeps {
   /** A row portal's `TX_AMOUNT_CAP()` when the caller keeps it across runs; read once per run and row without it. */
   txAmountCap?: (row: SipaRow) => Promise<bigint>
   l1ChainId: number
+  /** The wallet's network, stamped on the records the pass creates. */
+  networkId: string
   /**
    * Fired once per SIPA when funding attribution first lands — the app-level
    * hook for saving deposit-attested contacts. Wallet identity fields are set
@@ -279,6 +288,12 @@ export interface SipaDepositSyncResult {
   reconciled: number
   /** Events or sweeps that failed this run (isolated; retried next sync). */
   failed: number
+  /**
+   * The pass read everything it should. False when anything failed, the history start did not
+   * read, a stray was adopted (its history is read next pass), the cursor write was skipped, or a
+   * step gave up and left its work to a later pass.
+   */
+  complete: boolean
 }
 
 export async function syncSipaDeposits(
@@ -311,6 +326,7 @@ export async function syncSipaDeposits(
     recoverable: 0,
     reconciled: 0,
     failed: 0,
+    complete: false,
   }
 
   // A received deposit is the deposit intent, so its clone delegates to the factory's deposit
@@ -330,7 +346,7 @@ export async function syncSipaDeposits(
   ])
   const depositImplementation = EthAddress.fromString(implementation)
   // A direct deposit's announcement names no SIPA: it only gives its record, before any derivation.
-  const events = await recordDirectAnnouncements(deps, read)
+  const { events, missed } = await recordDirectAnnouncements(deps, read)
 
   const seen = new Set<string>()
   const kinds = await Promise.all(events.map((event) => eventKind(event, deps.recipient)))
@@ -407,6 +423,13 @@ export async function syncSipaDeposits(
       logger.warn("[sipaClaims] history start read failed, using the default look-back:", err)
       return undefined
     }))
+  // Cleared by any step that leaves work to a later pass.
+  let complete = !missed
+  // A skipped cursor write follows a failure or a failed history start, both counted here.
+  const finish = () => {
+    result.complete = complete && !historyFailed && result.failed === 0
+    return result
+  }
   // A user operation's SIPA delegates to the implementation the factory blessed when it was
   // prepared, and a later bless keeps the earlier one blessed, so every blessed one is a candidate.
   // Read once per run, however it answered, only when an event needs it. The sdk reads the factory's
@@ -448,6 +471,9 @@ export async function syncSipaDeposits(
     txAmountCap,
     fundingTokens,
     record: (write) => void recordWrites.push(write),
+    incomplete: () => {
+      complete = false
+    },
     claimed: (write) => {
       claims += 1
       recordWrites.push(write)
@@ -473,9 +499,7 @@ export async function syncSipaDeposits(
   // holds the balance and activity placeholders until its claims have refreshed the chain view.
   // Otherwise it only joins a catch-up already in progress.
   const end =
-    replaying || globalEventEmitter.isSyncCatchingUp()
-      ? globalEventEmitter.beginSyncCatchUp()
-      : undefined
+    !deps.skipCatchUp && (replaying || syncCatchUp.status.get()) ? syncCatchUp.begin() : undefined
   const eventPins = new Map<string, number>()
   events.forEach((_, i) => {
     const key = eventKey(i)
@@ -565,7 +589,7 @@ export async function syncSipaDeposits(
       unplanned.length === 0 &&
       planned.every((p) => p.owner?.observedFrom && !p.owner.rescanFrom)
     )
-      return result
+      return finish()
     const backfillFrom = planned.some((p) => windowStart(p.owner, cursor) === undefined)
       ? (await historyStart()) ?? lookbackStart(head)
       : 0n
@@ -629,6 +653,7 @@ export async function syncSipaDeposits(
       try {
         await deps.refreshBalance?.()
       } catch (err) {
+        complete = false
         logger.warn("[sipaClaims] balance refresh failed:", err)
       }
     }
@@ -657,19 +682,21 @@ export async function syncSipaDeposits(
   // has a record only if `ResolverPaymentWatcher` saw it funded inside its window (today and
   // yesterday, a few nonces past the last one used). Anything older has no record and no exit.
 
-  return result
+  return finish()
 }
 
 /**
  * Writes the deposit record of each event that announces a direct deposit (a migration executor's
- * deposit straight into the portal, with no SIPA), unless it exists, and returns the other events.
- * The record has no read window yet, so the pass reads its commitment from the deployment's start.
+ * deposit straight into the portal, with no SIPA), unless it exists, and returns the other events
+ * and whether a write did not land. The record has no read window yet, so the pass reads its
+ * commitment from the deployment's start.
  */
 async function recordDirectAnnouncements(
   deps: SipaDepositSyncDeps,
   events: readonly RowEvent[],
-): Promise<SipaEvent[]> {
+): Promise<{ events: SipaEvent[]; missed: boolean }> {
   const rest: SipaEvent[] = []
+  let missed = false
   for (const { event, l2Token } of events) {
     const commitment = await directAnnouncementOf(event, deps.recipient)
     if (!commitment) {
@@ -691,6 +718,7 @@ async function recordDirectAnnouncements(
           recipientHash: commitment,
           recoveryAddress: "",
           l1ChainId: deps.l1ChainId,
+          networkId: deps.networkId,
           amount: "0",
           tokenSymbol: row.token.symbol,
           tokenAddress: row.token.address,
@@ -700,11 +728,12 @@ async function recordDirectAnnouncements(
           fee: "0",
         },
       )
-      .catch((err) =>
-        logger.warn(`[sipaClaims] direct deposit ${commitment} not recorded (will retry):`, err),
-      )
+      .catch((err) => {
+        missed = true
+        logger.warn(`[sipaClaims] direct deposit ${commitment} not recorded (will retry):`, err)
+      })
   }
-  return rest
+  return { events: rest, missed }
 }
 
 /** The commitment a direct deposit's announcement names, or undefined for any other event. */
@@ -799,6 +828,7 @@ async function adoptStrays(
               recipientHash: deposit.recipientCommitment,
               recoveryAddress: plan.accountProtocol ? "" : plan.recoveryAddress.toString(),
               l1ChainId: deps.l1ChainId,
+              networkId: deps.networkId,
               amount: "0",
               tokenSymbol: defaultRow(deps, intent).token.symbol,
               startTime: Date.now(),
@@ -806,10 +836,12 @@ async function adoptStrays(
               ...(intent ? { intent } : {}),
             },
           )
+          run.incomplete()
           return
         }
       } catch (err) {
         // The commitment's SIPA re-reads from the deposit, so a later pass meets the stray again.
+        run.incomplete()
         rereadFrom(run, plan.addresses[0]!, deposit.blockNumber)
         logger.warn(`[sipaClaims] could not track the SIPA behind deposit ${deposit.index}:`, err)
       }
@@ -838,7 +870,7 @@ function markForRescan(deps: SipaDepositSyncDeps, sipaAddress: Address, fromBloc
 async function attributeFunding(
   deps: SipaDepositSyncDeps,
   sipaAddress: Address,
-  fallback: Omit<SIPADepositRecord, "sipaAddress" | "phase">,
+  fallback: SIPADepositFields,
   run: SyncRunContext,
   inflows: readonly TokenTransfer[],
 ): Promise<bigint | undefined> {
@@ -971,6 +1003,8 @@ interface SyncRunContext {
    * claim reads `claimed` only once the balance holds it and never overwrites a later sweep's state.
    */
   record: (write: () => Promise<void>) => void
+  /** A step left work to a later pass: the result is not `complete`. */
+  incomplete: () => void
   /** `record`, for a write that marks a claim: the balance is read before the queue runs. */
   claimed: (write: () => Promise<void>) => void
   /** Sweeps whose deposits were already spent, by `consumedKey`. */
@@ -1111,6 +1145,7 @@ async function readConsumed(
             run.consumed.add(consumedKey(pending[i]!.scan.sipaAddress, pending[i]!.sweep.index))
         })
       } catch (err) {
+        run.incomplete()
         logger.warn("[sipaClaims] consumed-sweep lookup failed, claiming each sweep:", err)
       }
     }),
@@ -1241,6 +1276,7 @@ async function planEvent(
   if (resolving) {
     const blessed = await run.userOpImplementations().catch((err: unknown) => {
       candidatesKnown = false
+      run.incomplete()
       logger.warn("[sipaClaims] blessed user-op implementations unread this pass:", err)
       return [] as EthAddress[]
     })
@@ -1355,13 +1391,14 @@ async function finishEvent(
       : undefined
   result.discovered += 1
 
-  const fallback: Omit<SIPADepositRecord, "sipaAddress" | "phase"> = {
+  const fallback: SIPADepositFields = {
     recipientL2Address: deps.recipient.toString(),
     messageSecret: sharedSecretSalt.toString(),
     recipientHash: recipientCommitment.toString(),
     recoveryAddress: accountProtocol ? "" : recoveryAddress.toString(),
     origin,
     l1ChainId: deps.l1ChainId,
+    networkId: deps.networkId,
     amount: "0",
     tokenSymbol: defaultRow(deps, intent).token.symbol,
     startTime: Date.now(),
@@ -1475,8 +1512,11 @@ async function finishEvent(
 /** The rest of a due SIPA's sync, once the batched reads land. */
 async function scanOne(due: DueScan): Promise<void> {
   const { deps, result, run, sharedSecretSalt, sipaAddress, fallback, record, phase } = due
-  const { intent, implementation, discovered, observed } = due
-  const { tuple } = deps
+  const { intent, observed } = due
+  // History is dated by chain. A direct deposit's announcement writes its record before its deposit
+  // is seen, so that record is history until its first deposit is ledgered.
+  const discovered =
+    due.discovered || !!(record?.replayed && record.direct && !record.sweeps?.length)
 
   // Funding attribution: the token-level sender of the first Transfer into the SIPA. Read only
   // until it is stamped. Isolated: attribution is auxiliary and must not fail the claim path.
@@ -1484,6 +1524,7 @@ async function scanOne(due: DueScan): Promise<void> {
     record?.fundingFromAddress || !observed.inflows
       ? undefined
       : await attributeFunding(deps, sipaAddress, fallback, run, observed.inflows).catch((err) => {
+          run.incomplete()
           logger.warn("[sipaClaims] funding attribution failed (will retry next sync):", err)
           return undefined
         })
@@ -1498,7 +1539,10 @@ async function scanOne(due: DueScan): Promise<void> {
     // A direct deposit has no sweep, so it pays no sweep fee.
     if (stored?.direct) return "0"
     const [read] = await Promise.allSettled([run.feeFor(sipaRecordIntent(intent), row)])
-    if (read.status !== "fulfilled") return undefined
+    if (read.status !== "fulfilled") {
+      run.incomplete()
+      return undefined
+    }
     return bigMax(read.value, BigInt(stored?.registrationFee ?? 0)).toString()
   }
   const feeBreakdown = async (row: SipaRow): Promise<Partial<SIPADepositRecord>> => {
@@ -1663,6 +1707,7 @@ async function scanOne(due: DueScan): Promise<void> {
       )
       result.recoverable += 1
     } else if (undecided && funding.balance > 0n) {
+      run.incomplete()
       await deps.store.upsert(sipaAddress, { phase, ...funded, ...scanned }, fallback)
     } else if (funding.balance > 0n && (!funding.sweepable || (paidAgain && !resweepable))) {
       // Outside the sweep window — the balance is at or below the sweep fee, or what clears it
@@ -1679,6 +1724,7 @@ async function scanOne(due: DueScan): Promise<void> {
       try {
         await deps.onSweptAddressFunded?.(sipaAddress)
       } catch (err) {
+        run.incomplete()
         logger.warn(`[sipaClaims] ${sipaAddress} republish failed, retrying next scan:`, err)
         return
       }
@@ -1875,6 +1921,7 @@ async function scanOne(due: DueScan): Promise<void> {
           reorgEpoch: stored?.reorgEpoch,
         })
       } catch (err) {
+        run.incomplete()
         logger.warn(
           `[sipaClaims] sweep ${indexKey}: ledger read failed (will retry next sync):`,
           err,
@@ -2037,16 +2084,9 @@ async function republishIfOverdue(deps: SipaDepositSyncDeps, run: SyncRunContext
     if (await deps.onSweepOverdue(sipa))
       logger.info(`[sipaClaims] ${sipa} is overdue for its sweep: published again`)
   } catch (err) {
+    run.incomplete()
     logger.warn(`[sipaClaims] ${sipa} republish failed, asking again in a day:`, err)
   }
-}
-
-/** A claimed sweep the ledger has no entry for: the record was claimed before the ledger existed. */
-function unledgeredSweeps(record: SIPADepositRecord): boolean {
-  const claimed =
-    record.claimedInboxIndexes ??
-    (record.phase === "claimed" && record.inboxIndex ? [record.inboxIndex] : [])
-  return claimed.some((index) => !record.sweeps?.some((s) => s.inboxIndex === index))
 }
 
 /** The ledger with `entry` in place of any earlier entry for its sweep, in inbox order. */

@@ -1,43 +1,49 @@
 import { useEffect, useRef, useState } from "react"
-import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
+import { Icon, IconCircle, PrimaryGradientButton, Spinner, StatusBadge } from "@obsidion/web-ds"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   cancelRotation,
   cancellable,
   fundingLanding,
   fundRotation,
-  resumeRotation,
-  retryMove,
+  moveDeclined,
+  moveProgress,
+  noteRecovery,
+  recordMoved,
   RotationFlowError,
   signRotation,
   type BackupRotationRecord,
   type FlowRefusal,
-  type FlowResult,
-  type FlowWait,
 } from "@obsidion/front-core"
-import { isPasskeyCancelled, passkeyWritten } from "@obsidion/passkey-web"
+import { passkeyWritten } from "@obsidion/passkey-web"
 import { BackupCredentialIdLengthError, RotationRouteNotLiveError } from "@obsidion/sdk"
 import { formatUnits } from "viem"
+import { l1AddressUrl, l1TxUrl, whenLabel } from "../../ui/detailRows"
 import { shortAddr, tokenFigure } from "../../ui/format"
 import { DepositFact } from "../../ui/screens/DepositFact"
 import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow"
-import { BackupStepError, LeftoverPasskeyError } from "./backupPasskeyAdd"
+import { DepositExitModal } from "../deposit/DepositExitModal/DepositExitModal"
+import { DepositReadError, EmptyDepositError } from "../deposit/depositReadErrors"
+import type { StrandedToken } from "../deposit/sipaRecovery"
+import { BackupStepError, LeftoverPasskeyError, passkeyDeclined } from "./backupPasskeyAdd"
 import {
   approveCopy,
   attentionCopy,
   entryCopy,
   fundCopy,
+  moveCopy,
   panelCopy,
+  recoveryCopy,
+  recoveryState,
   rotationSteps,
   stepDetail,
   stepIndex,
   type NamedLine,
+  type RecoveryState,
 } from "./backupPasskeyCopy"
 import type { BackupFlowDeps } from "./backupPasskeyRuntime"
+import { getRotationDriver, useRotationDrive } from "./rotationDrive"
 import "./backupPasskey.css"
-
-/** How long the panel waits before asking the chain again while a step is pending on it. */
-export const RESUME_POLL_MS = 15_000
 
 export const formatDai = (atomic: bigint) =>
   tokenFigure(formatUnits(atomic, DEFAULT_DECIMALS), "DAI")
@@ -81,19 +87,11 @@ const refusalLine: Partial<Record<FlowRefusal, string>> = {
 }
 
 function failureLine(error: unknown): string {
+  if (error instanceof DepositReadError) return error.message
   if (error instanceof RotationRouteNotLiveError) return panelCopy.routeNotLive
   if (error instanceof BackupCredentialIdLengthError) return panelCopy.credentialIdTooLong
   if (error instanceof RotationFlowError && refusalLine[error.code]) return refusalLine[error.code]!
-  return declined(error) ? panelCopy.declined : panelCopy.unverifiable
-}
-
-function declined(error: unknown): boolean {
-  try {
-    return isPasskeyCancelled(error)
-  } catch {
-    // An error whose fields throw when read is still a failure.
-    return false
-  }
+  return passkeyDeclined(error) ? panelCopy.declined : panelCopy.unverifiable
 }
 
 function Named({ line: [before, name, after] }: { line: NamedLine }) {
@@ -106,26 +104,25 @@ function Named({ line: [before, name, after] }: { line: NamedLine }) {
   )
 }
 
-/** A refusal the record already shows: the step ran elsewhere, or the attempt is gone. */
-const alreadyShown = (error: unknown) =>
-  error instanceof RotationFlowError && (error.code === "phase" || error.code === "gone")
-
-/** What a resume reads off the record: a record whose key changed is resumed again. */
-const resumeKey = (record: BackupRotationRecord) =>
-  [
-    record.attemptId,
-    record.phase,
-    record.attention,
-    record.suspended,
-    record.publish?.count,
-    ...record.fundings.map((funding) => `${funding.localId}:${funding.outcome}`),
-  ].join("|")
-
-function Steps({ record, approver }: { record: BackupRotationRecord; approver?: string }) {
+function Steps({
+  record,
+  approver,
+  waiting,
+}: {
+  record: BackupRotationRecord
+  approver?: string
+  /** The line for a step that waits on the user, in place of the step's own. */
+  waiting?: string
+}) {
   const current =
     record.phase === "attention" || record.phase === "conflict" ? -1 : stepIndex(record)
   const detail =
-    record.phase === "created" ? <Named line={approveCopy.detail(approver)} /> : stepDetail(record)
+    waiting ??
+    (record.phase === "created" ? (
+      <Named line={approveCopy.detail(approver)} />
+    ) : (
+      stepDetail(record)
+    ))
   return (
     <ol className="ww-backup__steps" aria-label="Backup passkey steps">
       {rotationSteps.map((label, i) => {
@@ -202,6 +199,160 @@ function FundScreen({
   )
 }
 
+/** An address or a hash, linked to its explorer where the L1 has one. */
+function ExplorerValue({ value, url }: { value: string; url?: string }) {
+  return url ? (
+    <a href={url} target="_blank" rel="noreferrer">
+      {shortAddr(value)}
+      <Icon name="share-box" size={12} color="currentColor" />
+    </a>
+  ) : (
+    <b>{shortAddr(value)}</b>
+  )
+}
+
+/** The card's own action, sized like the Activity row's so the card reads as one object. */
+function CardAction({
+  label,
+  busy,
+  onClick,
+  testId,
+}: {
+  label: string
+  busy: boolean
+  onClick: () => void
+  testId: string
+}) {
+  // The action bar wrapper gives the button its height: alone in the card's column, its flex basis
+  // of 0 would collapse it.
+  return (
+    <div className="zkm-activity-row__actions">
+      <button
+        type="button"
+        className="zkm-btn-reset zkm-pressable zkm-activity-action zkm-activity-action--gradient"
+        disabled={busy}
+        aria-busy={busy || undefined}
+        aria-label={busy ? label : undefined}
+        onClick={onClick}
+        data-testid={testId}
+      >
+        {busy ? <Spinner size={16} color="#fff" /> : label}
+      </button>
+    </div>
+  )
+}
+
+const RECOVERY_BADGE = { held: "failed", sent: "pending", recovered: "cancelled" } as const
+
+/**
+ * An attempt whose funding has to go back, shown in place of the steps: none of the five steps is
+ * true of an attempt that will not add its backup. Once sent there is no main button, so it does not
+ * read as "press again"; a link still recovers funding that lands later.
+ */
+function RecoveryCard({
+  record,
+  state,
+  busy,
+  empty,
+  onRecover,
+  onDone,
+}: {
+  record: BackupRotationRecord
+  state: RecoveryState
+  busy: boolean
+  /** The address held nothing when the user last asked to recover it. */
+  empty: boolean
+  onRecover: () => void
+  onDone: () => void
+}) {
+  // A funding that landed after the backup was added: the backup stands, only that funding is held.
+  const extra = record.suspended === "done"
+  const line =
+    state !== "held"
+      ? recoveryCopy.line[state]
+      : extra
+      ? recoveryCopy.line.extra
+      : record.attention === "corrupt"
+      ? recoveryCopy.line.damaged
+      : recoveryCopy.line.held
+  const sipa = record.rotation?.sipa
+  const recovery = state !== "held" ? record.recovery?.txHash : undefined
+  return (
+    <div className="zkm-activity-row ww-backup__recovery" data-testid="backup-recovery">
+      <div className="zkm-activity-row__top">
+        <IconCircle name="shield-exclamation" size={44} />
+        <div className="zkm-activity-row__who">
+          <span className="zkm-activity-row__name">
+            {extra ? recoveryCopy.extraTitle : recoveryCopy.title}
+          </span>
+          <span className="zkm-activity-row__time">
+            {extra ? recoveryCopy.extraSubtitle : recoveryCopy.started(whenLabel(record.createdAt))}
+          </span>
+        </div>
+        <StatusBadge label={recoveryCopy.badge[state]} badgeStyle={RECOVERY_BADGE[state]} />
+      </div>
+      <p className="ww-backup__recovery-line">{line}</p>
+      <div className="ww-backup__recovery-facts">
+        {record.plan?.deposited && (
+          <DepositFact label={recoveryCopy.funding}>
+            <b>{formatDai(BigInt(record.plan.deposited))}</b>
+          </DepositFact>
+        )}
+        {recovery ? (
+          <DepositFact label={recoveryCopy.recovery}>
+            <ExplorerValue value={recovery} url={l1TxUrl(recovery)} />
+          </DepositFact>
+        ) : (
+          sipa && (
+            <DepositFact label={recoveryCopy.depositAddress}>
+              <ExplorerValue value={sipa} url={l1AddressUrl(sipa)} />
+            </DepositFact>
+          )
+        )}
+      </div>
+      {state === "held" && (
+        <>
+          <p className="ww-backup__recovery-note" aria-live="polite">
+            {empty ? recoveryCopy.nothingYet : recoveryCopy.gas}
+          </p>
+          <CardAction
+            label={recoveryCopy.recover}
+            busy={busy}
+            onClick={onRecover}
+            testId="backup-recover"
+          />
+        </>
+      )}
+      {state === "sent" && (
+        // The link stays after an empty check: funding that lands later keeps the same recovery, so
+        // the empty note would never clear on its own.
+        <p className="ww-backup__recovery-note" aria-live="polite">
+          {empty ? (
+            <span className="ww-backup__recovery-checked">
+              <Icon name="check-circle" size={14} color="currentColor" />
+              {recoveryCopy.nothingNew}
+            </span>
+          ) : (
+            recoveryCopy.later
+          )}{" "}
+          <button
+            type="button"
+            className="zkm-btn-reset ww-deposit__link"
+            onClick={onRecover}
+            disabled={busy}
+            data-testid="backup-recover-later"
+          >
+            {recoveryCopy.checkAddress}
+          </button>
+        </p>
+      )}
+      {state === "recovered" && (
+        <CardAction label={recoveryCopy.done} busy={busy} onClick={onDone} testId="backup-done" />
+      )}
+    </div>
+  )
+}
+
 /** A step's way out, under its primary action. */
 function SecondaryButton({
   label,
@@ -224,8 +375,9 @@ function SecondaryButton({
 
 /**
  * A pending rotation from its saved record: the step it is on, what the user can do there, and
- * the side states. The flow is resumed over the record whenever it changes and polled while a step
- * waits on the chain or a resume failed; the approval and the funding wait for the user.
+ * the side states. The session's driver resumes it; the panel shows the driver's answer and runs
+ * the steps the user taps, the move's passkey prompts included. A declined move prompt waits for
+ * the user's Try again.
  */
 export function BackupPasskeyPanel({
   record,
@@ -233,7 +385,6 @@ export function BackupPasskeyPanel({
   approver,
   onCancelled,
   onFinished,
-  pollMs = RESUME_POLL_MS,
 }: {
   record: BackupRotationRecord
   deps: BackupFlowDeps
@@ -242,15 +393,20 @@ export function BackupPasskeyPanel({
   /** The attempt was dropped; the caller shows the leftover-passkey line. */
   onCancelled: () => void
   onFinished: () => void
-  pollMs?: number
 }) {
   const [busy, setBusy] = useState(false)
   const [stepError, setStepError] = useState<{ error: unknown; approving: boolean }>()
-  const [resume, setResume] = useState<{ wait?: FlowWait; error?: string; again: boolean }>()
-  const [resumeRun, setResumeRun] = useState(0)
-  const latest = useRef(record)
-  latest.current = record
-  const resuming = useRef<{ key: string; promise: Promise<FlowResult> }>(undefined)
+  const [recovering, setRecovering] = useState<StrandedToken>()
+  // The recovery the address was found empty under, so the note clears once another is sent.
+  const [emptyUnder, setEmptyUnder] = useState<string>()
+  const drive = useRotationDrive(record.owner)
+  // Closing the panel withdraws its taps: a send that has not asked for the passkey yet stops.
+  const open = useRef<AbortController>(undefined)
+  useEffect(() => {
+    const controller = new AbortController()
+    open.current = controller
+    return () => controller.abort()
+  }, [])
 
   const run = async (step: () => Promise<unknown>, approving = false) => {
     setBusy(true)
@@ -258,7 +414,7 @@ export function BackupPasskeyPanel({
     try {
       await step()
     } catch (err) {
-      if (alreadyShown(err)) return
+      if (recordMoved(err)) return
       warnFailure("step failed", err)
       setStepError({ error: err, approving })
     } finally {
@@ -266,80 +422,56 @@ export function BackupPasskeyPanel({
     }
   }
 
-  // One resume at a time, over the record as it stands. The record a resume writes re-runs this
-  // effect while that resume is still settling: its result is for the record it read, so the new
-  // record is resumed once it ends.
-  const resumable = record.phase !== "created"
-  const key = resumeKey(record)
-  useEffect(() => {
-    if (!resumable) return
-    let stale = false
-    setResume(undefined)
-    const inFlight = resuming.current
-    if (inFlight && inFlight.key !== key) {
-      const again = () => {
-        if (!stale) setResumeRun((n) => n + 1)
-      }
-      inFlight.promise.then(again, again)
-      return () => {
-        stale = true
-      }
-    }
-    const flight = inFlight ?? {
-      key,
-      promise: resumeRotation(deps, latest.current).finally(() => {
-        resuming.current = undefined
-      }),
-    }
-    resuming.current = flight
-    flight.promise.then(
-      (result) => {
-        if (!stale) setResume({ wait: result.wait, again: false })
-      },
-      (err) => {
-        if (stale || alreadyShown(err)) return
-        warnFailure("resume failed", err)
-        setResume({ error: errorLine(err), again: true })
-      },
-    )
-    return () => {
-      stale = true
-    }
-  }, [deps, resumable, key, resumeRun])
-
-  // A step waiting on the chain, a resume that failed, and a park the chain alone can lift are asked
-  // again after a while; the funding waits for the user.
+  // An answer for another attempt is not shown.
+  const resume = drive?.record.attemptId === record.attemptId ? drive.resume : undefined
   const wait = resume?.wait
-  const parked = record.attention === "route" || record.attention === "stranded"
-  const again =
-    resume !== undefined && (resume.again || (wait !== undefined && wait !== "funding") || parked)
-  useEffect(() => {
-    if (!again) return
-    const timer = setTimeout(() => setResumeRun((n) => n + 1), pollMs)
-    return () => clearTimeout(timer)
-  }, [again, pollMs, resumeRun])
-
-  const checking = resumable && resume === undefined
+  const approving = drive?.approving ?? false
+  const checking = record.phase !== "created" && resume === undefined
+  // Only once the driver answers `declined`: an earlier chunk in flight comes first.
+  const declinedMove = moveDeclined(record) && wait === "declined"
   // Worded here so a declined approval names the approver as it stands. A wrong passkey ends the
   // prompt the way a closed one does.
   const stepLine =
     stepError &&
-    (stepError.approving && declined(stepError.error) ? (
+    (stepError.approving && passkeyDeclined(stepError.error) ? (
       <Named line={approveCopy.declined(approver)} />
     ) : (
       errorLine(stepError.error)
     ))
-  const error = stepLine ?? resume?.error
+  const error =
+    stepLine ??
+    (declinedMove
+      ? panelCopy.declined
+      : resume?.error === undefined
+      ? undefined
+      : errorLine(resume.error))
+  const driver = getRotationDriver()
   const checkAgain = () => {
     setStepError(undefined)
-    setResumeRun((n) => n + 1)
+    driver.check(record.owner)
   }
   const cancel = () =>
     run(async () => {
       await cancelRotation(deps, record)
       onCancelled()
     })
-  const retry = () => run(() => retryMove(deps, record))
+  const retry = () => run(() => driver.retry(record.owner, open.current?.signal))
+  const approveMove = () => run(() => driver.approve(record.owner, open.current?.signal))
+  const recovery = recoveryState(record)
+  const recoveryKey = record.recovery?.txHash ?? "held"
+  const recover = () =>
+    run(async () => {
+      setEmptyUnder(undefined)
+      let found: StrandedToken
+      try {
+        found = await deps.strandedDeposit(record)
+      } catch (err) {
+        // Nothing to recover is not a failure: the card says so in its own neutral line.
+        if (err instanceof EmptyDepositError) return setEmptyUnder(recoveryKey)
+        throw err
+      }
+      setRecovering(found)
+    })
   const finish = () =>
     run(async () => {
       await deps.store.remove(record.owner)
@@ -350,7 +482,18 @@ export function BackupPasskeyPanel({
   // The error is part of the line where the step itself is the check.
   let errorInline = false
   let body: React.ReactNode
-  if (record.phase === "created") {
+  if (recovery) {
+    body = (
+      <RecoveryCard
+        record={record}
+        state={recovery}
+        busy={busy}
+        empty={emptyUnder === recoveryKey}
+        onRecover={recover}
+        onDone={finish}
+      />
+    )
+  } else if (record.phase === "created") {
     body = (
       <div className="ww-backup__actions">
         <PrimaryGradientButton
@@ -415,12 +558,10 @@ export function BackupPasskeyPanel({
         </>
       )
     }
-  } else if (record.phase === "done" || record.phase === "recovered") {
+  } else if (record.phase === "done") {
     body = (
       <>
-        <p className="ww-sheet__note">
-          {record.phase === "done" ? panelCopy.doneLine : panelCopy.recoveredLine}
-        </p>
+        <p className="ww-sheet__note">{panelCopy.doneLine}</p>
         <PrimaryGradientButton title={panelCopy.done} onClick={finish} testId="backup-done" />
       </>
     )
@@ -433,7 +574,7 @@ export function BackupPasskeyPanel({
         )}
       </>
     )
-  } else if (record.phase === "attention" && record.attention) {
+  } else if (record.phase === "attention" && record.attention && record.attention !== "stranded") {
     const copy = attentionCopy(record.attention, record)
     // A recheck that could not complete says so; the parked verdict is not repeated as current.
     errorInline = record.attention === "route"
@@ -454,7 +595,7 @@ export function BackupPasskeyPanel({
               <PrimaryGradientButton
                 key={action}
                 title={panelCopy.tryAgain}
-                isLoading={busy || checking}
+                isLoading={busy || checking || approving}
                 onClick={retry}
                 testId="backup-move-retry"
               />
@@ -469,6 +610,28 @@ export function BackupPasskeyPanel({
           )}
         </div>
       </>
+    )
+  } else if (declinedMove) {
+    body = (
+      <div className="ww-backup__actions">
+        <PrimaryGradientButton
+          title={panelCopy.tryAgain}
+          isLoading={busy || checking || approving}
+          onClick={retry}
+          testId="backup-move-retry"
+        />
+      </div>
+    )
+  } else if (wait === "approval" || approving) {
+    body = (
+      <div className="ww-backup__actions">
+        <PrimaryGradientButton
+          title={busy || approving ? panelCopy.approving : approveCopy.button(approver)}
+          isLoading={busy || approving}
+          onClick={approveMove}
+          testId="backup-move-approve"
+        />
+      </div>
     )
   } else if (error) {
     body = (
@@ -491,7 +654,15 @@ export function BackupPasskeyPanel({
   return (
     <section className="ww-contacts__section ww-backup" data-testid="backup-panel">
       <span className="ww-contacts__label">Backup passkey</span>
-      <Steps record={record} approver={approver} />
+      {!recovery && (
+        <Steps
+          record={record}
+          approver={approver}
+          waiting={
+            wait === "approval" || declinedMove ? moveCopy.line(moveProgress(record)) : undefined
+          }
+        />
+      )}
       <p
         className="ww-search__error ww-backup__error"
         aria-live="assertive"
@@ -500,6 +671,16 @@ export function BackupPasskeyPanel({
         {errorInline ? undefined : error}
       </p>
       {body}
+      {recovering && (
+        <DepositExitModal
+          record={recovering.record}
+          reason="stranded"
+          canSweep={false}
+          stranded={recovering}
+          onRecovered={(hash) => void run(() => noteRecovery(deps, record, hash))}
+          onClose={() => setRecovering(undefined)}
+        />
+      )}
       {record.phase !== "created" && cancellable(record) && (
         <p className="ww-sheet__note ww-backup__fine">{panelCopy.approvalStays}</p>
       )}

@@ -5,6 +5,7 @@ export const ISSUED_CONNECT_STORAGE_KEY = "obsidion_issued_connects"
 export const PENDING_CONNECT_BACK_STORAGE_KEY = "obsidion_pending_connect_backs"
 export const NAME_CLAIM_STORAGE_KEY = "obsidion_name_claims"
 export const BACKUP_ROTATION_STORAGE_KEY = "obsidion_backup_rotation"
+export const PREVIOUS_ACCOUNT_WATCH_STORAGE_KEY = "obsidion_previous_account_watch"
 export const REQUEST_STORAGE_KEY = "obsidion.payment-requests.v1"
 
 /**

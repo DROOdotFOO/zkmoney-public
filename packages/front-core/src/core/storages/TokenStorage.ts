@@ -2,14 +2,22 @@ import { assert } from "ts-essentials"
 import type { Token } from "@obsidion/sdk"
 import { TOKENS_LOCAL_STORAGE_KEY } from "./storage-constants.js"
 import type { IStorageAdapter } from "./adapter.js"
+import { memoryStore } from "../../engine/store"
+import { legacyStore } from "../../engine/legacyStore"
 
 type StoredEntries = [string, Token][]
 
 export class TokenStorage {
   private static instance: TokenStorage | null = null
   private storage: IStorageAdapter
+  private writes = memoryStore(0)
+  /** The stored rows, read again after every write. */
+  readonly rows = legacyStore<readonly Token[]>(
+    { read: () => this.getTokens(), subscribe: (onChange) => this.writes.subscribe(onChange) },
+    [],
+  )
 
-  private constructor(storage: IStorageAdapter) {
+  constructor(storage: IStorageAdapter) {
     this.storage = storage
   }
 
@@ -79,6 +87,7 @@ export class TokenStorage {
 
   private async saveEntries(entries: StoredEntries): Promise<void> {
     await this.storage.setItem(TOKENS_LOCAL_STORAGE_KEY, JSON.stringify(entries))
+    this.writes.update((n) => n + 1)
   }
 
   public async addToken(token: Token) {
@@ -117,5 +126,6 @@ export class TokenStorage {
 
   public async clear() {
     await this.storage.removeItem(TOKENS_LOCAL_STORAGE_KEY)
+    this.writes.update((n) => n + 1)
   }
 }

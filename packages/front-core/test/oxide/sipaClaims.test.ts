@@ -3,6 +3,7 @@ import { encodeEventTopics, erc20Abi, pad, toHex, type Address } from "viem"
 import { keccak256 } from "@aztec-labs/foundation/crypto/keccak"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { SipaIntent } from "@oxide/l1-contracts"
+import { syncCatchUp } from "../../src/engine/catchUp"
 
 const ZERO = "0x0000000000000000000000000000000000000000"
 
@@ -43,7 +44,7 @@ vi.mock("@obsidion/sdk", async () => ({
     const domain = keccak256(toHex("oxide.direct-migration"))
     return (c: `0x${string}`) => keccak256(concat([domain, c]))
   })(),
-  isAlreadyClaimedDepositError: (await import("../../../sdk/src/services/depositReceipt.js"))
+  isAlreadyClaimedDepositError: (await import("../../../sdk/src/services/token/depositReceipt.js"))
     .isAlreadyClaimedDepositError,
   fetchSipaEvents: mocks.fetchSipaEvents,
   readSipaDepositsConsumed: mocks.readSipaDepositsConsumed,
@@ -239,7 +240,6 @@ import { observeSipas } from "../../src/oxide/sipaObservation"
 import { syncSipaDeposits, type SipaDepositSyncDeps } from "../../src/oxide/sipaClaims"
 import type { SipaFundingToken } from "../../src/oxide/sipaFunding"
 import type { SipaRow } from "../../src/oxide/sipaRows"
-import { globalEventEmitter } from "../../src/core/services/GlobalEventEmitter"
 import { isStuckSweep, STUCK_SWEEP_MS } from "../../src/core/services/deposits/sipaStuck"
 import {
   directDepositKey,
@@ -375,6 +375,7 @@ function makeDeps(store = makeStore()) {
     } as never,
     node: {} as never,
     wallet: { getPrivateEvents: vi.fn() } as never,
+    networkId: "0x00000000000000000000000000000000000000e1",
     tokenServiceFor: vi.fn(async () => tokenService),
     store,
     tuple: TUPLE,
@@ -3587,13 +3588,13 @@ describe("syncSipaDeposits balance refresh", () => {
     expect(refreshBalance.mock.invocationCallOrder[0]).toBeGreaterThan(
       tokenService.claimSweptDeposit.mock.invocationCallOrder[0],
     )
-    expect(globalEventEmitter.isSyncCatchingUp()).toBe(true)
+    expect(syncCatchUp.status.get()).toBe(true)
 
     land()
 
     expect(await pass).toMatchObject({ claimed: 1 })
     expect(refreshBalance).toHaveBeenCalledTimes(1)
-    expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
+    expect(syncCatchUp.status.get()).toBe(false)
   })
 
   it.each([
@@ -3758,11 +3759,11 @@ describe("syncSipaDeposits balance refresh", () => {
       claimed: 1,
       failed: 0,
     })
-    expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
+    expect(syncCatchUp.status.get()).toBe(false)
   })
 
   it("begins a catch-up only for a pass that discovers an event with no local record", async () => {
-    const begin = vi.spyOn(globalEventEmitter, "beginSyncCatchUp")
+    const begin = vi.spyOn(syncCatchUp, "begin")
     try {
       const store = makeStore()
       store.records.set(SIPA_A, {
@@ -4972,6 +4973,17 @@ describe("a direct deposit's announcement", () => {
     })
   })
 
+  it("leaves the pass incomplete when the direct deposit's record does not land", async () => {
+    const { deps, store } = makeDeps()
+    mocks.fetchSipaEvents.mockResolvedValue([
+      sipaEvent(SECRET_A, `0x${marker(COMMITMENT).toString("hex")}`),
+    ])
+    store.upsert.mockRejectedValueOnce(new Error("quota exceeded"))
+
+    expect(await syncSipaDeposits(deps)).toMatchObject({ failed: 0, complete: false })
+    expect(store.records.has(KEY)).toBe(false)
+  })
+
   it("keeps the sending browser's own record and writes no other", async () => {
     const store = makeStore()
     const own = {
@@ -5002,6 +5014,27 @@ describe("a direct deposit's announcement", () => {
     expect(store.upsert.mock.calls.some(([, patch]) => "replayed" in patch)).toBe(false)
   })
 
+  it("dates a replayed direct deposit by its deposit's block, not by when this browser found it", async () => {
+    const { deps, store } = makeDeps()
+    mocks.fetchSipaEvents.mockResolvedValue([
+      sipaEvent(SECRET_A, `0x${marker(COMMITMENT).toString("hex")}`),
+    ])
+    mocks.readSweepEvents.mockImplementation(async (_c: unknown, address: string) =>
+      address.toLowerCase() === KEY
+        ? [{ index: 7n, amount: 990_000n, blockNumber: 1n, txHash: TX_HASH }]
+        : [],
+    )
+    mocks.readBlockTimeMs.mockResolvedValue(1_700_000_000_000)
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(KEY)).toMatchObject({
+      phase: "claimed",
+      startTime: 1_700_000_000_000,
+      endTime: 1_700_000_000_000,
+    })
+  })
+
   it("still reads an ordinary deposit event under the same commitment as a SIPA", async () => {
     const { deps, store } = makeDeps()
     mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
@@ -5012,5 +5045,283 @@ describe("a direct deposit's announcement", () => {
     expect(mocks.computeSIPAAddress).toHaveBeenCalled()
     expect(store.records.get(SIPA_A)).toMatchObject({ recipientHash: COMMITMENT })
     expect(store.records.get(SIPA_A)?.direct).toBeUndefined()
+  })
+})
+
+describe("syncSipaDeposits complete", () => {
+  const empty = { balance: 0n, scaledBalance: 0n, fee: 100n, sweepable: false }
+  const funded = { balance: 500n, scaledBalance: 500n, fee: 100n, sweepable: true }
+  const sweep = { index: 7n, amount: 990_000n, blockNumber: HEAD - 5n, txHash: TX_HASH }
+  const observedRecord = (fields: Record<string, unknown> = {}) => ({
+    phase: "broadcast",
+    messageSecret: SECRET_A.toString(),
+    recipientL2Address: RECIPIENT_HEX,
+    startTime: 1,
+    amount: "0",
+    observedFrom: (HEAD - 1_000n).toString(),
+    ...fields,
+  })
+  /** The next observation also sees a deposit to SECRET_A's commitment that no tracked SIPA sent. */
+  const withStray = () => {
+    const real = vi.mocked(observeSipas).getMockImplementation()!
+    vi.mocked(observeSipas).mockImplementationOnce(async (client, params) => ({
+      ...(await real(client, params)),
+      strays: [
+        {
+          portal: TUPLE.portal,
+          recipientCommitment: mocks.computeStealthRecipientHash(SECRET_A).toString(),
+          amount: 1n,
+          key: `0x${"01".repeat(32)}`,
+          index: 3n,
+          blockNumber: HEAD - 5n,
+          txHash: TX_HASH,
+          logIndex: 0,
+        } as never,
+      ],
+    }))
+  }
+
+  beforeEach(() => {
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([])
+    mocks.readSipaFundingStatus.mockResolvedValue(empty)
+  })
+
+  it("is set by a pass that claims cleanly, and by one with nothing to read", async () => {
+    mocks.readSweepEvents.mockResolvedValue([sweep])
+    expect(await syncSipaDeposits(makeDeps().deps)).toMatchObject({ claimed: 1, complete: true })
+
+    mocks.fetchSipaEvents.mockResolvedValue([])
+    expect(await syncSipaDeposits(makeDeps().deps)).toMatchObject({ complete: true })
+  })
+
+  it("is cleared by a history start that fails to read, though the cursor was already set and moves", async () => {
+    const store = makeStore()
+    store.cursor = HEAD - 10n
+
+    const result = await syncSipaDeposits({
+      ...makeDeps(store).deps,
+      historyStartBlock: async () => {
+        throw new Error("rpc down")
+      },
+    })
+
+    expect(result).toMatchObject({ failed: 0, complete: false })
+    expect(store.cursor).toBe(HEAD)
+  })
+
+  it.each([
+    ["adopting", () => mocks.readSweepEmitters.mockResolvedValue([SIPA_C]), true],
+    [
+      "failing to adopt",
+      () => mocks.readSweepEmitters.mockRejectedValue(new Error("rpc down")),
+      false,
+    ],
+  ])("is cleared by %s a stray", async (_, emitters, adopted) => {
+    const store = makeStore()
+    withStray()
+    emitters()
+
+    const result = await syncSipaDeposits(makeDeps(store).deps)
+
+    expect(result).toMatchObject({ failed: 0, complete: false })
+    expect(store.records.has(SIPA_C)).toBe(adopted)
+  })
+
+  it("is cleared by a sweep that fails", async () => {
+    const { deps, tokenService } = makeDeps()
+    mocks.readSweepEvents.mockResolvedValue([sweep])
+    tokenService.claimSweptDeposit.mockRejectedValue(new Error("pxe busy"))
+
+    expect(await syncSipaDeposits(deps)).toMatchObject({ failed: 1, complete: false })
+  })
+
+  it("is cleared when a record write does not land and the cursor holds", async () => {
+    const { deps, store } = makeDeps()
+    mocks.readSweepEvents.mockResolvedValue([sweep])
+    const upsert = store.upsert.getMockImplementation()!
+    store.upsert.mockImplementation(async (address, patch, fallback) => {
+      if (patch.phase === "claimed") throw new Error("quota exceeded")
+      return upsert(address, patch, fallback)
+    })
+
+    expect(await syncSipaDeposits(deps)).toMatchObject({ complete: false })
+    expect(store.cursor).toBeUndefined()
+  })
+
+  it("is cleared when the republish of a paid-again address throws", async () => {
+    const store = makeStore()
+    store.cursor = HEAD - 1n
+    store.records.set(
+      SIPA_A,
+      observedRecord({ phase: "claimed", inboxIndex: "7", claimedInboxIndexes: ["7"], fee: "100" }),
+    )
+    mocks.fetchSipaEvents.mockResolvedValue([{ ...sipaEvent(SECRET_A), resweepable: true }])
+    mocks.readSipaFundingStatus.mockResolvedValue(funded)
+    const onSweptAddressFunded = vi.fn(async () => {
+      throw new Error("node down")
+    })
+
+    const result = await syncSipaDeposits({ ...makeDeps(store).deps, onSweptAddressFunded })
+
+    expect(onSweptAddressFunded).toHaveBeenCalledWith(SIPA_A)
+    expect(result).toMatchObject({ failed: 0, complete: false })
+    expect(store.records.get(SIPA_A)).toMatchObject({ phase: "claimed" })
+  })
+
+  it("is cleared when the republish of an overdue address throws", async () => {
+    const store = makeStore()
+    store.cursor = HEAD - 1n
+    store.records.set(
+      SIPA_A,
+      observedRecord({ phase: "sweeping", startTime: Date.now() - 2 * 3_600_000 }),
+    )
+    mocks.readSipaFundingStatus.mockResolvedValue(funded)
+    const onSweepOverdue = vi.fn(async (): Promise<boolean> => {
+      throw new Error("node down")
+    })
+
+    const result = await syncSipaDeposits({ ...makeDeps(store).deps, onSweepOverdue })
+
+    expect(onSweepOverdue).toHaveBeenCalledWith(SIPA_A)
+    expect(result).toMatchObject({ failed: 0, complete: false })
+  })
+
+  it("is cleared by a funded address whose sweep it cannot price", async () => {
+    mocks.readDepositFee.mockRejectedValue(new Error("rpc down"))
+    mocks.readSipaFundingStatus.mockResolvedValue(funded)
+
+    expect(await syncSipaDeposits(makeDeps().deps)).toMatchObject({ failed: 0, complete: false })
+  })
+
+  it("is cleared by a claimed sweep whose fee it cannot read", async () => {
+    mocks.readSweepEvents.mockResolvedValue([sweep])
+    mocks.readDepositFee.mockRejectedValue(new Error("rpc down"))
+
+    expect(await syncSipaDeposits(makeDeps().deps)).toMatchObject({
+      claimed: 1,
+      failed: 0,
+      complete: false,
+    })
+  })
+
+  it("is cleared when the blessed user-op list cannot be read", async () => {
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, `0x${"88".repeat(32)}`)])
+    mocks.readBlessedImplementations.mockRejectedValue(new Error("rpc down"))
+
+    expect(await syncSipaDeposits(makeDeps().deps)).toMatchObject({ failed: 0, complete: false })
+  })
+
+  it("is cleared when the spent-sweep lookup fails", async () => {
+    mocks.readSweepEvents.mockResolvedValue([sweep])
+    mocks.readSipaDepositsConsumed.mockRejectedValue(new Error("node down"))
+
+    const result = await syncSipaDeposits({
+      ...makeDeps().deps,
+      node: { findLeavesIndexes: vi.fn() } as never,
+      masterNullifierHidingKey: { secret: "nhk" } as never,
+    })
+
+    expect(result).toMatchObject({ claimed: 1, failed: 0, complete: false })
+  })
+
+  it("is cleared when funding attribution fails", async () => {
+    mocks.readSweepEvents.mockResolvedValue([sweep])
+    mocks.readFundingTransfers.mockResolvedValue([
+      { from: SIPA_B, amount: 1_000_000n, blockNumber: 5n, txHash: TX_HASH },
+    ])
+
+    const result = await syncSipaDeposits({
+      ...makeDeps().deps,
+      onFundingWalletDetected: async () => {
+        throw new Error("contacts down")
+      },
+    })
+
+    expect(result).toMatchObject({ claimed: 1, failed: 0, complete: false })
+  })
+
+  it("is cleared when a claimed sweep's ledger entry does not land", async () => {
+    const store = makeStore()
+    store.cursor = HEAD - 1n
+    store.records.set(
+      SIPA_A,
+      observedRecord({ phase: "claimed", inboxIndex: "7", claimedInboxIndexes: ["7"] }),
+    )
+    const upsert = store.upsert.getMockImplementation()!
+    store.upsert.mockImplementation(async (address, patch, fallback) => {
+      if ("sweeps" in patch) throw new Error("quota exceeded")
+      return upsert(address, patch, fallback)
+    })
+    mocks.readSweepEvents.mockResolvedValue([sweep])
+
+    expect(await syncSipaDeposits(makeDeps(store).deps)).toMatchObject({
+      failed: 0,
+      complete: false,
+    })
+  })
+
+  it("is cleared when the balance refresh fails", async () => {
+    mocks.readSweepEvents.mockResolvedValue([sweep])
+
+    const result = await syncSipaDeposits({
+      ...makeDeps().deps,
+      refreshBalance: async () => {
+        throw new Error("node down")
+      },
+    })
+
+    expect(result).toMatchObject({ claimed: 1, failed: 0, complete: false })
+  })
+})
+
+describe("syncSipaDeposits skipCatchUp", () => {
+  const sweep = { index: 7n, amount: 990_000n, blockNumber: 1n, txHash: TX_HASH }
+
+  beforeEach(() => {
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([sweep])
+  })
+
+  it("keeps a replaying pass from beginning a catch-up, which it begins without it", async () => {
+    const begin = vi.spyOn(syncCatchUp, "begin")
+    try {
+      let catchingUp: boolean | undefined
+      const refreshBalance = async () => {
+        catchingUp = syncCatchUp.status.get()
+      }
+
+      await syncSipaDeposits({ ...makeDeps().deps, refreshBalance, skipCatchUp: true })
+      expect(begin).not.toHaveBeenCalled()
+      expect(catchingUp).toBe(false)
+
+      await syncSipaDeposits({ ...makeDeps().deps, refreshBalance })
+      expect(begin).toHaveBeenCalledTimes(1)
+      expect(catchingUp).toBe(true)
+    } finally {
+      begin.mockRestore()
+    }
+  })
+
+  it("keeps a pass from joining a catch-up in progress, which it joins without it", async () => {
+    const store = makeStore()
+    store.records.set(SIPA_A, {
+      phase: "broadcast",
+      startTime: Date.now(),
+      messageSecret: SECRET_A.toString(),
+      recipientL2Address: RECIPIENT_HEX,
+    })
+    const outer = syncCatchUp.begin()
+    const begin = vi.spyOn(syncCatchUp, "begin")
+    try {
+      await syncSipaDeposits({ ...makeDeps(store).deps, skipCatchUp: true })
+      expect(begin).not.toHaveBeenCalled()
+
+      await syncSipaDeposits(makeDeps(store).deps)
+      expect(begin).toHaveBeenCalledTimes(1)
+    } finally {
+      begin.mockRestore()
+      outer()
+    }
   })
 })

@@ -108,7 +108,7 @@ export function ContactRow({ tag, name, isL1 = false, colors, onClick, avatarSty
     <button type="button" className={["zkm-btn-reset zkm-contact-row", className].filter(Boolean).join(" ")} onClick={onClick}>
       <GradientInitialAvatar name={initialSource} colors={colors} size={44} style={avatarStyle} />
       <span className="zkm-contact-row__text">
-        <GradientText size={16} weight={500}>
+        <GradientText size={16} weight={500} className={hasLabel ? undefined : "zkm-contact-row__tag"}>
           {title}
         </GradientText>
         <span className="zkm-contact-row__subtitle">{subtitle}</span>

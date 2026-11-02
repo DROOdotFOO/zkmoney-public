@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react"
 import type { Hex } from "viem"
-import { useAccountContext } from "@obsidion/front-core"
+import { useResource } from "@obsidion/front-core"
 import type { ObsidionAccount } from "@obsidion/sdk"
 import { isWalletRejection } from "../deposit/l1Wallet"
 import { claimPastUser, PastUserAlreadyUsedError, provePastUserForGrant } from "./pastUserClaim"
@@ -16,6 +16,7 @@ import {
   type PastUserState,
 } from "./pastUserCheck"
 import { NotPastUserError, signPastUserMessage } from "./pastUserProver"
+import { useSession } from "../../platform/session"
 
 // One check per tab, outside any component: closing the modal leaves it running, and its result
 // reopens the modal.
@@ -97,7 +98,7 @@ export function usePastUserVerified() {
 
 /** "Used zk.money before": the old wallet signs, this browser proves. */
 export function usePastUserCheck() {
-  const { obsidionAccount } = useAccountContext()
+  const obsidionAccount = useResource(useSession().account)
   const owner = obsidionAccount?.getAddress().toString()
   const state = useSyncExternalStore(subscribe, () => current(owner))
   return {

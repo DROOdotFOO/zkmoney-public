@@ -8,8 +8,10 @@ import {
   type BackupRotationRecord,
   type BackupRotationStored,
   type FundingRow,
+  type SIPADepositRecord,
   type SweepSeen,
 } from "@obsidion/front-core"
+import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import type { PersistedRotationVerdict, SpendShape } from "@obsidion/sdk"
 import type { Address } from "viem"
 import { vi } from "vitest"
@@ -134,6 +136,7 @@ export const storedRotation = (over: Partial<BackupRotationStored> = {}): Backup
 export const PLAN = {
   address: TWO_KEY,
   fundingAmount: (2n * DAI).toString(),
+  deposited: ((18n * DAI) / 10n).toString(),
   credited: ((14n * DAI) / 10n).toString(),
   approvals: 1,
   moves: 2,
@@ -200,6 +203,7 @@ export interface World {
   rows: Map<string, FundingRow>
   balance: bigint
   sweep?: SweepSeen
+  recovery?: `0x${string}`
   final: boolean
   releaseFinal: boolean
   shape: SpendShape
@@ -249,6 +253,7 @@ export function makeFlowDeps(
       isFinal: vi.fn(async () => world.final),
       sipaBalance: vi.fn(async () => world.balance),
       sweep: vi.fn(async () => world.sweep),
+      recovery: vi.fn(async () => world.recovery),
       releaseFinal: vi.fn(async () => world.releaseFinal),
     },
     node: {
@@ -265,6 +270,11 @@ export function makeFlowDeps(
       }),
     },
     prepare: vi.fn(async () => ({ prepared, plan: PLAN, fromBlock: 50 })),
+    strandedDeposit: vi.fn(async () => ({
+      record: { sipaAddress: SIPA } as SIPADepositRecord,
+      token: { address: SIPA, symbol: "DAI", decimals: 18 },
+      balance: "1.4",
+    })),
     sign: vi.fn(async () => "0x26" as const),
     publish: vi.fn(async () => undefined),
     republish: vi.fn(async () => undefined),
@@ -289,6 +299,7 @@ export function makeFlowDeps(
         const left = world.shape.balance - amount
         world.shape = { notes: left > 0n ? [left] : [], depositTotal: 0n, balance: left }
       }),
+      declined: vi.fn(isPasskeyCancelled),
     },
   }
   return { deps, world, store, storage }

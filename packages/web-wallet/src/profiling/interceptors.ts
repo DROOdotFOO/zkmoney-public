@@ -223,8 +223,8 @@ function wrapTeeSigner(signer: any, profiler: Profiler): any {
 }
 
 /**
- * Catch the signer where it is handed to the services rather than where it is built: `useAsset`
- * resolves it from an injected source and fans it in through `setTeeSigner`, which every service
+ * Catch the signer where it is handed to the services rather than where it is built: the session's
+ * `teeSigner` resolves it from an injected source and fans it in through `setTeeSigner`, which every service
  * inherits from `ServiceBase`. Patching that one prototype method covers TokenService and
  * PaylinkService both, and leaves the signer source, front-core and the sdk untouched.
  *

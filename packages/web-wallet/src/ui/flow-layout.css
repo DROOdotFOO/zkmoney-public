@@ -35,8 +35,8 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
     box-sizing: border-box;
   }
 
-  /* Share @tag and JSON errors use inset mobile cards. */
-  .ww-modal.ww-modal:not(.ww-share-tag-modal):not(.ww-modal--page):not(.ww-config-profile__errors-modal) {
+  /* JSON errors use an inset mobile card. */
+  .ww-modal.ww-modal:not(.ww-modal--page):not(.ww-config-profile__errors-modal) {
     width: 100%;
     padding-left: calc(var(--flow-pad-x, 24px) + var(--ww-safe-area-left));
     padding-right: calc(var(--flow-pad-x, 24px) + var(--ww-safe-area-right));
@@ -47,7 +47,7 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
     box-sizing: border-box;
     padding-bottom: var(--ww-keyboard-inset, 0px);
   }
-  .ww-modal.ww-modal:not(.ww-share-tag-modal):not(.ww-modal--page):not(.ww-config-profile__errors-modal) {
+  .ww-modal.ww-modal:not(.ww-modal--page):not(.ww-config-profile__errors-modal) {
     max-height: min(92dvh, calc(var(--ww-visible-height, 100dvh) - var(--ww-safe-area-top)));
   }
   .ww-modal.ww-modal.ww-modal--page {
@@ -131,9 +131,6 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
   .ww-panel .ww-chat__foot {
     padding-bottom: calc(20px + var(--ww-keyboard-inset, 0px));
   }
-  .ww-shell .ww-panel .ww-noncontacts-entry.ww-contacts__requests-entry {
-    margin: 24px 16px 0;
-  }
   .ww-panel .ww-noncontacts__head {
     gap: 12px;
   }
@@ -145,9 +142,6 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
     grid-template-areas:
       "leading label trailing"
       "leading description description";
-  }
-  .ww-chat__head .ww-chat__who {
-    overflow-wrap: anywhere;
   }
   .ww-panel .ww-bubble {
     min-width: 0;
@@ -207,20 +201,8 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
     border-radius: var(--radius-32) var(--radius-32) 0 0;
     padding-top: 0;
   }
-  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__head {
-    padding: 16px 20px;
-    gap: 12px;
-  }
-  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications > .ww-notifications__list {
-    min-height: 0;
-    flex-shrink: 1;
-    overscroll-behavior: contain;
-  }
   :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__row {
     flex-wrap: wrap;
-  }
-  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__body {
-    flex-basis: 150px;
   }
   :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__title {
     white-space: normal;

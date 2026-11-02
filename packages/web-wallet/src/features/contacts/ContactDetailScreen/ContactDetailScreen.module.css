@@ -1,0 +1,112 @@
+@media (max-width: 640px) {
+  :global(.ww-chat__head) .chatWho {
+    overflow-wrap: anywhere;
+  }
+}
+.chatWho {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+.chatWho > span:last-child {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.chatHeadActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chatUnsaved {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 40px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+:global(.ww-shell) .chatUnsavedAdd {
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+:global(.ww-shell) .chatUnsavedAdd:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.chatUnsavedError {
+  margin: 8px 40px 0;
+  color: var(--accent-pink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+:global(.zkm-two-party-card).chatRequestCardError {
+  box-shadow: inset 0 0 0 1px var(--accent-pink);
+}
+.chatCatchup {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding-top: 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.chatDate {
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  color: var(--text-secondary);
+}
+/* Stacked request cards hold bare inputs, so the card carries the focus ring. */
+.requestCard:focus-within {
+  box-shadow: inset 0 0 0 1px var(--purple-400), 0 0 22.4px rgba(0, 0, 0, 0.05);
+}
+.chatNotUpgraded {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.chatNotUpgraded strong {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+}
+:global(.ww-shell) .chatGlassbtn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 56px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+}
+:global(.ww-shell) .chatGlassbtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

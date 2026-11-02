@@ -5,31 +5,13 @@
  */
 import { encodePacked, keccak256, type Address } from "viem"
 import { parseEscrowAmount } from "../../utils/escrowAmount"
-import type { PaymentRequest } from "../storages/RequestStorage"
+import type { StoredRequest } from "../../engine/requests"
 import type { SipaOrigin } from "../services/deposits/SIPADepositStore"
 import { encodeRequestInline, type SipaLinkPreimage } from "./requestInlineCodec"
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000
-const MS_PER_HOUR = 60 * 60 * 1000
-const MS_PER_MIN = 60 * 1000
 
 /** The payee's pay page carrying this request: `<wallet origin>/pay/<tag>#<fragment>`. */
 function requestLinkUrl(baseUrl: string, tag: string, fragment: string): string {
   return `${baseUrl.replace(/\/$/, "")}/pay/${encodeURIComponent(tag)}#${fragment}`
-}
-
-/** "3 days" / "5 hours" / "5 mins" — coarsest unit that fits, singular below 2. */
-export function formatExpiryDuration(ms: number): string {
-  if (ms >= MS_PER_DAY) {
-    const days = Math.round(ms / MS_PER_DAY)
-    return `${days} ${days === 1 ? "day" : "days"}`
-  }
-  if (ms >= MS_PER_HOUR) {
-    const hours = Math.round(ms / MS_PER_HOUR)
-    return `${hours} ${hours === 1 ? "hour" : "hours"}`
-  }
-  const mins = Math.max(1, Math.round(ms / MS_PER_MIN))
-  return `${mins} ${mins === 1 ? "min" : "mins"}`
 }
 
 export interface MintRequestLinkArgs {
@@ -52,7 +34,10 @@ export interface MintRequestLinkArgs {
   /** Self-broadcast L1 SIPA. Optional on the v3 fragment. */
   sipaAddress?: string
   sipaPreimage?: SipaLinkPreimage
-  /** Mint a compact Receive code; `requestId` must come from `randomCodeRequestId`. */
+  /**
+   * Mint a compact Receive code; `requestId` must come from `randomCodeRequestId`. One without an
+   * amount is unlisted.
+   */
   compact?: boolean
   /** A compact code's `sipaDeploymentTag` for `sipaAddress`. */
   sipaDeployment?: string
@@ -86,7 +71,7 @@ export function sipaDeploymentTag(deployment: {
 
 export interface MintedRequestLink {
   url: string
-  row: PaymentRequest
+  row: StoredRequest
   note?: string
 }
 
@@ -103,7 +88,7 @@ export class RequestLinkMintError extends Error {
  * rows that predate the persisted requester identity. A stored SIPA is written back onto the v3 fragment.
  */
 export function buildRequestShareUrl(
-  request: PaymentRequest,
+  request: Omit<StoredRequest, "status">,
   currentRequesterTag: string,
   baseUrl: string,
 ): string | null {
@@ -169,7 +154,7 @@ export function mintRequestLink(args: MintRequestLinkArgs): MintedRequestLink {
     sipaDeployment: args.sipaDeployment,
   })
 
-  const row: PaymentRequest = {
+  const row: StoredRequest = {
     id: args.requestId,
     contactTag: "",
     amount: human,
@@ -188,6 +173,7 @@ export function mintRequestLink(args: MintRequestLinkArgs): MintedRequestLink {
     requesterAddress: args.requesterAddress,
     sipaAddress: args.sipaAddress,
     sipaPreimage: args.sipaPreimage,
+    ...(args.compact && human === 0 ? { unlisted: true } : {}),
   }
 
   return {

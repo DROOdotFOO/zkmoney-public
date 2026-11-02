@@ -439,9 +439,7 @@ export function ExternalWalletPayModal({
 
       {warning && (
         <OneTimeAddressWarning
-          symbol={token.symbol}
           capacityWarning={capacityWarning}
-          privacy={false}
           onClose={() => setWarning(undefined)}
           onGotIt={() => {
             setWarning(undefined)

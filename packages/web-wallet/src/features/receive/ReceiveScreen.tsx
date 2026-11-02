@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useNavigate } from "react-router-dom"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
-import { useAssetContext } from "@obsidion/front-core"
+import { useResource } from "@obsidion/front-core"
 import { PAYMENT_REQUEST_NOTE_MAX_LEN } from "@obsidion/sdk"
 import { fireEvent, requestAmountBucket } from "../../lib/analytics"
 import { BrandLockup } from "../../ui/BrandLockup"
@@ -14,14 +14,16 @@ import { useShortRequestLink } from "../requests/shortRequestLink"
 import { useRegistrationDepositOwed } from "../onboarding/openRegistration"
 import { REQUESTS_PATH } from "../requests/nonContactView"
 import { RecipientNotUpgradedError, requestFromContact } from "../contacts/contactPay"
+import { errorCopy } from "../../errors/catalog"
 import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { PrintedCard, printedCodeHost, useSaveCard } from "./PrintedCard"
 import { CODE_LOGO, ReceiveCodeCard, ReceivePaid } from "./ReceiveCodeFace"
 import { parseRequestAmount } from "./receiveView"
-import { RequestContactPicker } from "./RequestContactPicker"
+import { RequestContactPicker } from "./RequestContactPicker/RequestContactPicker"
 import { useCodeForm } from "./useCodeForm"
 import { useReceiveCode } from "./useReceiveCode"
+import { useSession } from "../../platform/session"
 
 /**
  * New request, routed at /receive: the amount and note, then who from. A contact gets it in their
@@ -90,7 +92,8 @@ export function ReceiveScreen() {
   const form = useCodeForm(code, setAmount)
   const phone = usePhoneLayout()
   const card = useSaveCard(tag ?? "")
-  const { tokenService } = useAssetContext()
+  const tokenService = useResource(useSession().token)
+  const wallet = useResource(useSession().wallet)
   const [who, setWho] = useState<"contact" | "anyone">("anyone")
   const [sending, setSending] = useState<string>()
   const [sendError, setSendError] = useState("")
@@ -106,13 +109,13 @@ export function ReceiveScreen() {
       amountInput.current?.focus()
       return
     }
-    if (!tokenService || !requesterTag) return
+    if (!tokenService || !wallet || !requesterTag) return
     setSending(contact)
     setSendError("")
     setSendHint("")
     try {
       await requestFromContact(
-        { tokenService },
+        { tokenService, wallet },
         {
           tag: contact,
           requesterTag,
@@ -131,7 +134,9 @@ export function ReceiveScreen() {
       if (e instanceof RecipientNotUpgradedError) {
         setSendHint(recipientNotUpgradedCopy.requestHint(contact))
       } else {
-        setSendError(e instanceof Error ? e.message : "Couldn't send the request")
+        setSendError(
+          errorCopy(e) ?? (e instanceof Error ? e.message : "Couldn't send the request"), // slice-check-ignore: an uncoded error keeps its own words until its source throws a code
+        )
       }
       setSending(undefined)
     }

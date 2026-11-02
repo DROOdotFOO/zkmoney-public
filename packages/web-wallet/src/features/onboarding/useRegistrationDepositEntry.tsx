@@ -10,7 +10,7 @@ import {
 } from "@obsidion/front-core"
 import { ActivityListRow } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
-import { RegistrationDepositDetailModal } from "./RegistrationDepositDetailModal"
+import { RegistrationDepositDetailModal } from "./RegistrationDepositDetailModal/RegistrationDepositDetailModal"
 import { useFundingTransfer } from "./registrationFunding"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { rowTimestamp, usdFigure } from "../../ui/format"
@@ -164,7 +164,7 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
   // Before the sweep the address still holds the deposit; after it, the stamped terms or the
   // funding transfer do.
   const watch = useDepositWatch(
-    record && stage !== null && depositOwed(stage) ? (record.sipaAddress as never) : null,
+    record && stage != null && depositOwed(stage) ? (record.sipaAddress as never) : null,
   )
   const live = watch.balance
   // Stamp the live gross; the sweep empties the address.
@@ -181,7 +181,8 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
     retryReads,
   )
   const [open, setOpen] = useState(false)
-  if (!record || stage === null) return null
+  // Unknown while the withdrawals load: the row waits.
+  if (!record || stage == null) return null
   const gross = registrationDepositGross(
     live,
     funding === undefined ? undefined : funding?.normalized ?? 0n,

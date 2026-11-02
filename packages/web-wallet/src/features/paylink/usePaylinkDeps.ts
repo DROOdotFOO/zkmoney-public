@@ -1,15 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import {
-  useAccountContext,
-  useAssetContext,
-  useAztecContext,
-  useContractServiceContext,
-  type WithdrawalRecord,
-} from "@obsidion/front-core"
+import { useContractServiceContext, type WithdrawalRecord, useResource } from "@obsidion/front-core"
 import { useWithdrawals } from "../withdraw/useWithdrawals"
 import { linkWithdrawalIdentity, linkVoucherUses, type PaylinkExitDeps } from "./paylinkExit"
 import type { SponsoredPaylinkDeps } from "./sponsoredPaylink"
 import type { PaymentLink } from "./types"
+import { useSession } from "../../platform/session"
 
 /** PXE + contracts + enclave, before an account exists to sign with. */
 export type PaylinkKit = Omit<SponsoredPaylinkDeps, "account">
@@ -19,8 +14,10 @@ export type PaylinkKit = Omit<SponsoredPaylinkDeps, "account">
  * page, where the PXE is up but the passkey has not been reused yet.
  */
 export function usePaylinkKit(): PaylinkKit | undefined {
-  const { obsidionWallet, rollupAddress } = useAztecContext()
-  const { tokenService, teeSigner } = useAssetContext()
+  const obsidionWallet = useResource(useSession().wallet)
+  const rollupAddress = obsidionWallet?.networkId
+  const tokenService = useResource(useSession().token)
+  const teeSigner = useResource(useSession().teeSigner)
   const { contractService } = useContractServiceContext()
   return useMemo(
     () =>
@@ -37,7 +34,7 @@ export function usePaylinkKit(): PaylinkKit | undefined {
  */
 export function usePaylinkDeps(): SponsoredPaylinkDeps | undefined {
   const kit = usePaylinkKit()
-  const { obsidionAccount } = useAccountContext()
+  const obsidionAccount = useResource(useSession().account)
   return useMemo(
     () => (kit && obsidionAccount ? { ...kit, account: obsidionAccount } : undefined),
     [kit, obsidionAccount],
@@ -49,8 +46,9 @@ export function usePaylinkDeps(): SponsoredPaylinkDeps | undefined {
  * no account, since the whole point is a holder who has none. Undefined until the enclave connects.
  */
 export function useLinkExitDeps(): PaylinkExitDeps | undefined {
-  const { obsidionWallet, rollupAddress } = useAztecContext()
-  const { teeSigner } = useAssetContext()
+  const obsidionWallet = useResource(useSession().wallet)
+  const rollupAddress = obsidionWallet?.networkId
+  const teeSigner = useResource(useSession().teeSigner)
   const { contractService } = useContractServiceContext()
   return useMemo(
     () =>
@@ -83,7 +81,7 @@ export function useLinkVoucher(
   retry: () => void
 } {
   const deps = useLinkExitDeps()
-  const { obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
   const { contractService } = useContractServiceContext()
   // Checking funding requires neither an account nor the signer used for the eventual burn.
   const readDeps = useMemo(

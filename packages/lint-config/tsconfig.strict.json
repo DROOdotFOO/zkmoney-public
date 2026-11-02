@@ -1,0 +1,12 @@
+{
+  // Compiler checks every package must pass. A consumer typechecks its workspace dependencies' source under its own
+  // options, so the packages that share source must share these.
+  "compilerOptions": {
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true
+  }
+}

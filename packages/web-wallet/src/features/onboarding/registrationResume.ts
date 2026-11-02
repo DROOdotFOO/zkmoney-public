@@ -69,7 +69,7 @@ export function walletResumeExtras(
       if (!keys) return null
       const owned =
         keys.account.getAddress().toString().toLowerCase() === record.l2Address.toLowerCase()
-      return owned ? buildRetrySignDeps(record.tag, keys, config) : null
+      return owned ? buildRetrySignDeps(record.tag, keys, config, wallet.networkId) : null
     },
   }
 }

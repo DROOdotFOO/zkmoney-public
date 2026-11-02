@@ -1,25 +1,19 @@
 /**
  * The record of each "Withdraw to Ethereum" run from old versions. Activity and the bell show it,
  * pending until the old portals ran every refund or L2 dropped its broadcast. A closed tab resumes
- * the check wherever Activity renders.
+ * the check in the wallet runtime.
  */
-import { useEffect, useMemo } from "react"
 import { OxidePortalAbi } from "@oxide/l1-contracts"
 import type { Address, Hex } from "viem"
 import {
-  AppNotificationStore,
   OldVersionWithdrawalStorage,
   SWAP_STUCK_THRESHOLD_MS,
-  useAztecContext,
-  useCachedRecords,
   type BroadcastTxState,
   type OldVersionWithdrawal,
 } from "@obsidion/front-core"
-import { broadcastState } from "../broadcasts/broadcastState"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { shortL1Addr, usdAtomicFloor } from "../../ui/format"
 import { noteRefundedSavingsMoves } from "../savings/savingsMoveStore"
 
 let store: OldVersionWithdrawalStorage | undefined
@@ -58,35 +52,6 @@ export function oldVersionRefundOffer(record: OldVersionWithdrawal, now = Date.n
     (r) =>
       !r.l1TxHash && !r.dropped && now - (r.sentAt ?? record.startTime) >= SWAP_STUCK_THRESHOLD_MS,
   )
-}
-
-const BELL = {
-  sending: { title: "Withdrawing to Ethereum", icon: "arrow.up.right", severity: "info" },
-  done: { title: "Withdrawn to Ethereum", icon: "checkmark.circle.fill", severity: "success" },
-  failed: { title: "Withdrawal didn't go through", icon: "xmark.circle.fill", severity: "error" },
-} as const
-
-/** The bell's entry for `record`: pending while it sends, then done or failed. */
-export async function notifyOldVersionWithdrawal(record: OldVersionWithdrawal) {
-  const notifications = AppNotificationStore.get(webStorage)
-  await notifications.load()
-  const bell = BELL[record.phase]
-  await notifications.upsert({
-    id: `old-version-withdrawal:${record.id}`,
-    sourceId: record.id,
-    producer: "withdraw",
-    domain: "transaction",
-    title: bell.title,
-    description:
-      record.phase === "failed"
-        ? "Nothing moved. You can withdraw again."
-        : `${usdAtomicFloor(withdrawalSent(record))} to ${shortL1Addr(record.to)}`,
-    timestampMs: record.phase === "sending" ? record.startTime : Date.now(),
-    systemIcon: bell.icon,
-    severity: bell.severity,
-    pending: record.phase === "sending",
-    target: { type: "withdraw.oldVersion", id: record.id },
-  })
 }
 
 const LOG_RANGE = 10_000n
@@ -151,7 +116,6 @@ export async function settleOldVersionWithdrawal(
       ),
     }),
   )
-  if (next && next.phase !== "sending") await notifyOldVersionWithdrawal(next)
   return next
 }
 
@@ -186,34 +150,5 @@ export async function noteSelfRefunded(
       ),
     }),
   )
-  if (next && next.phase !== "sending") await notifyOldVersionWithdrawal(next)
   return next
-}
-
-const POLL_MS = 15_000
-
-/** The records, newest first. While one is sending, it checks L1 for its refunds. */
-export function useOldVersionWithdrawals() {
-  const { records, hydrated } = useCachedRecords(useMemo(getOldVersionWithdrawalStore, []))
-  const { obsidionWallet } = useAztecContext()
-  const sending = records
-    .filter((r) => r.phase === "sending")
-    .map((r) => r.id)
-    .join(",")
-  useEffect(() => {
-    if (!sending) return
-    const check = () =>
-      sending
-        .split(",")
-        .forEach((id) =>
-          settleOldVersionWithdrawal(
-            id,
-            obsidionWallet ? (hash) => broadcastState(obsidionWallet, hash) : undefined,
-          ).catch((e) => console.warn("[withdraw] old-version refund check failed", e)),
-        )
-    check()
-    const timer = setInterval(check, POLL_MS)
-    return () => clearInterval(timer)
-  }, [sending, obsidionWallet])
-  return { records, hydrated }
 }

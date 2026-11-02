@@ -93,8 +93,8 @@ echo "package.json updates complete."
 echo ""
 
 # The frozen refund runtime refuses a source node on another Aztec release.
-sed -i.bak -E "s|\"$OLD_VERSION\"|\"$NEW_VERSION\"|g" packages/sdk/src/services/FrozenRefundMigrationRuntime.ts
-rm -f packages/sdk/src/services/FrozenRefundMigrationRuntime.ts.bak
+sed -i.bak -E "s|\"$OLD_VERSION\"|\"$NEW_VERSION\"|g" packages/sdk/src/services/migration/FrozenRefundMigrationRuntime.ts
+rm -f packages/sdk/src/services/migration/FrozenRefundMigrationRuntime.ts.bak
 
 echo "All done!"
 

@@ -1,0 +1,34 @@
+.migration {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 8px 0;
+}
+.migrationResiduals {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 15px;
+  line-height: 1.45;
+  text-align: center;
+  color: var(--text-secondary);
+}
+/* 32px from the text above, as in Figma. */
+.migration > :global(.zkm-primary-btn) {
+  margin-top: 12px;
+}
+:global(.zkm-btn-reset).migrationLater {
+  align-self: center;
+  min-height: 28px;
+  margin-top: -8px;
+  padding: 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+:global(.zkm-btn-reset).migrationLater:disabled {
+  opacity: 0.4;
+}

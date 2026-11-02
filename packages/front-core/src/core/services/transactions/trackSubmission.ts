@@ -58,44 +58,31 @@ export interface SubmissionTracker {
    * ambiguity resolves in favour of the transaction existing.
    */
   survived(node: Pick<AztecNode, "getTxReceipt">): Promise<Hex | null>
-  /** Whether `onSubmitted` stored the hash; false before the boundary or after a failed write. */
-  saved(): Promise<boolean>
-  /** Detach the listener and settle any in-flight `onSubmitted` write. */
-  stop(): Promise<void>
+  /** Detach the listener. */
+  stop(): void
 }
 
 /**
- * Watches one operation across the submit boundary. The wallet emits `ProvingStage.Mining` with
- * the real hash just before `aztecNode.sendTx`, so a rejection after it says nothing about whether
- * the transaction reached the node; only a receipt does. `onSubmitted` runs once at the boundary
- * to stamp the hash onto the caller's row; its rejection is swallowed, since a storage failure
- * must not fail a transaction that may be on chain. A save that lands is announced as
- * `tx-hash-saved`: this is the one place a flow's record becomes safe to reload over. An operation
- * that owns several records announces from one tracker whose `onSubmitted` awaits them all; the
- * others pass `announce: false`.
+ * Watches one operation across the submit boundary. The wallet awaits the flow's `onTxHash`, which
+ * saves the hash, then emits `ProvingStage.Mining` with it just before `aztecNode.sendTx`. A
+ * rejection before Mining sent nothing; one after it says nothing about whether the transaction
+ * reached the node, and only a receipt does. Mining is announced as `tx-hash-saved`: this is the
+ * one place a flow's record becomes safe to reload over. An operation that owns several records
+ * saves them all in one `onTxHash` and announces from one tracker; the others pass
+ * `announce: false`.
  */
 export function trackSubmission(
   operationId: string,
-  onSubmitted?: (txHash: Hex) => unknown,
   opts: { announce?: boolean } = {},
 ): SubmissionTracker {
   let txHash: Hex | undefined
-  let write: Promise<boolean> = Promise.resolve(false)
 
   const onMining = (event: ProvingProgressEvent) => {
     if (event.operationId !== operationId || event.stage !== ProvingStage.Mining || !event.txHash)
       return
     if (txHash) return
-    const hash = event.txHash as Hex
-    txHash = hash
-    if (!onSubmitted) return
-    write = (async () => onSubmitted(hash))().then(
-      () => {
-        if (opts.announce !== false) provingProgress.emitTxHashSaved(operationId, hash)
-        return true
-      },
-      () => false,
-    )
+    txHash = event.txHash as Hex
+    if (opts.announce !== false) provingProgress.emitTxHashSaved(operationId, txHash)
   }
   provingProgress.on("stage-start", onMining)
 
@@ -104,7 +91,6 @@ export function trackSubmission(
       return txHash
     },
     async survived(node) {
-      await write
       if (!txHash) return null
       try {
         if (isFailedSubmission(await node.getTxReceipt(TxHash.fromString(txHash)))) return null
@@ -113,12 +99,8 @@ export function trackSubmission(
       }
       return txHash
     },
-    saved() {
-      return write
-    },
-    async stop() {
+    stop() {
       provingProgress.off("stage-start", onMining)
-      await write
     },
   }
 }

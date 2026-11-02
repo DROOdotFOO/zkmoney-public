@@ -1,21 +1,19 @@
 {
+  "extends": "@obsidion/lint-config/tsconfig.strict.json",
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "customConditions": ["source"],
     "lib": [
       "ES2022",
       "DOM",
       "DOM.Iterable",
       "DOM.AsyncIterable"
     ],
-    "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
-    "isolatedModules": true,
     "moduleDetection": "force",
     "noEmit": true,
     "incremental": true,

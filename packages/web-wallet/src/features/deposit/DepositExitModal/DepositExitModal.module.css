@@ -1,0 +1,34 @@
+/* A deposit exit's longer explanation, opened on request. */
+.exitMore {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.exitMore summary {
+  cursor: pointer;
+  color: var(--accent-green);
+  font-weight: 600;
+}
+.exitMore summary:focus-visible {
+  outline: 2px solid var(--accent-green);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.exitMore p {
+  margin: 8px 0 0;
+}
+/* Why Sweep now is held, and the ETH cost it incurs, said beside it. */
+.exitHeld {
+  margin: -8px 0 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+}
+.exitGas {
+  margin: -8px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+}

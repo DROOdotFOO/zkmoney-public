@@ -4,7 +4,7 @@
 import type { FrozenDepositDescriptor, FrozenRefundKind, OxideEnvTuple } from "./index.js"
 
 /** The version of this boundary. Change it on any change a built bundle cannot serve. */
-export const SOURCE_GENERATION_PROTOCOL = 8
+export const SOURCE_GENERATION_PROTOCOL = 9
 
 /** The account's passkey. The page signs, so a generation never touches WebAuthn itself. */
 export interface SourcePasskey {
@@ -162,8 +162,8 @@ export interface SourceGenerationSession {
   >
   /**
    * The account's history on the source deployment, as the source wallet's own sync files it into
-   * a store of its own: the entries a source browser's database holds for the account. A sync that
-   * reads short rejects.
+   * a store of its own: the entries a source browser's database holds for the account. A part that
+   * reads short keeps what it read and names itself in `short`.
    */
   history(
     o: SourceSipaScan & {
@@ -173,8 +173,13 @@ export interface SourceGenerationSession {
       linkBase: string
       /** The source rollup's deployments: a Savings move settles on the one its factory names. */
       deployments?: OxideEnvTuple[]
+      /**
+       * The L2 address the tag's account held on the source rollup, or null. A transfer's claimed
+       * tag names its counterparty only when this returns the transfer's address. A throw defers it.
+       */
+      resolveTag?(tag: string): Promise<string | null>
     },
-  ): Promise<Record<string, string>>
+  ): Promise<{ entries: Record<string, string>; short: string[] }>
   /** Savings moves recovered from this account's withdrawals on the source token. */
   savingsMoves(o: { tuple: OxideEnvTuple }): Promise<SourceSavingsMove[]>
   /** What a frozen portal can still refund, or `undefined` while it is live. Amounts decimal. */

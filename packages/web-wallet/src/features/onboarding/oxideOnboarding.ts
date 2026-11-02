@@ -6,7 +6,7 @@ import { withSessionLock } from "../../platform/storage/activeStorage"
  * (account-service), the ClaimFPC eligibility witness every sponsored rail batches its
  * subscription with, and the returning-user recovery flows (reuse a passkey for a new
  * tag; fresh-device enter via on-chain lookup). Fresh passkey-account creation runs
- * through front-core's `useAccount().createAccount`.
+ * through front-core's `createAccount`.
  *
  * Onboarding's account-service gate accepts a synthetic keyId against an `IS_TEST_MODE`
  * deployment (sandbox, the e2e); a real deployment still needs a credential provider wired
@@ -20,7 +20,7 @@ import {
   assertRegistrationUnfunded,
   reopenRefundedDeposit,
 } from "./registrationQuoteRecovery"
-import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { toBytes, toHex, type Hex, type PublicClient } from "viem"
 import type { PrivateKeyAccount } from "viem/accounts"
 import {
@@ -76,15 +76,15 @@ import {
 import { updateTicketSignup, type TicketSignupStash } from "../paylink/claimStash"
 import { redeemGoldenTicketForLink } from "./goldenTicket"
 import { rememberRegistrationPayload } from "../broadcasts/broadcasts"
-import {
+import type {
   ContractService,
-  type ObsidionWallet,
-  type ObsidionAccount,
-  type AlphaAuthProvider,
-  type NameClaimWitness,
-  type OxideAccountBinding,
-  type PrfSlot,
-  type RecoverPasskeyResult,
+  ObsidionWallet,
+  ObsidionAccount,
+  AlphaAuthProvider,
+  NameClaimWitness,
+  OxideAccountBinding,
+  PrfSlot,
+  RecoverPasskeyResult,
 } from "@obsidion/sdk"
 import {
   getOxideTuple,
@@ -120,6 +120,7 @@ import { generationFactories, loadOxideGenerations } from "./oxideGenerations"
 import { resolveTagForCommit } from "../contacts/registryResolution"
 
 import { nameGrantToken } from "./nameGrant"
+import { attributeInboundInvite } from "../invite/inboundInvite"
 export { nameGrantToken, stashInboundNameGrant } from "./nameGrant"
 
 export type ClaimStatus = "reserved" | "claimed"
@@ -189,7 +190,7 @@ export interface EnteredClaim {
 
 /**
  * Key material the L1 claim + FPC subscribe steps need, gathered after
- * `useAccount().createAccount` (or a recovery flow here) has committed the MSK.
+ * `createAccount` (or a recovery flow here) has committed the MSK.
  */
 export interface OnboardingKeys {
   account: ObsidionAccount
@@ -207,7 +208,7 @@ function pubkeyHexFrom(x: Buffer, y: Buffer): string {
   return `0x${Buffer.concat([x, y]).toString("hex")}`
 }
 
-/** Persist the account so a reload's `useAccount` mount can recover it. */
+/** Persist the account so a reload's session can unlock it. */
 async function persistAccount(account: ObsidionAccount, credentialId: string, pubkey: string) {
   await AccountStorage.get().addWebauthnAccount(
     "Account 1",
@@ -358,7 +359,7 @@ const keySetOf = (recovered: RecoverPasskeyResult): readonly string[] =>
 
 /**
  * Gather the key material the claim + FPC steps need. Call right after
- * `createAccount` — `getAuthService()` is the same singleton `useAccount` drove,
+ * `createAccount` — `getAuthService()` is the same singleton it drove,
  * so the MSK / auth provider are already committed. The pair is the session's, so the account
  * must be too: one built for a session since replaced is refused as `SessionChangedError`.
  */
@@ -425,11 +426,12 @@ export interface PasskeyHints {
  * Which passkey a ceremony asks for: a tag's account and its keys, a known credential, or the open
  * chooser. `discover` runs a discoverable ceremony (no credential pinned); `chooser` bypasses the
  * cache so no saved key answers; `phone` steers a laptop's prompt to the phone and bypasses the
- * cache the same way.
+ * cache the same way. `chosen` marks `credentialId` as the key the user picked among the account's.
  */
 export type CeremonyRequest = {
   account?: AccountPasskeys
   credentialId?: string
+  chosen?: boolean
   discover?: boolean
   chooser?: boolean
   phone?: boolean
@@ -487,7 +489,11 @@ async function ceremonyFor(
   if (request.discover) return getAuthService().beginRecovery({ discover: true, ...cancel })
   return request.account
     ? await getAuthService().adoptAccountPasskey({ ...request.account, ...cancel })
-    : await getAuthService().beginRecovery({ credentialId: request.credentialId, ...cancel })
+    : await getAuthService().beginRecovery({
+        credentialId: request.credentialId,
+        ...(request.chosen ? { chosen: true } : {}),
+        ...cancel,
+      })
 }
 
 /** A gate that hands out no attempt signal (the tests' stand-ins) gets one that never cancels. */
@@ -684,8 +690,11 @@ async function keysFor(
   }
 }
 
-/** What a sign-in is pinned to: a tag's account and its keys, or a credential this browser remembers. */
-export type SignInHints = AccountPasskeys | { credentialId: string }
+/**
+ * What a sign-in is pinned to: a tag's account and its keys, or a credential this browser remembers.
+ * `chosen`: the user picked this credential among its account's keys.
+ */
+export type SignInHints = AccountPasskeys | { credentialId: string; chosen?: boolean }
 
 const isAccountHints = (hints: SignInHints): hints is AccountPasskeys => "keys" in hints
 
@@ -701,9 +710,9 @@ function signInRequest(options: {
 }): CeremonyRequest | undefined {
   const phone = options.phone ? { phone: true } : {}
   if (options.hints) {
-    return isAccountHints(options.hints)
-      ? { account: options.hints, ...phone }
-      : { credentialId: options.hints.credentialId, ...phone }
+    if (isAccountHints(options.hints)) return { account: options.hints, ...phone }
+    const { credentialId, chosen } = options.hints
+    return { credentialId, ...(chosen ? { chosen } : {}), ...phone }
   }
   if (options.chooser || currentDevicePosture() === "laptop") {
     return { discover: true, ...(options.chooser ? { chooser: true } : {}), ...phone }
@@ -857,6 +866,7 @@ export async function registrationAddressDeps(
   secretKey: Fr,
   l2Address: Hex,
   config: WebWalletConfig,
+  networkId: string,
   l1Client?: PublicClient,
 ) {
   const { tuple, env, publicClient: envClient } = await oxideEnvFor(config)
@@ -880,6 +890,7 @@ export async function registrationAddressDeps(
     seedSipaDeposit: makeRegistrationDepositSeeder({
       feeToken: env.feeToken,
       l1ChainId: env.l1ChainId,
+      networkId,
     }),
   }
 }
@@ -889,11 +900,12 @@ async function registrationSessionDeps(
   handle: string,
   keys: OnboardingKeys,
   config: WebWalletConfig,
+  networkId: string,
   onStage?: (stage: OxideRegistrationStage) => void,
 ): Promise<OxideRegistrationSessionDeps> {
   const l2Address = keys.account.getAddress().toString() as Hex
   return {
-    ...(await registrationAddressDeps(handle, keys.secretKey, l2Address, config)),
+    ...(await registrationAddressDeps(handle, keys.secretKey, l2Address, config, networkId)),
     r1Key: pubkeyToR1KeyArg(keys.pubkeyHex),
     passkey: await oxideAccountPasskey(keys.account.getAuthProvider()),
     credentialId: await requireCredentialId(),
@@ -1041,7 +1053,7 @@ export async function claimTag(
   handle: string,
   keys: OnboardingKeys,
   config: WebWalletConfig,
-  wallet?: ObsidionWallet,
+  wallet: ObsidionWallet,
   onStage?: (stage: SignupStage) => void,
   requireEarnedQuote = false,
   refundedRecord?: PendingRegistrationRecord,
@@ -1061,7 +1073,9 @@ export async function claimTag(
     const refund = await assertRegistrationRefunded(refundedRecord, config)
     entry = refundedEntry(refundedRecord, refund)
   }
-  const deps = await registrationSessionDeps(handle, keys, config, onStage)
+  // Settled before anything registers: account-service refuses an invitee who already is.
+  await attributeInboundInvite(accountServiceFor(config, keys))
+  const deps = await registrationSessionDeps(handle, keys, config, wallet.networkId, onStage)
   // Entry rides on the replacement record from its checkpoint: the receipt a sign-out clears cannot
   // be rebuilt from an address that holds nothing, and a session that dies after the checkpoint
   // must not lose it.
@@ -1201,6 +1215,7 @@ export async function buildRetrySignDeps(
   handle: string,
   keys: OnboardingKeys,
   config: WebWalletConfig,
+  networkId: string,
 ): Promise<OxideSignDeps> {
   const { tuple, env, publicClient } = await oxideEnvFor(config)
   return {
@@ -1218,6 +1233,7 @@ export async function buildRetrySignDeps(
     seedSipaDeposit: makeRegistrationDepositSeeder({
       feeToken: env.feeToken,
       l1ChainId: env.l1ChainId,
+      networkId,
     }),
     seededSipaSalt: seededRegistrationSalt,
   }

@@ -28,12 +28,12 @@ export function flowFixturePlugin(walletDir) {
   ].map(([source, fixture]) => [path.join(walletDir, "src", source), path.join(fixtures, fixture)]))
   const contextConsumers = new Set([
     "features/allowance/useSponsoredAllowance.ts",
-    "features/contacts/ContactPayScreen.tsx",
+    "features/contacts/ContactPayScreen/ContactPayScreen.tsx",
     "features/onboarding/OnboardingScreen.tsx",
     "features/receive/useReceiveCode.ts",
     "features/paylink/usePaylinkDeps.ts",
     "features/paylink/LinkViewScreen.tsx",
-    "features/withdraw/WithdrawToWalletModal.tsx",
+    "features/withdraw/WithdrawToWalletModal/WithdrawToWalletModal.tsx",
     "features/deposit/DepositScreen.tsx",
     "features/deposit/DepositFromWalletModal.tsx",
   ].map((file) => path.join(walletDir, "src", file)))

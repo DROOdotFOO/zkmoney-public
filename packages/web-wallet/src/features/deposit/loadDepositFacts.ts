@@ -137,38 +137,49 @@ export interface DepositTokensRead {
 }
 
 /** {@link loadDepositTokens} for a component, with its loading and failure states. */
-export function useDepositTokensRead(intent: SipaIntentName = "deposit"): DepositTokensRead {
-  const [tokens, setTokens] = useState<DepositTokens>()
-  const [failed, setFailed] = useState(false)
+export function useDepositTokensRead(
+  intent: SipaIntentName = "deposit",
+  load: (intent: SipaIntentName) => Promise<DepositTokens> = (i) =>
+    loadDepositTokens(getConfig(), i),
+): DepositTokensRead {
+  // Each result names its intent: one read for another intent is never this one's.
+  const [read, setRead] = useState<{ intent: SipaIntentName; tokens: DepositTokens }>()
+  const [failedFor, setFailedFor] = useState<SipaIntentName>()
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let live = true
     let timer: ReturnType<typeof setTimeout> | undefined
-    const read = () =>
-      loadDepositTokens(getConfig(), intent).then(
-        (next) => {
+    const next = () =>
+      load(intent).then(
+        (tokens) => {
           if (!live) return
-          setTokens(next)
-          setFailed(false)
+          setRead({ intent, tokens })
+          setFailedFor(undefined)
         },
         (err: unknown) => {
           console.warn("[deposit] accepted tokens unavailable:", err)
           if (!live) return
-          setFailed(true)
-          timer = setTimeout(read, DEPOSIT_TOKENS_RETRY_MS)
+          setFailedFor(intent)
+          timer = setTimeout(next, DEPOSIT_TOKENS_RETRY_MS)
         },
       )
-    void read()
+    void next()
     return () => {
       live = false
       clearTimeout(timer)
     }
+    // The loader is fixed for the caller's life.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intent, attempt])
   const retry = useCallback(() => {
-    setFailed(false)
+    setFailedFor(undefined)
     setAttempt((n) => n + 1)
   }, [])
-  return { tokens, failed, retry }
+  return {
+    tokens: read?.intent === intent ? read.tokens : undefined,
+    failed: failedFor === intent,
+    retry,
+  }
 }
 
 /** {@link loadDepositTokens} for a component; undefined until read. A failed read is retried while mounted. */

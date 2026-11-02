@@ -4,7 +4,12 @@
  */
 import { useSyncExternalStore } from "react"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
-import { WAITING_FOR_REGISTRATION, WAITING_FOR_UNLOCK, getBroadcastLedger } from "./broadcasts"
+import {
+  WAITING_FOR_BALANCE_MOVE,
+  WAITING_FOR_REGISTRATION,
+  WAITING_FOR_UNLOCK,
+  getBroadcastLedger,
+} from "./broadcasts"
 
 export type BroadcastStatus =
   | { kind: "published" }
@@ -13,6 +18,7 @@ export type BroadcastStatus =
   | { kind: "proving"; stage: ProvingStage | null }
   | { kind: "unlock" }
   | { kind: "registration" }
+  | { kind: "moving" }
   /** An attempt failed or had to wait; the ledger tries again at its retry time. */
   | { kind: "retrying" }
 
@@ -28,6 +34,7 @@ function statusOf(address: string): BroadcastStatus | undefined {
   }
   if (job.lastError === WAITING_FOR_UNLOCK) return { kind: "unlock" }
   if (job.lastError === WAITING_FOR_REGISTRATION) return { kind: "registration" }
+  if (job.lastError === WAITING_FOR_BALANCE_MOVE) return { kind: "moving" }
   if (job.failures > 0 || (job.retryAt ?? 0) > Date.now()) return { kind: "retrying" }
   return { kind: "waiting" }
 }
@@ -69,6 +76,8 @@ export function broadcastStatusLine(status: BroadcastStatus): string {
       return "Unlock your wallet to publish this address"
     case "registration":
       return "Publishes once your tag is registered"
+    case "moving":
+      return "Publishes once your balance has moved"
     case "retrying":
       return "Couldn't publish yet. Trying again soon"
   }

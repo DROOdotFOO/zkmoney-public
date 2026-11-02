@@ -1,5 +1,5 @@
 import { REGISTRATION_SCHEDULE_DEFAULTS } from "@obsidion/core/constants"
-import { type PendingRegistrationRecord } from "@obsidion/front-core"
+import type { PendingRegistrationRecord } from "@obsidion/front-core"
 import { getConfig } from "../../../src/config/env"
 import { getPendingStore } from "../../../src/features/onboarding/webRegistration"
 import { saveRegistrationTerms } from "../../../src/features/onboarding/registrationTerms"

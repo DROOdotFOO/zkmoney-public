@@ -37,7 +37,7 @@ export class ZkJwtStorage {
   constructor(private readonly adapter: IStorageAdapter) {
     // Brand check — refuse a plain adapter. The proof cache persists the
     // user's email + Aztec address (see ZkJwtCacheMetadata), so it must be
-    // encrypted at rest, matching PendingTxStore.
+    // encrypted at rest.
     if (!EncryptedStorageAdapter.isEncrypted(adapter)) {
       throw new Error(
         "ZkJwtStorage requires an EncryptedStorageAdapter — passing a plain " +
@@ -48,7 +48,7 @@ export class ZkJwtStorage {
   }
 
   /**
-   * Process-wide accessor mirroring `PendingTxStore.get`.
+   * Process-wide accessor.
    * Boot (app/_layout.tsx) primes it with the MSK-derived
    * `EncryptedStorageAdapter`; lazily-constructed consumers (e.g.
    * `createZkJwtService` inside a claim screen) call `get()` with no arg.
@@ -72,8 +72,7 @@ export class ZkJwtStorage {
    * decrypt — a pre-encryption plaintext blob, a rotated MSK, or tampering.
    * On failure we scrub the unreadable key (so a stale/plaintext bundle
    * doesn't linger — this self-heals residual cleartext) and return null so
-   * the caller falls back to its default → a fresh OAuth proof. Mirrors
-   * PendingTxStore's drop-on-decrypt-failure behavior.
+   * the caller falls back to its default → a fresh OAuth proof.
    */
   private async safeRead(key: string): Promise<string | null> {
     try {

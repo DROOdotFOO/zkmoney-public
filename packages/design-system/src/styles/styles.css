@@ -684,6 +684,13 @@
   gap: 2px;
   min-width: 0;
 }
+/* A tag has no break points, so it ends in an ellipsis before the trailing view. */
+.zkm-contact-row__tag {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .zkm-contact-row__subtitle {
   font-family: var(--font-body);
   font-size: 12px;

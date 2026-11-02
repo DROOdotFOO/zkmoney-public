@@ -14,6 +14,7 @@ import {
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { unswappableCopy } from "./unswappableCopy"
+import { withdrawalFailureText } from "./withdrawalFailure"
 
 const PROVING =
   "Your device is proving this withdrawal privately. The amount is still in your balance."
@@ -62,7 +63,7 @@ export function waitingNote(record: WithdrawalRecord): string | undefined {
     case "recoverable":
       return unswappableCopy(record)
     case "failed":
-      return record.error
+      return withdrawalFailureText(record)
     case "done":
     case "recovered":
       return undefined

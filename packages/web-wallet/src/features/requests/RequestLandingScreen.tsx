@@ -36,7 +36,7 @@ import {
 } from "@obsidion/web-ds"
 import { getConfig, l1Transport } from "../../config/env"
 import { getOxideTuple } from "../../config/oxideTuple"
-import { fireEvent, requestAmountBucket } from "../../lib/analytics"
+import { fireEvent, reportLanding, requestAmountBucket } from "../../lib/analytics"
 import { usdBalance, usdFigure } from "../../ui/format"
 import { useBack, useLinkSharing } from "../../ui/hooks"
 import { BootSplash, usePxeBoot, verifiedIdentity } from "../../ui/PxeBoot"
@@ -349,6 +349,7 @@ function AccountlessRequest({
   // The signed-in path reports its open from the contact send screen; this covers the
   // accountless surface (usually a no-op — a visitor with no account granted no consent).
   useEffect(() => {
+    if (!own && !signedIn) reportLanding(standing ? "pay_page" : "request_link")
     if (!own) fireRequestOpened(source, packet.requestId, amount, packet.requesterTag)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only funnel entry
   }, [])

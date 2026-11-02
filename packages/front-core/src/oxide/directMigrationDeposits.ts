@@ -14,7 +14,7 @@ import type { MigrationDirectDeposit } from "@obsidion/core/types"
 import type { Address, Hex } from "viem"
 import { directDepositKey, type SIPADepositStore } from "../core/services/deposits/SIPADepositStore"
 import type { UpgradeBatchItem } from "../core/migration/upgradeActivity"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 import { sipaRowByPortal, type SipaRow } from "./sipaRows"
 
 type DirectBatch = Pick<UpgradeBatchItem, "run" | "direct" | "fromBlock" | "amount">
@@ -30,6 +30,8 @@ export interface DirectMigrationDepositDeps {
   /** The recipient account the rail claims for. */
   recipient: string
   l1ChainId: number
+  /** The network the rail claims on, which the deposit lands in. */
+  networkId: string
   /** The commitment and shared secret at the batch's `(day, nonce)` (`migrationDirectCommitment`). */
   secret(
     direct: MigrationDirectDeposit,
@@ -97,6 +99,7 @@ async function ensure(
     recipientHash: commitment,
     recoveryAddress: "",
     l1ChainId: deps.l1ChainId,
+    networkId: deps.networkId,
     amount: "0",
     tokenSymbol: row.token.symbol,
     tokenAddress: row.token.address,

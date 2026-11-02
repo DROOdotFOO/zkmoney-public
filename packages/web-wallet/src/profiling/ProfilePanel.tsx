@@ -17,8 +17,9 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { createPortal } from "react-dom"
-import { useAztecContext } from "@obsidion/front-core"
+import { useResource } from "@obsidion/front-core"
 import { profiler, type ProfileReport, type ProfileRecord, type Category } from "./index"
+import { useSession } from "../platform/session"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -1114,7 +1115,7 @@ export function ProfilePanel() {
   const [recording, setRecording] = useState(false)
   const [report, setReport] = useState<ProfileReport | null>(null)
   const [fullscreen, setFullscreen] = useState(false)
-  const { obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
 
   useEffect(() => {
     void profiler.install()

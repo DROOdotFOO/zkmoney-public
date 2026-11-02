@@ -1,5 +1,6 @@
 import { isClaimAttemptsExhausted, isClaimConflict } from "@obsidion/front-core"
 import { passkeyWritten } from "@obsidion/passkey-web"
+import { errorCopy } from "../../errors/catalog"
 import { NameTakenError } from "./oxideOnboarding"
 
 /** Shown in place of the deposit address where this network prices no registration a sweep can take. */
@@ -19,7 +20,9 @@ const nameTakenMessage = (err: NameTakenError): string => {
 const errorSummary = (err: unknown): string => {
   if (!(err instanceof Error)) return ""
   const short = (err as { shortMessage?: unknown }).shortMessage
-  const line = (typeof short === "string" ? short : err.message).split("\n")[0].trim()
+  const line = (errorCopy(err) ?? (typeof short === "string" ? short : err.message))
+    .split("\n")[0]
+    .trim()
   return line.replace(/\.$/, "")
 }
 

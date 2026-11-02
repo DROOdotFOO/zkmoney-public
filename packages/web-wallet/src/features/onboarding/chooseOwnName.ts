@@ -6,6 +6,7 @@ import { rememberUsertag, userHandleFor } from "../../platform/auth/WebPasskeyId
 import { getActiveCredentialId } from "../../platform/storage/activeStorage"
 import { loadWalletIdentity, saveWalletIdentity } from "../identity/walletIdentity"
 import { openRegistration, registrationTagConfirmed } from "./openRegistration"
+import { session } from "../../platform/session"
 import { claimTag, collectOnboardingKeys } from "./oxideOnboarding"
 import { hasCustody } from "./webRegistration"
 
@@ -16,10 +17,12 @@ export async function chooseOwnName(
   wallet: ObsidionWallet,
   earned = false,
 ): Promise<void> {
-  const open = openRegistration()
+  // Read once the withdrawals load: a ticket's burn may already fund this address.
+  const burns = await session().withdrawals.all()
+  const open = openRegistration(burns)
   const identity = loadWalletIdentity()
   if (
-    !open ||
+    !open?.stage ||
     !identity ||
     open.record.phase !== "awaiting_deposit" ||
     !depositOwed(open.stage) ||
@@ -27,7 +30,7 @@ export async function chooseOwnName(
   ) {
     throw new Error("Your first deposit has reached your address, so your name cannot change here.")
   }
-  if (registrationTagConfirmed(open.record)) {
+  if (registrationTagConfirmed(open.record, burns)) {
     throw new Error("Your name is confirmed and cannot change during registration.")
   }
   const keys = await collectOnboardingKeys(account)

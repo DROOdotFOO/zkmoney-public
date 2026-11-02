@@ -1,3 +1,4 @@
+import { closeSession } from "../../platform/session"
 import { leavePage } from "../../platform/storage/walletStorage"
 import { showReportableError } from "../../errors/errorModal"
 import { signOut } from "./signOut"
@@ -17,5 +18,6 @@ export async function logout(stopPxe: () => Promise<void>): Promise<void> {
     showReportableError(e, "identity:logout", { message: "Couldn't sign out. Try again." })
     return
   }
+  closeSession()
   await leavePage("/claim")
 }

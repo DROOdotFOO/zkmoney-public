@@ -16,11 +16,12 @@ import {
   isRegistrationEscalated,
   normalizeTag,
   TxInFlightError,
-  useAccountContext,
-  useAztecContext,
+  createAccount,
   useContractServiceContext,
   type OxideResumeOutcome,
   type PendingRegistrationRecord,
+  useResource,
+  WalletError,
 } from "@obsidion/front-core"
 import { AUTH_TYPE, DEFAULT_CONTRACTS } from "@obsidion/sdk"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
@@ -30,8 +31,14 @@ import { getConfig } from "../../config/env"
 import { oxideEnvFor } from "../../config/oxideTuple"
 import { mockOnboarding } from "../../dev/mockOnboarding"
 import { showReportableError } from "../../errors/errorModal"
-import { failureCode, fireEvent, fireOnboardingEvent, lapTimer } from "../../lib/analytics"
-import { landingSource } from "../../lib/trafficSource"
+import {
+  failureCode,
+  fireEvent,
+  fireOnboardingEvent,
+  lapTimer,
+  reportLanding,
+} from "../../lib/analytics"
+import { firstInTab } from "../../lib/trafficSource"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
 import { useHoldEndpoints } from "../../ui/endpointsHold"
 import { peekPreBootCreate, takePreBootCreate } from "../../ui/preBootTaps"
@@ -86,7 +93,7 @@ import {
   loadWalletIdentity,
   saveWalletIdentity,
 } from "../identity/walletIdentity"
-import { markCreatedHere } from "../migration/upgradeLock"
+import { markNewAccountHere } from "../migration/upgradeLock"
 import {
   clearClaimStash,
   clearTicketSignup,
@@ -129,8 +136,8 @@ import { useActiveWithdrawalFee } from "../withdraw/withdrawalFee"
 import { useRegistrationSpeed } from "../paylink/registrationProverTip"
 import { SpeedRow } from "../withdraw/speedChoice"
 import { belowTicketThresholdCopy, ticketEligibility } from "../paylink/ticketThreshold"
-import { getWithdrawalStore } from "../withdraw/withdrawGateway"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
+import { hasOpeningBreadcrumb } from "../../platform/auth/WebPasskeyIdentityMap"
 import { getActiveCredentialId, getActiveStorageId } from "../../platform/storage/activeStorage"
 import {
   buildRetrySignDeps,
@@ -205,12 +212,12 @@ import {
   registrationNeedsRefund,
   useRegistrationRefunded,
 } from "./registrationQuoteRecovery"
-import { RegistrationRefundAction } from "./RegistrationRefundAction"
-import { ManualSweepAction } from "./RegistrationDepositDetailModal"
+import { RegistrationRefundAction } from "./RegistrationRefundAction/RegistrationRefundAction"
+import { ManualSweepAction } from "./RegistrationDepositDetailModal/RegistrationDepositDetailModal"
 import { useSipaProcessing } from "../deposit/sipaProcessing"
 import { useDepositTokens } from "../deposit/loadDepositFacts"
 import { heldDepositLine } from "../deposit/processingCopy"
-import { canManualRegistrationSweep } from "./registrationSweep"
+import { canManualRegistrationSweep } from "@obsidion/front-core"
 import { InvitationStep, type InviteNotice } from "./steps/InvitationStep"
 import { ClaimTagModal } from "./steps/ClaimTagModal"
 import { ChooseTagStep } from "./steps/ChooseTagStep"
@@ -253,6 +260,7 @@ import {
   reportRegistrationDepositSwept,
   reportRegistrationLapsed,
 } from "./registrationFunnel"
+import { handOffAccount, session, useSession } from "../../platform/session"
 
 function warnQuietCheck(err: unknown): undefined {
   console.warn("[onboarding] status check failed; the next one retries:", err)
@@ -424,14 +432,11 @@ export interface OnboardingScreenProps {
   inviteHeader?: ReactNode
   /** Where closing the first step of a ticket-funded signup goes: back to the host's page. */
   onExit?: () => void
-  /** The paylink services a ticket-funded signup claims its link with, from a host inside the
-   *  asset layer (`PaylinkOnboardingScreen`). Ordinary onboarding runs outside that layer and
-   *  passes none. */
+  /** The paylink services a ticket-funded signup claims its link with, from a host that starts the
+   *  session's token (`PaylinkOnboardingScreen`). Ordinary onboarding starts none and passes
+   *  none. */
   paylinkKit?: PaylinkKit
 }
-
-// One start per page load: /claim and the Home draft it hands to are one signup.
-let startedReported = false
 
 export function OnboardingScreen({
   embedded = false,
@@ -467,9 +472,9 @@ export function OnboardingScreen({
   const config = getConfig()
   // The registration address's record stays current while its funds move, on every host of signup.
   useSignupDeposits(useRegistrationInCustody())
-  const { obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
   const { contractService } = useContractServiceContext()
-  const { createAccount, setObsidionAccount, obsidionAccount } = useAccountContext()
+  const obsidionAccount = useResource(useSession().account)
   const paylinkDeps = useMemo(
     () => (paylinkKit && obsidionAccount ? { ...paylinkKit, account: obsidionAccount } : undefined),
     [paylinkKit, obsidionAccount],
@@ -532,6 +537,7 @@ export function OnboardingScreen({
       !hasRouteGrant &&
       !loadWalletIdentity(),
   )
+  const [returning] = useState(() => freshStart && hasOpeningBreadcrumb(config.rpId))
   // A tag settled on before a reload: a kept draw or a past user's pick is still the drawn offer.
   const [restored] = useState(() => {
     const chosen = draftTag ? loadChosenTag() : undefined
@@ -580,7 +586,7 @@ export function OnboardingScreen({
         "",
     ) ?? "",
   )
-  // "Open account", tapped while the wallet started: busy from the first frame, run once below.
+  // "Create Account", tapped while the wallet started: busy from the first frame, run once below.
   const [startedBeforeBoot] = useState(() => freshStart && peekPreBootCreate())
   const [inviteBusy, setInviteBusy] = useState(startedBeforeBoot)
   // Embedded, the pill is in the host page's frame, out of reach of a prop.
@@ -784,18 +790,19 @@ export function OnboardingScreen({
   const startedAtRef = useRef<number>(performance.now())
   useEffect(() => {
     startedAtRef.current = performance.now()
-    // A ticket signup's start is the link page's offer, reported there.
-    if (fromPaylink || startedReported) return
-    startedReported = true
-    fireOnboardingEvent("onboarding_started", {
-      entry: entryCohort,
-      source: landingSource(),
-    })
+    // A ticket signup's start is the link page's offer, reported there. One start per tab: /claim,
+    // the Home draft it hands to and a reload are one signup.
+    if (fromPaylink || !firstInTab("onboarding_started")) return
+    reportLanding("signup")
+    fireOnboardingEvent("onboarding_started", { entry: entryCohort })
   }, [routeHandle, entryCohort])
   /** Every signup exit into the wallet; the entry is reported for the account's first one only. */
   const enterWallet = () => {
     const address = loadWalletIdentity()?.address
-    const report = () => fireOnboardingEvent("wallet_entered", { entry: entryCohort })
+    const report = () =>
+      fireOnboardingEvent("wallet_entered", {
+        entry: fromPaylink ? "ticket" : entryCohort,
+      })
     if (address === undefined) report()
     else void firstWalletEntry(address).then((first) => first && report())
     intoWallet()
@@ -909,7 +916,7 @@ export function OnboardingScreen({
   const toLinkSignup = (fragment: string) =>
     navigate(`/link#${fragment}`, { replace: true, state: RECEIVE_TO_ACCOUNT })
 
-  /** "Open account": the claim server draws the tag, and the passkey and claim run at once. */
+  /** "Create Account": the claim server draws the tag, and the passkey and claim run at once. */
   const createDrawnWallet = async () => {
     setInviteNotice(undefined)
     setInviteBusy(true)
@@ -1256,7 +1263,7 @@ export function OnboardingScreen({
               own,
             ),
           )
-          if (gen === opGen.current) setObsidionAccount(keys.account)
+          if (gen === opGen.current) handOffAccount(keys.account)
           return keys
         }
       }
@@ -1280,7 +1287,7 @@ export function OnboardingScreen({
             own,
           ),
         )
-        if (gen === opGen.current) setObsidionAccount(keys.account)
+        if (gen === opGen.current) handOffAccount(keys.account)
         return keys
       }
       // Resuming continues the signup this session committed, so its own key goes first: an
@@ -1305,7 +1312,7 @@ export function OnboardingScreen({
         const keys = await passkeyAttempt(REUSE_PASSKEY, gen, (own) =>
           reusePasskeyAccount(obsidionWallet, namelessAddress, hints, gate, signal, own),
         )
-        if (gen === opGen.current) setObsidionAccount(keys.account)
+        if (gen === opGen.current) handOffAccount(keys.account)
         return keys
       }
       // A stored identity normally means this browser has an account already, so a fresh signup
@@ -1366,16 +1373,27 @@ export function OnboardingScreen({
             entry: "ticket",
           })
         }
-        return createAccount(false, AUTH_TYPE.WEB_AUTHN, statusForAttempt(own), handle, undefined, {
-          route,
-          signal,
-          ...(ticket && ticketId
-            ? {
-                onAccountCreated: (created: { credentialId: string; l2Address: string }) =>
-                  completeTicketSignupAccount(config.rpId, ticketId, ticket.attemptId, created),
-              }
-            : {}),
-        })
+        if (!obsidionWallet) throw new WalletError("wallet.missing")
+        const built = await createAccount(
+          { wallet: obsidionWallet, authService: getAuthService() },
+          false,
+          AUTH_TYPE.WEB_AUTHN,
+          statusForAttempt(own),
+          handle,
+          undefined,
+          {
+            route,
+            signal,
+            ...(ticket && ticketId
+              ? {
+                  onAccountCreated: (created: { credentialId: string; l2Address: string }) =>
+                    completeTicketSignupAccount(config.rpId, ticketId, ticket.attemptId, created),
+                }
+              : {}),
+          },
+        )
+        handOffAccount(built)
+        return built
       })
       createdRef.current = account.getAddress().toString()
       return collectOnboardingKeys(account)
@@ -1383,6 +1401,7 @@ export function OnboardingScreen({
   }
 
   const claimWithAnalytics = (keys: OnboardingKeys) => {
+    if (!obsidionWallet) throw new WalletError("wallet.notReady")
     const ticketMarker = fromPaylink ? peekTicketSignup() : null
     const elapsed = lapTimer()
     const lap = lapTimer()
@@ -1454,7 +1473,7 @@ export function OnboardingScreen({
     }
     setIdentityRetry(undefined)
     // An account created here is new on this version: nothing older to upgrade.
-    if (createdRef.current === addressRef.current) markCreatedHere(addressRef.current!)
+    if (createdRef.current === addressRef.current) markNewAccountHere(addressRef.current!)
     if (rec?.phase === "confirmed") clearNameGrant(effectiveHandle)
     // Home shows what the account still owes, the deposit included.
     enterWallet()
@@ -1794,8 +1813,13 @@ export function OnboardingScreen({
     setBusyStage("checking")
     const deps = await buildWebDetectionDeps(config, {
       getSignDeps: async () => {
-        if (!keysRef.current) return null
-        const signDeps = await buildRetrySignDeps(rec.tag, keysRef.current, config)
+        if (!keysRef.current || !obsidionWallet) return null
+        const signDeps = await buildRetrySignDeps(
+          rec.tag,
+          keysRef.current,
+          config,
+          obsidionWallet.networkId,
+        )
         // A re-issued claim carries a new deadline (and maybe a waiver); the terms shown follow it.
         // A paylink-funded signup keeps its link either way: fundable, the continuation goes on;
         // not, the link is blocked on this registration until a later quote waives the tag again
@@ -1883,7 +1907,7 @@ export function OnboardingScreen({
               throw err
             }
             if (reloadIfSessionSwitched(previousStorageId, rec.l2Address)) return
-            setObsidionAccount(keys.account)
+            handOffAccount(keys.account)
             keysRef.current = keys
             addressRef.current = keys.account.getAddress().toString()
             recoveredRef.current = true
@@ -1910,12 +1934,10 @@ export function OnboardingScreen({
     const rec = record
     if (!rec || rec.phase !== "awaiting_deposit" || paylinkSettleRef.current) return
     // Decided at the click, not the render: lapsed terms or a burn already out are sent to their own
-    // step before the batch spends the note.
-    const ticket = ticketActivation(
-      rec,
-      loadRegistrationTerms(rec.account, rec.tag),
-      getWithdrawalStore().list(),
-    )
+    // step before the batch spends the note. Nothing is decided before the burns load.
+    const burns = session().withdrawals.list.get()
+    if (!burns.hydrated) return
+    const ticket = ticketActivation(rec, loadRegistrationTerms(rec.account, rec.tag), burns.records)
     if (!ticket) return
     if (ticket.state !== "ready") {
       setInlineNotice(ticketHoldNotice(ticket.state, rec.tag))
@@ -1945,7 +1967,7 @@ export function OnboardingScreen({
               ),
             )
             if (reloadIfSessionSwitched(previousStorageId, rec.l2Address)) return
-            setObsidionAccount(keys.account)
+            handOffAccount(keys.account)
             keysRef.current = keys
             addressRef.current = keys.account.getAddress().toString()
           }
@@ -2106,15 +2128,16 @@ export function OnboardingScreen({
   const alreadyEntered = loadOnboardedIdentity() !== null
   const wrongChain = record !== null && record.l1ChainId !== config.l1ChainId
   const stage = useRegistrationStage(record)
+  // Unknown while the withdrawals load: nothing is owed or held until then.
   const openPending =
     record !== null &&
-    stage !== null &&
+    stage != null &&
     (depositOwed(stage) || stage === "funding" || fundsIn(stage))
-  const custodyHeld = openPending && fundsIn(stage)
+  const custodyHeld = openPending && stage != null && fundsIn(stage)
   // A capacity blocker on the address outranks "being processed", in the words its stated reason uses.
   const { shown: sweepHold } = useSipaProcessing(record?.sipaAddress)
   const sweepBlocker = sweepHold?.blocker
-  const awaitingDeposit = openPending && !fundsIn(stage)
+  const awaitingDeposit = openPending && stage != null && !fundsIn(stage)
   // The deadline and signed schedule outlive the in-memory claim through the persisted terms, so a
   // reload still shows them. A fresh claim outranks the stored copy of one.
   const terms = useRegistrationTerms(record?.account, record?.tag)
@@ -2149,10 +2172,11 @@ export function OnboardingScreen({
   const relayerFee = mock ? mock.fee : readRelayerFee
   const restartAfterRefund = async (keys: OnboardingKeys) => {
     if (!record) return
+    if (!obsidionWallet) throw new WalletError("wallet.notReady")
     keysRef.current = keys
     addressRef.current = record.l2Address
     recoveredRef.current = true
-    setObsidionAccount(keys.account)
+    handOffAccount(keys.account)
     depositIntentRef.current = true
     await applyClaimOutcome(
       await claimTag(record.tag, keys, config, obsidionWallet, undefined, true, record),
@@ -2184,13 +2208,14 @@ export function OnboardingScreen({
   }
   const replaceOnce = async (keys: OnboardingKeys) => {
     if (!record) return
+    if (!obsidionWallet) throw new WalletError("wallet.notReady")
     const current = getPendingStore().get(record.account)
     if (!current) return
     await assertRegistrationUnfunded(current, config)
     keysRef.current = keys
     addressRef.current = current.l2Address
     recoveredRef.current = true
-    setObsidionAccount(keys.account)
+    handOffAccount(keys.account)
     depositIntentRef.current = true
     try {
       await applyClaimOutcome(
@@ -3286,6 +3311,7 @@ export function OnboardingScreen({
       ) : freshStart ? (
         <CreateWalletStep
           busy={inviteBusy}
+          returning={returning}
           notice={step === "invite" ? inviteNotice : undefined}
           onCreate={() => void createDrawnWallet()}
           onLogIn={logIn}

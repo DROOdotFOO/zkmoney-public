@@ -8,11 +8,9 @@ import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { RegisteredTeeSigner } from "@obsidion/sdk"
 import {
   truncateMiddle,
-  useAccountContext,
-  useAssetContext,
-  useAztecContext,
   withdrawalRecipients,
   type WithdrawalRecord,
+  useResource,
 } from "@obsidion/front-core"
 import { ConfirmationSheetDetailRow } from "@obsidion/web-ds"
 import { getConfig, l1ChainFor } from "../../config/env"
@@ -22,6 +20,7 @@ import { withdrawKind } from "./withdrawFunnel"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { ManualExitSheet } from "./ManualExitSheet"
 import { selfFinalize } from "./selfFinalize"
+import { useSession } from "../../platform/session"
 
 const WALLET_LEAD = "This withdrawal has already been deducted from your Aztec balance. "
 const PAYLINK_LEAD = "The link's funds have already left Aztec. "
@@ -55,9 +54,9 @@ export function WithdrawalExitModal({
   const { release, viaEscrow } = withdrawalRecipients(record)
   const swap = viaEscrow ? record.swapOutput : undefined
   const releasedTo = viaEscrow ? truncateMiddle(release, 12) : recipient
-  const { obsidionWallet } = useAztecContext()
-  const { obsidionAccount } = useAccountContext()
-  const { teeSigner } = useAssetContext()
+  const obsidionWallet = useResource(useSession().wallet)
+  const obsidionAccount = useResource(useSession().account)
+  const teeSigner = useResource(useSession().teeSigner)
   const bridgeMode = isDesktopL1SubmitActive()
 
   return (

@@ -25,7 +25,7 @@ import {
   type VerifiedOxideIdentity,
 } from "@obsidion/front-core"
 import {
-  ContractService,
+  type ContractService,
   claimFpcPolicySponsorsAnyCall,
   hasClaimFpcSubscription,
   KIND_BY_ADDRESS,

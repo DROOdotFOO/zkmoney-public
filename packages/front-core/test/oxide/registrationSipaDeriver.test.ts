@@ -23,9 +23,14 @@ vi.mock("@oxide/l1-contracts", async (importOriginal) => ({
   predictSIPA: h.predictSIPA,
 }))
 
-const { createRegistrationSipaDeriver, NO_NAME_PORTAL_RECIPIENT, oxideEnvFromTuple } = await import(
-  "../../src/oxide/oxideRegistrationDeps"
-)
+const {
+  createRegistrationSipaDeriver,
+  legacyRegistrationSalt,
+  NO_NAME_PORTAL_RECIPIENT,
+  oxideEnvFromTuple,
+  registrationCommitments,
+} = await import("../../src/oxide/oxideRegistrationDeps")
+const { deriveStealthKey } = await import("../../src/oxide/oxideAccountKeys")
 
 const RESOLVER = "0xf902DF6c3d057230ac8c2FbD7a86aD03AFf2F871" as Address
 const TUPLE = {
@@ -126,5 +131,27 @@ describe("createRegistrationSipaDeriver", () => {
     await expect(derive(input(5n))).rejects.toThrow("rpc down")
     await expect(derive(input(5n))).resolves.toMatchObject({ sipaAddress: expect.any(String) })
     expect(h.readRegistrationSIPAImplementation).toHaveBeenCalledTimes(2)
+  })
+
+  it("commits to a salt and recipient commitment that registrationCommitments finds at every fee", async () => {
+    const derive = createRegistrationSipaDeriver({
+      publicClient: {} as never,
+      env: env(),
+      tuple: TUPLE,
+    })
+    const resolverKey = deriveStealthKey(new Fr(9n)).publicKey
+    const { masterSecret, nameHash, l2Address } = input(0n)
+    const legacy = legacyRegistrationSalt(masterSecret, resolverKey, nameHash)
+    const found = await registrationCommitments(masterSecret, nameHash, l2Address, [resolverKey])
+
+    for (const fee of [0n, 49n * 10n ** 17n])
+      for (const salt of [undefined, legacy]) {
+        const derived = await derive({ ...input(fee), sharedSecretSalt: salt })
+        expect(found).toContainEqual({
+          salt: derived.sharedSecretSalt,
+          commitment: derived.recipientCommitment,
+        })
+      }
+    expect(found).toHaveLength(2)
   })
 })

@@ -1,24 +1,27 @@
-import { Account } from "@aztec-labs/aztec.js/account"
-import { ChainInfo } from "@aztec-labs/entrypoints/interfaces"
-import { GasSettings } from "@aztec-labs/stdlib/gas"
-import { ObsidionAccountEntrypoint, AlphaEntrypointOptions } from "./ObsidionAccountEntrypoint.js"
-import { Fq, Fr } from "@aztec-labs/aztec.js/fields"
-import { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
+import type { Account } from "@aztec-labs/aztec.js/account"
+import type { ChainInfo } from "@aztec-labs/entrypoints/interfaces"
+import type { GasSettings } from "@aztec-labs/stdlib/gas"
 import {
+  ObsidionAccountEntrypoint,
+  type AlphaEntrypointOptions,
+} from "./ObsidionAccountEntrypoint.js"
+import { type Fq, Fr } from "@aztec-labs/aztec.js/fields"
+import { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
+import type {
   CompleteAddress,
   NodeInfo,
-  type ContractInstanceWithAddress,
+  ContractInstanceWithAddress,
 } from "@aztec-labs/stdlib/contract"
-import { TxExecutionRequest } from "@aztec-labs/stdlib/tx"
-import { AlphaAuthProvider } from "../auth/AlphaAuthProvider.js"
-import { ObsidionAccountContractManager } from "./ObsidionAccountContractManager.js"
+import type { TxExecutionRequest } from "@aztec-labs/stdlib/tx"
+import type { AlphaAuthProvider } from "../auth/AlphaAuthProvider.js"
+import type { ObsidionAccountContractManager } from "./ObsidionAccountContractManager.js"
 import type { AlphaPasskeySet } from "./alphaPasskeySet.js"
 import {
-  CallIntent,
+  type CallIntent,
   computeAuthWitMessageHash,
-  IntentInnerHash,
+  type IntentInnerHash,
 } from "@aztec-labs/aztec.js/authorization"
-import { ExecutionPayload } from "@aztec-labs/stdlib/tx"
+import type { ExecutionPayload } from "@aztec-labs/stdlib/tx"
 import { MAX_WITNESS_LEN } from "../../../utils/constants.js"
 
 /**

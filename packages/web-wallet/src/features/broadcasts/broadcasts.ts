@@ -30,6 +30,7 @@ export const WAIT_MS = 30_000
 /** Why the ledger waits on a broadcast, as the executors report it to a status row. */
 export const WAITING_FOR_UNLOCK = "Waiting for unlock"
 export const WAITING_FOR_REGISTRATION = "Waiting for the tag to register"
+export const WAITING_FOR_BALANCE_MOVE = "Waiting for the balance move"
 
 let ledger: BroadcastLedger | undefined
 

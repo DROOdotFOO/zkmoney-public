@@ -50,6 +50,7 @@ export function ClaimLinkModal({
   countdown,
   loading = false,
   mustUpgrade = false,
+  waiting,
   onRetryRead,
   onClose,
   onClaim,
@@ -65,6 +66,8 @@ export function ClaimLinkModal({
   loading?: boolean
   /** The account must upgrade to the current rollup first: Claim opens the upgrade instead. */
   mustUpgrade?: boolean
+  /** Why the claim must wait, shown in place of the lead. */
+  waiting?: string
   /** Set when the note could not be read, so the claim window is unknown: offers a re-read. */
   onRetryRead?: () => void
   onClose: () => void
@@ -97,6 +100,8 @@ export function ClaimLinkModal({
                 ? closed
                 : mustUpgrade
                 ? claimUpgradeLead
+                : waiting
+                ? waiting
                 : link.flavor === "email"
                 ? `Confirm ${link.email ?? "your email"} to securely receive funds in your account`
                 : "Accept to receive funds in your account"}

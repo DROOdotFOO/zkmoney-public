@@ -14,7 +14,6 @@ import type { WithdrawableSource } from "../migration/oldVersionWithdraw"
 import type { FrozenExitRead } from "./frozenExitRun"
 import {
   getOldVersionWithdrawalStore,
-  notifyOldVersionWithdrawal,
   pendingRefundIds,
   setProducingOldVersionWithdrawal,
   settleOldVersionWithdrawal,
@@ -157,10 +156,7 @@ export function zkMoneyExit(): ZkMoneyExit {
                   },
                 ],
               })
-              const saved = sent++
-                ? await records.update(base.id, add)
-                : await records.put(add(base))
-              if (saved) await notifyOldVersionWithdrawal(saved)
+              await (sent++ ? records.update(base.id, add) : records.put(add(base)))
             },
           })
           left += usd(ws, result.stranded + result.waiting)

@@ -6,7 +6,7 @@ import type { createAztecNodeClient } from "@aztec-labs/aztec.js/node"
 // createAztecNodeClient(nodeUrl): a v4 generation's node answers only `node_*`
 // RPC while the v5 client speaks `aztec_*`, so a fresh v5 client fails
 // against a v4 node ("Method not found: aztec_getBlock"). Set once the wallet
-// boots (useAztecContext, both paths); mirrors setNoircGeneration /
+// boots (the page wallet's build); mirrors setNoircGeneration /
 // setHonkGeneration. Callers fall back / no-op when it is unset (pre-boot).
 type GenerationNode = ReturnType<typeof createAztecNodeClient>
 

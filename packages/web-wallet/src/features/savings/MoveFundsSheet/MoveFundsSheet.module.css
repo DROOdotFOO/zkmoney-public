@@ -1,0 +1,29 @@
+/* The Move sheet's direction strip. */
+.moveRoute {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+}
+.moveRoute > span {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+.moveRoute small {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+:global(.ww-shell) .moveSwap {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}

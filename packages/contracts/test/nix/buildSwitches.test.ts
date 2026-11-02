@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 const repo = fileURLToPath(new URL("../../../../", import.meta.url))
-const buildContracts = join(repo, "scripts/build_contracts.sh")
+const buildContracts = join(repo, "packages/contracts/scripts/build_contracts.sh")
 const dockerSh = join(repo, "packages/contracts/nix/docker.sh")
 
 // A bare environment, so the runner's CI flags and a developer's NIMBUS_* never reach the scripts.
@@ -49,7 +49,7 @@ describe("build_contracts.sh", () => {
       "package.json",
       JSON.stringify({ scripts: { "update-versions": "x --newVersion v1.2.3" } }),
     )
-    write("scripts/transform-artifact.js", "")
+    write("packages/contracts/scripts/transform-artifact.cjs", "")
     write(
       "packages/contracts/contracts/app/Nargo.toml",
       '[package]\nname = "app"\ntype = "contract"\n',
@@ -70,10 +70,16 @@ describe("build_contracts.sh", () => {
     write(
       "packages/sdk/scripts/generate-vk.mjs",
       'import { appendFileSync } from "node:fs"\n' +
-        'appendFileSync(process.env.LOG, ["generate-vk", ...process.argv.slice(2)].join(" ") + "\\n")\n',
+        'appendFileSync(process.env.LOG, ["generate-vk", ...process.argv.slice(2)].join(" ") + "\\n")\n' +
+        "if (process.env.FAIL_VK) process.exit(1)\n",
     )
+    // `aztec compile` writes an artifact; with BLOCK_COPY, codegen puts a file where its copy goes.
     const stubs = {
-      "bin/aztec": 'echo "aztec $*" >>"$LOG"',
+      "bin/aztec": [
+        'echo "aztec $*" >>"$LOG"',
+        '[ "$1" != compile ] || { mkdir -p target; echo {} >"target/${PWD##*/}-C.json"; }',
+        '[ "$1" != codegen ] || [ -z "$BLOCK_COPY" ] || { mkdir -p "$4/target"; : >"$4/target/${PWD##*/}"; }',
+      ].join("\n"),
       "bin/aztec-nargo":
         'echo "aztec-nargo $*" >>"$LOG"; mkdir -p target; echo {} >"target/${PWD##*/}.json"',
       "packages/contracts/nix/build.sh": `printf '%s' "$1" >"$SPEC"; cd ${goldenTicket}; echo {} >golden_ticket.json; echo vk >golden_ticket.vk`,
@@ -100,20 +106,54 @@ describe("build_contracts.sh", () => {
     return { ...result, calls }
   }
   const nix = (env: Record<string, string> = {}) => build({ ENABLE_NIX: "1", ...env })
+  it.each(["1", "4"])(
+    "compiles on the host and derives the VK there without ENABLE_NIX, with CODEGEN_JOBS=%s",
+    (jobs) => {
+      const result = build({ CODEGEN_JOBS: jobs })
+      expect(result.status, result.stderr).toBe(0)
+      expect(existsSync(spec())).toBe(false)
+      expect(result.calls.sort()).toEqual([
+        `aztec codegen ./ -o ${artifacts()}`,
+        `aztec codegen ./ -o ${artifacts()}`,
+        "aztec compile --silence-warnings",
+        "aztec compile --silence-warnings --inliner-aggressiveness 0",
+        "aztec-nargo compile",
+        "aztec-nargo compile",
+        `generate-vk --in ./target/golden_ticket.json --out ${fixture}/packages/core/src/constants/index.ts --circuit golden_ticket`,
+      ])
+      expect(existsSync(join(artifacts(), "target/app/app-C.json"))).toBe(true)
+      expect(
+        existsSync(join(artifacts(), "target/oxide_token_contract/oxide_token_contract-C.json")),
+      ).toBe(true)
+      expect(existsSync(join(fixture, "packages/contracts/contracts/app/target"))).toBe(false)
+    },
+  )
 
-  it("compiles on the host and derives the VK there without ENABLE_NIX", () => {
-    const result = build({})
-    expect(result.status, result.stderr).toBe(0)
+  // Only a background contract's failure prints the replayed-log error.
+  it.each([
+    ["1", "mkdir"],
+    ["4", "ERROR: finishing a contract failed"],
+  ])("fails when a contract's copy fails with CODEGEN_JOBS=%s", (jobs, message) => {
+    const result = build({ CODEGEN_JOBS: jobs, BLOCK_COPY: "1" })
+    expect(result.status).toBe(1)
+    const output = result.stdout + result.stderr
+    expect(output).toContain(`${artifacts()}/target/app`)
+    expect(output).toContain(message)
+  })
+
+  it("prints a background contract's log when a later package fails", () => {
+    const result = build({ CODEGEN_JOBS: "4", FAIL_VK: "1" })
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain("golden_ticket VK generation failed")
+    expect(result.stdout).toContain("Running codegen for: packages/contracts/contracts/app")
+  })
+
+  it("refuses a CODEGEN_JOBS that is not a positive integer before compiling", () => {
+    const result = nix({ CODEGEN_JOBS: "0" })
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain("CODEGEN_JOBS must be a positive integer")
     expect(existsSync(spec())).toBe(false)
-    expect(result.calls.sort()).toEqual([
-      `aztec codegen ./ -o ${artifacts()}`,
-      `aztec codegen ./ -o ${artifacts()}`,
-      "aztec compile --silence-warnings",
-      "aztec compile --silence-warnings --inliner-aggressiveness 0",
-      "aztec-nargo compile",
-      "aztec-nargo compile",
-      `generate-vk --in ./target/golden_ticket.json --out ${fixture}/packages/core/src/constants/index.ts --circuit golden_ticket`,
-    ])
+    expect(result.calls).toEqual([])
   })
 
   it.each(["CI", "GITHUB_ACTIONS"])("refuses ENABLE_NIX=1 when %s is set", (flag) => {

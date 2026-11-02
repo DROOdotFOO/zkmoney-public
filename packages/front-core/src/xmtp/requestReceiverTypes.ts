@@ -8,12 +8,8 @@ import type { AztecPaymentRequestContent } from "@obsidion/sdk"
 export interface RequestStoreWrites {
   /** Insert incoming row; `inserted: false` = duplicate `requestId`. */
   addIncomingRequest(input: IncomingRequestInput): Promise<{ inserted: boolean }>
-  /** Terminal status flip; `applied: false` = missing row or monotonic reject. */
-  applyStatus(
-    requestId: string,
-    status: RequestTerminalStatus,
-    txHash?: string,
-  ): Promise<{ applied: boolean }>
+  /** The payer turned the request down; `applied: false` = missing row or not pending. */
+  decline(requestId: string): Promise<{ applied: boolean }>
   /** Row lookup for the binding gate. Required when a binding resolver is wired. */
   findById?(requestId: string): Promise<StoredRequestView | null>
 }
@@ -41,8 +37,6 @@ export interface RequestTagBindingResolver {
 export interface RequestSenderPolicy {
   admitsRequester(tag: string): Promise<boolean>
 }
-
-export type RequestTerminalStatus = "fulfilled" | "declined"
 
 /** Fields for an incoming request row. */
 export interface IncomingRequestInput {

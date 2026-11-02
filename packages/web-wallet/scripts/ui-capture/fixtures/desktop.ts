@@ -11,7 +11,7 @@ import {
   demoStealthKey,
 } from "../../../src/dev/demoFixtures"
 import { webStorage } from "../../../src/platform/storage/WebStorageAdapter"
-import { SIPA, SIPA_NEXT } from "./data"
+import { ROLLUP, SIPA, SIPA_NEXT } from "./data"
 
 // The desktop launcher's approved send that never reports a hash. `unresolved-funded` also lands the late transfer.
 const STATES = ["unresolved", "unresolved-funded"] as const
@@ -63,7 +63,7 @@ export async function seedPublishedAddress(sipaAddress: Address): Promise<void> 
     startTime: Date.now(),
   }
   const { phase, ...rest } = record
-  await store().upsert(sipaAddress, { ...rest, phase }, rest)
+  await store().upsert(sipaAddress, { ...rest, phase }, { ...rest, networkId: ROLLUP })
 }
 
 /** Addresses whose send ended without a hash; the pool never hands them out again. */

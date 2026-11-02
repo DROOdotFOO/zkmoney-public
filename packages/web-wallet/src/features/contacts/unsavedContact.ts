@@ -1,12 +1,12 @@
 import {
   ContactStorage,
+  loadRecords,
   normalizeTag,
   TagValidationError,
-  TransactionStorage,
   type Contact,
   type Transaction,
 } from "@obsidion/front-core"
-import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { session } from "../../platform/session"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { addContact } from "./useInlineContactSearch"
 import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution"
@@ -46,10 +46,9 @@ export async function lookUpUnsavedContact(idOrTag: string): Promise<Contact | n
     const resolution = await resolveTagViaRegistry(tag)
     if (resolution.status === "resolved") return unsavedContact(tag, resolution.l2Address)
     if (resolution.status === "notFound") return null
-    const transactions = await TransactionStorage.get(webStorage)
-      .getTransactions()
-      .catch(() => [])
-    return unsavedContact(tag, pastAddressOf(tag, transactions) ?? "")
+    const rows = await loadRecords(session().activity.query("peer", tag))
+    const oldestFirst = [...rows].sort((a, b) => a.timestamp - b.timestamp)
+    return unsavedContact(tag, pastAddressOf(tag, oldestFirst) ?? "")
   } catch (e) {
     if (e instanceof TagValidationError) return null
     throw e

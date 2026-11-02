@@ -5,7 +5,7 @@
  * figure here.
  */
 import { formatUnits, parseUnits, type Hex } from "viem"
-import { decimalPlaces } from "src/utils/validate"
+import { decimalPlaces } from "../../../utils/validate"
 import { WITHDRAWAL_TERMINAL_PHASES } from "./types"
 import type { WithdrawalGroupLeg, WithdrawalPhase, WithdrawalRecord } from "./types"
 

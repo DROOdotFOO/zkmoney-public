@@ -22,6 +22,7 @@ import {
   fundingLanding,
   fundingLocalId,
   fundingStarted,
+  moveDeclined,
   persistedRotation,
   storeRotation,
   stripSettled,
@@ -135,6 +136,11 @@ export interface RotationL1 {
   sipaBalance(sipa: Address, at?: "finalized" | "latest"): Promise<bigint>
   /** The deposit address's sweep since `fromBlock`, if one ran. */
   sweep(sipa: Address, fromBlock: number): Promise<SweepSeen | undefined>
+  /**
+   * The latest transfer out of the deposit address since `fromBlock` in a transaction with no sweep.
+   * Only a sweep or a recovery moves tokens out, so it is a recovery.
+   */
+  recovery(sipa: Address, fromBlock: number): Promise<Hex | undefined>
   /** Whether the portal shows the withdrawal spent at the finalized block. */
   releaseFinal(withdrawalId: string): Promise<boolean>
 }
@@ -146,8 +152,13 @@ export interface MoveDeps {
   deposits(token: string, shape: SpendShape): Promise<MoveDeposits>
   cap: bigint
   usesLeft(): Promise<boolean>
-  /** One sponsored transfer of `amount` to the two-key account; the root key signs it. */
-  send(token: string, amount: bigint, onTxHash: TxHashCallback): Promise<void>
+  /**
+   * One sponsored transfer of `amount` to the two-key account; the root key signs it. Once `signal`
+   * aborts, the root key is not asked and the send rejects with its reason.
+   */
+  send(token: string, amount: bigint, onTxHash: TxHashCallback, signal?: AbortSignal): Promise<void>
+  /** Whether `send` failed because the user closed the root key's prompt. */
+  declined(err: unknown): boolean
 }
 
 export interface RotationFlowDeps {
@@ -201,6 +212,10 @@ export type FlowWait =
   | "burn"
   | "chunk"
   | "uses"
+  | "recovery"
+  | "declined"
+  /** A planned chunk waits for the user to approve its send. */
+  | "approval"
 
 export interface FlowResult {
   record: BackupRotationRecord
@@ -209,6 +224,13 @@ export interface FlowResult {
 
 export type FlowRefusal = "gone" | "phase" | "funding-open" | "not-cancellable"
 
+export interface RunOptions {
+  /** Whether a step may ask for the root passkey: set only for a run the user's tap started. */
+  prompt?: boolean
+  /** Aborted once the screen the tap came from closes: a send that has not asked yet waits instead. */
+  signal?: AbortSignal
+}
+
 /** A step the record's state refuses. */
 export class RotationFlowError extends Error {
   constructor(readonly code: FlowRefusal, message: string) {
@@ -216,6 +238,10 @@ export class RotationFlowError extends Error {
     this.name = "RotationFlowError"
   }
 }
+
+/** A refusal because the record changed under the step; the store's change already shows the outcome. */
+export const recordMoved = (error: unknown): boolean =>
+  error instanceof RotationFlowError && (error.code === "phase" || error.code === "gone")
 
 /** A funding's hash could not be written durably; the send is aborted before the node takes it. */
 export class FundingCheckpointError extends Error {
@@ -327,6 +353,7 @@ const sweptPatch = (sweep: SweepSeen): Patch => {
   return (c) => ({
     ...(before(c, "swept") ? { phase: "swept", ...CLEARED } : {}),
     sweep: kept,
+    recovery: undefined,
   })
 }
 
@@ -355,6 +382,7 @@ const installedPatch = async (
     installed: { blockHash: block.hash },
     ...CLEARED,
     ...(held ? { unswept: true } : {}),
+    recovery: undefined,
   })
 }
 
@@ -635,16 +663,17 @@ const chunkOpen = (c: MoveChunkRecord) =>
   c.state === "submitted" ||
   (c.state === "included" && c.effect === "reverted")
 
-/** The latest run with `fields` written on its chunk at `at`. */
+/** The latest run with `fields` written on its chunk at `at`, and `run` on the run. */
 const runsWith = (
   c: BackupRotationRecord,
   at: number,
   fields: Partial<MoveChunkRecord>,
+  run: Partial<MoveRun> = {},
 ): Partial<BackupRotationRecord> => {
   const runs = c.move?.runs ?? []
   const latest = runs.at(-1)!
   const chunks = latest.chunks.map((x, i) => (i === at ? { ...x, ...fields } : x))
-  return { move: { runs: [...runs.slice(0, -1), { ...latest, chunks }] } }
+  return { move: { runs: [...runs.slice(0, -1), { ...latest, ...run, chunks }] } }
 }
 
 /**
@@ -705,12 +734,14 @@ async function cut(deps: RotationFlowDeps, token: string, owed: bigint) {
 /**
  * `rerooted` → `moved` → `done`: the one-key account's balance forwarded in chunks, one sponsored
  * transfer per chunk, each re-cut from the live shape and sent only while no chunk of the run is
- * in flight. `moved` once every chunk is included; `done` once every chunk is checkpointed and nothing
- * is left to move.
+ * in flight and the user has not closed the run's last prompt. `moved` once every chunk is
+ * included; `done` once every chunk is checkpointed and nothing is left to move. With `prompt` off, or
+ * its `signal` aborted, the next send waits at `approval`.
  */
 export async function moveRotation(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
+  { prompt = true, signal }: RunOptions = {},
 ): Promise<FlowResult> {
   if (record.phase !== "rerooted" && record.phase !== "moved") {
     throw new RotationFlowError("phase", "not rerooted")
@@ -748,7 +779,14 @@ export async function moveRotation(
           })),
         )
       }
-      run = { ...run, m: kept.length + recut.length, depositBound, chunks: [...kept, ...recut] }
+      run = {
+        ...run,
+        m: kept.length + recut.length,
+        depositBound,
+        // A decline holds only over a chunk still to send.
+        declined: recut.length > 0 ? run.declined : undefined,
+        chunks: [...kept, ...recut],
+      }
       runs = [...runs.slice(0, -1), run]
       current = await save(deps, current, write(current, { move: { runs } }))
     }
@@ -782,45 +820,63 @@ export async function moveRotation(
     runs = [...runs, run]
     current = await save(deps, current, write(current, { phase: "rerooted", move: { runs } }))
   }
-  return sendNextChunk(deps, current)
+  return sendNextChunk(deps, current, { prompt, signal })
 }
 
 async function sendNextChunk(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
+  { prompt, signal }: RunOptions,
 ): Promise<FlowResult> {
   const runs = record.move!.runs
   const run = runs.at(-1)!
   const at = run.chunks.findIndex((c) => c.state === "planned")
   if (at < 0) return { record, wait: "chunk" }
+  if (run.declined) return { record, wait: "declined" }
   if (!(await deps.move.usesLeft())) return { record, wait: "uses" }
+  if (!prompt || signal?.aborted) return { record, wait: "approval" }
   const chunk = run.chunks[at]!
   // The claim is the send's ownership: a second send of the same chunk finds it taken and stops here.
   const claim = { id: deps.mintAttemptId(), session: deps.session }
   const claimed = await save(deps, record, (c) =>
     sameRuns(c, record) ? runsWith(c, at, { state: "claimed", claim }) : null,
   )
-  /** Writes `fields` on the chunk while this send still holds it, over the other chunks as they read now. */
-  const patchHeld = (fields: Partial<MoveChunkRecord>) =>
+  /**
+   * Writes `fields` on the chunk, and `runFields` on its run, while this send still holds the chunk,
+   * over the rest as it reads now.
+   */
+  const patchHeld = (fields: Partial<MoveChunkRecord>, runFields?: Partial<MoveRun>) =>
     save(deps, claimed, (c) =>
-      c.move?.runs.at(-1)?.chunks[at]?.claim?.id === claim.id ? runsWith(c, at, fields) : null,
+      c.move?.runs.at(-1)?.chunks[at]?.claim?.id === claim.id
+        ? runsWith(c, at, fields, runFields)
+        : null,
     )
   const onTxHash: TxHashCallback = async (txHash, { expiresAtMs }) => {
     await patchHeld({ state: "submitted", claim: undefined, txHash: txHash as Hex, expiresAtMs })
   }
+  let withdrawn = false
   try {
-    await deps.move.send(chunk.token, BigInt(chunk.amount), onTxHash)
+    await deps.move.send(chunk.token, BigInt(chunk.amount), onTxHash, signal)
   } catch (err) {
+    // The screen the tap came from closed before the passkey answered: the chunk waits for the next tap.
+    withdrawn = !!signal?.aborted && err === signal.reason
+    const declined = !withdrawn && deps.move.declined(err)
     // A chunk that got its hash is past the claim; the write over it declines.
-    await patchHeld({ state: "planned", claim: undefined }).catch(() => undefined)
+    await patchHeld(
+      { state: "planned", claim: undefined },
+      declined ? { declined: true } : undefined,
+    ).catch(() => undefined)
     if (isSpendEnvelopeRefusal(err)) {
       return { record: await save(deps, record, (c) => attention(c, "move")) }
     }
-    throw err
+    if (!declined && !withdrawn) throw err
   }
   const after = await deps.store.get(record.owner)
   if (after?.attemptId !== record.attemptId) throw new RotationFlowError("gone", "attempt is gone")
-  return { record: after, wait: "chunk" }
+  return {
+    record: after,
+    wait: withdrawn ? "approval" : moveDeclined(after) ? "declined" : "chunk",
+  }
 }
 
 /**
@@ -847,17 +903,30 @@ export async function finishRotation(
   })
 }
 
-/** Runs the move again from `attention: move`, once the user asks. */
+/** Runs the move again once the user asks: from `attention: move`, or after a declined prompt. */
 export async function retryMove(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
+  { signal }: RunOptions = {},
 ): Promise<FlowResult> {
+  if (moveDeclined(record)) {
+    return moveRotation(
+      deps,
+      await save(deps, record, (c) => {
+        if (!moveDeclined(c)) return null
+        const runs = c.move!.runs
+        return { move: { runs: [...runs.slice(0, -1), { ...runs.at(-1)!, declined: undefined }] } }
+      }),
+      { signal },
+    )
+  }
   const suspended = record.suspended
   if (record.attention !== "move" || !suspended)
     throw new RotationFlowError("phase", "not a paused move")
   return moveRotation(
     deps,
     await save(deps, record, (c) => (unmoved(c, record) ? { phase: suspended, ...CLEARED } : null)),
+    { signal },
   )
 }
 
@@ -989,15 +1058,16 @@ async function reconcileFundings(
 /**
  * Runs the next step for a saved record, in a fixed order: the structural check, then what the
  * chain and the other stores already show, then the step the phase calls for. A read that cannot
- * complete leaves the record as it is.
+ * complete leaves the record as it is. Without `prompt` a chunk's send stops at `approval`.
  */
 export async function resumeRotation(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
+  { prompt = false, signal }: RunOptions = {},
 ): Promise<FlowResult> {
   let current = record
   for (let reads = 1; ; reads++) {
-    const result = await resumeOnce(deps, current)
+    const result = await resumeOnce(deps, current, { prompt, signal })
     if (result !== MOVED) return result
     const fresh = await deps.store.get(record.owner)
     if (fresh?.attemptId !== record.attemptId)
@@ -1018,9 +1088,12 @@ const MOVED = Symbol("moved")
 async function resumeOnce(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
+  options: RunOptions,
 ): Promise<FlowResult | typeof MOVED> {
   let current = record
-  const rotation = whole(current)
+  // A damaged record is not checked again: the check reads the same record and keys, so it would fail
+  // again and return before the record can end at `recovered`.
+  const rotation = current.attention === "corrupt" ? undefined : whole(current)
   if (rotation) {
     let verdict: PersistedRotationVerdict
     try {
@@ -1109,9 +1182,9 @@ async function resumeOnce(
       return { record: await rerootRotation(deps, current) }
     case "rerooted":
     case "moved":
-      return moveRotation(deps, current)
+      return moveRotation(deps, current, options)
     case "attention":
-      return resumeAttention(deps, current)
+      return resumeAttention(deps, current, options)
     case "done":
     case "recovered":
       return lateFunding(deps, current)
@@ -1122,16 +1195,20 @@ async function resumeOnce(
 
 /**
  * A parked record returns to the phase it left when the reason has passed: the route paying again,
- * a late sweep, money gone from the deposit address, nothing left to land there. A finished attempt
- * stays parked while money may sit there, with nothing run twice; a paused move and a corrupt
- * record wait for the user.
+ * a late sweep, money gone from the deposit address, nothing left to land there. Money gone by a
+ * recovery ends the attempt at `recovered` instead, unless the signed change ran anyway: then the
+ * backup is installed and the attempt goes on. A finished attempt stays parked while money may sit
+ * there, with nothing run twice. A paused move waits for the user; a corrupt record waits until its
+ * money is recovered.
  */
 async function resumeAttention(
   deps: RotationFlowDeps,
   record: BackupRotationRecord,
+  options: RunOptions,
 ): Promise<FlowResult> {
   const suspended = record.suspended
   if (!suspended) return { record }
+  const finished = suspended === "done" || suspended === "recovered"
   switch (record.attention) {
     case "route": {
       const rotation = whole(record)
@@ -1141,17 +1218,26 @@ async function resumeAttention(
         await save(deps, record, (c) =>
           unmoved(c, record) ? { phase: suspended, ...CLEARED } : null,
         ),
+        options,
       )
     }
     case "stranded": {
-      if (suspended === "done" || suspended === "recovered")
-        return strandedStanding(deps, record, suspended)
+      if (finished) return strandedStanding(deps, record, suspended)
       if (await nothingLanding(deps, record)) {
+        const recovery = record.recovery ?? (await recoverySeen(deps, record))
+        if (recovery) {
+          const rotation = whole(record)
+          const live = rotation ? await readFundability(deps, rotation) : undefined
+          if (live !== "applied" && live !== "applied-pending") {
+            return { record: await save(deps, record, endRecovered(record, recovery)) }
+          }
+        }
         return resumeRotation(
           deps,
           await save(deps, record, (c) =>
-            unmoved(c, record) ? { phase: suspended, ...CLEARED } : null,
+            unmoved(c, record) ? { phase: suspended, ...CLEARED, recovery: undefined } : null,
           ),
+          options,
         )
       }
       const watched = await watchRotation(deps, record)
@@ -1170,10 +1256,46 @@ async function resumeAttention(
       )
       return { record: await rerootRotation(deps, installed) }
     }
+    case "corrupt": {
+      // A damaged record never moves on, and cancelling refuses it over a funding, so it would block
+      // every new add: once its money is recovered, end it.
+      if (finished) return { record }
+      // Read the recovery before the balance: the panel re-checks a damaged record only while this
+      // returns a `wait`, so a recovery still settling must return one.
+      const recovery = record.recovery ?? (await recoverySeen(deps, record))
+      if (!recovery) return { record }
+      if (!(await nothingLanding(deps, record))) return { record, wait: "recovery" }
+      return { record: await save(deps, record, endRecovered(record, recovery)) }
+    }
     default:
       return { record }
   }
 }
+
+/**
+ * The recovery's L1 transaction, read from the chain: none is noted when the tab closed before its
+ * receipt.
+ */
+async function recoverySeen(
+  deps: RotationFlowDeps,
+  record: BackupRotationRecord,
+): Promise<BackupRotationRecord["recovery"]> {
+  const sipa = record.rotation?.sipa
+  if (!sipa || record.fromBlock === undefined) return undefined
+  const txHash = await deps.l1.recovery(sipa, record.fromBlock)
+  return txHash && { txHash }
+}
+
+/**
+ * Ends the attempt at `recovered`. Callers check that nothing can land first, so `stripSettled`
+ * drops the salt along with the signature and the envelope.
+ */
+const endRecovered =
+  (record: BackupRotationRecord, recovery: NonNullable<BackupRotationRecord["recovery"]>): Patch =>
+  (c) =>
+    unmoved(c, record)
+      ? stripSettled({ ...c, phase: "recovered", ...CLEARED, unswept: undefined, recovery })
+      : null
 
 /** Whether nothing can reach the deposit address any more: no funding landing, no sweep, nothing held. */
 async function nothingLanding(
@@ -1218,9 +1340,36 @@ async function lateFunding(
   if (!sipa) return { record }
   const held = inFlight(record) || record.unswept || (await depositHeld(deps, sipa))
   if (!held) return { record }
+  // Drop the earlier recovery: kept, it would read as sent for this new money and end the new park on
+  // the old transaction.
   return {
-    record: await save(deps, record, (c) => (unmoved(c, record) ? attention(c, "stranded") : null)),
+    record: await save(deps, record, (c) =>
+      unmoved(c, record) ? { ...attention(c, "stranded"), recovery: undefined } : null,
+    ),
   }
+}
+
+/**
+ * Whether the user may send the deposit address's money back out: from a stranded record, or a
+ * damaged one that cannot be cancelled. A damaged record that can be cancelled is started over.
+ * The panel shows its recovery card on the same test, so it never offers what `noteRecovery`
+ * would refuse.
+ */
+export const recoverable = (record: BackupRotationRecord): boolean =>
+  record.phase === "attention" &&
+  (record.attention === "stranded" || (record.attention === "corrupt" && !cancellable(record)))
+
+/**
+ * Keeps the L1 transaction that sent the deposit address's money back out on a parked attempt. The
+ * attempt stays parked until the recovery is final: a resume ends it once nothing can land and the
+ * address holds nothing.
+ */
+export async function noteRecovery(
+  deps: Pick<RotationFlowDeps, "store" | "now">,
+  record: BackupRotationRecord,
+  txHash: Hex,
+): Promise<BackupRotationRecord> {
+  return save(deps, record, (c) => (recoverable(c) ? { recovery: { txHash } } : null))
 }
 
 /** Whether the user may still drop the attempt from this state. */

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { IStorageAdapter } from "../../../src/core/storages/adapter"
 import { WalletSyncCoordinator } from "../../../src/core/services/transactions/WalletSyncCoordinator"
 import { BalanceStorage } from "../../../src/core/storages/BalanceStorage"
-import { makeScheduler } from "../../utils/xmtpReceiveFixtures"
+import { seededActivity } from "../../utils/activityFixture"
 
 const E18 = 10n ** 18n
 const SHARES = "0xshares"
@@ -38,6 +38,7 @@ describe("a balance read in flight across a claim", () => {
     // The snapshot's closing header read queues in PXE behind the claim's store_deposit job.
     const release = deferred()
     const storage = BalanceStorage.get(memStorage())
+    const activity = seededActivity()
     const coordinator = new WalletSyncCoordinator({
       source: {
         headBlock: async () => 100,
@@ -56,21 +57,18 @@ describe("a balance read in flight across a claim", () => {
           anchorBlock: 100,
         }),
       },
-      storage: memStorage(),
-      transactionStore: {
-        hasTxHash: async () => false,
-        addIncomingTokenTransaction: async () => {
-          throw new Error("no events")
-        },
-      },
+      db: activity.db,
+      transactionStore: activity,
       tags: { resolveL2: async () => null },
       contacts: { findByL2Address: async () => null },
       token: { address: "0xtok", symbol: "DAI", decimals: 18 },
       balance: { store: storage, scope: "net:me", tokenAddress: "0xtok" },
-      scheduler: makeScheduler(),
     })
 
-    const pass = coordinator.start({ accountAddress: "0xme", accountTag: "me", networkId: "net" })
+    const pass = coordinator.pass(
+      { accountAddress: "0xme", accountTag: "me", networkId: "net" },
+      { full: true },
+    )
     await read.promise
     // The settle pass stores the move in's 5-share claim, then stamps it.
     vi.setSystemTime(2_000)
@@ -78,12 +76,11 @@ describe("a balance read in flight across a claim", () => {
     const storedAt = Date.now()
     vi.setSystemTime(2_050)
     release.resolve()
-    await pass
+    expect(await pass).toBe(true)
 
     const record = storage.list().find((r) => r.tokenAddress === SHARES)!
     expect(BigInt(record.balance)).toBe(6n * E18)
-    // What useAsset and useSavingsContext report as the read time.
+    // What the balances and useSavingsContext report as the read time.
     expect(record.readAt ?? record.updatedAt).toBeLessThan(storedAt)
-    coordinator.stop()
   })
 })

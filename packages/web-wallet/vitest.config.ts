@@ -9,6 +9,7 @@ export default defineConfig({
     setupFiles: ["./test/setup.ts"],
   },
   resolve: {
+    conditions: ["source"],
     alias: {
       "@obsidion/web-ds": path.resolve(__dirname, "../design-system/src/index.ts"),
       // The boot's build-time profile; as under `vite dev`, a test bakes none.

@@ -65,6 +65,7 @@ packages/web-wallet-desktop/config/generated.json
 coverage/
 
 tsconfig.tsbuildinfo
+tsconfig.build.tsbuildinfo
 
 # Editor temporary files
 *.swp
@@ -123,5 +124,5 @@ ds-bundle/
 packages/web-wallet-desktop/config/mainnet.env
 !**/.env.mainnet.example
 
-# scripts/build-oxide-tee.mjs writes this file, because Oxide does not supply one.
+# packages/oxide-build/scripts/build-oxide-tee.mjs writes this file, because Oxide does not supply one.
 vendor/oxide/yarn-project/telemetry/tsconfig.build.json

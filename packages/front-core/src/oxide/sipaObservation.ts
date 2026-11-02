@@ -13,7 +13,7 @@ import {
   type PortalDeposit,
   type TokenTransfer,
 } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 /** One SIPA address to observe. */
 export interface SipaSubject {
@@ -207,19 +207,20 @@ export async function observeSipas(
  * The tracked SIPAs with the deposit's commitment that sent tokens in its transaction, as every
  * sweep does. Commitment alone is not enough: addresses that share a salt, such as one name's
  * registrations at two fees, share it.
- * A direct deposit has no SIPA, and its commitment alone names its record.
+ * A direct record has no SIPA: it takes the deposits to its commitment that no tracked SIPA sent.
  */
 function sendersOf(
   deposit: PortalDeposit,
   candidates: readonly SipaSubject[],
   observed: Map<string, SipaObserved>,
 ): string[] {
-  const direct = candidates.find((s) => s.direct)
-  if (direct) return [direct.address.toLowerCase()]
   const tx = deposit.txHash.toLowerCase()
-  return candidates
+  const senders = candidates
+    .filter((s) => !s.direct)
     .map((s) => s.address.toLowerCase())
     .filter((key) => observed.get(key)?.outflows.some((flow) => flow.txHash.toLowerCase() === tx))
+  const direct = candidates.find((s) => s.direct)
+  return senders.length || !direct ? senders : [direct.address.toLowerCase()]
 }
 
 function dedupe(subjects: readonly SipaSubject[]): SipaSubject[] {

@@ -5,8 +5,8 @@ import {
   lastPasskeyEnvironment,
   providerSlugFor,
 } from "@obsidion/passkey-web"
+import { WalletError } from "@obsidion/core/errors"
 import { PASSKEY_ENVIRONMENT_KEY } from "../platform/auth/passkeyEnvironmentKey"
-import { UNASKED_PASSKEY_MESSAGE } from "../platform/auth/unaskedPasskey"
 import { fireEvent } from "./analytics"
 
 const PASSKEY_MISMATCH: PasskeyClassification = { outcome: "refused", reason: "passkey_mismatch" }
@@ -27,7 +27,7 @@ const walletTracker = () =>
     },
     extraPredicates: [
       {
-        test: (error) => error instanceof Error && error.message === UNASKED_PASSKEY_MESSAGE,
+        test: (error) => error instanceof WalletError && error.code === "passkey.unasked",
         classification: PASSKEY_MISMATCH,
       },
     ],

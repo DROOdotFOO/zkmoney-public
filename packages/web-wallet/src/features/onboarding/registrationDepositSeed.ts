@@ -34,6 +34,7 @@ export async function seededRegistrationSalt(sipaAddress: Address): Promise<Hex 
 export function makeRegistrationDepositSeeder(env: {
   feeToken: string
   l1ChainId: number
+  networkId: string
 }): (seed: RegistrationSipaSeed) => Promise<void> {
   return async (seed) => {
     const store = SIPADepositStore.get(webStorage)
@@ -54,6 +55,7 @@ export function makeRegistrationDepositSeeder(env: {
         recoveryAddress: seed.origin.protocol === "legacy-eoa" ? seed.origin.recoveryAddress : "",
         origin: seed.origin,
         l1ChainId: env.l1ChainId,
+        networkId: env.networkId,
         amount: "0",
         tokenSymbol: WALLET_TOKEN_SYMBOL,
         startTime: Date.now(),
@@ -80,7 +82,10 @@ function fundsBearing(record: PendingRegistrationRecord): boolean {
  * record whose address no longer re-derives is a previous iteration's and is skipped, per the
  * no-backwards-compatibility rule.
  */
-export async function healRegistrationDeposits(config: WebWalletConfig): Promise<number> {
+export async function healRegistrationDeposits(
+  config: WebWalletConfig,
+  networkId: string,
+): Promise<number> {
   const identity = loadWalletIdentity()
   if (!identity) return 0
   const secret = await getAuthService()?.getSecretKey?.()
@@ -103,7 +108,11 @@ export async function healRegistrationDeposits(config: WebWalletConfig): Promise
     env,
     tuple,
   })
-  const seeder = makeRegistrationDepositSeeder({ feeToken: env.feeToken, l1ChainId: env.l1ChainId })
+  const seeder = makeRegistrationDepositSeeder({
+    feeToken: env.feeToken,
+    l1ChainId: env.l1ChainId,
+    networkId,
+  })
   let seeded = 0
   for (const record of candidates) {
     // A record from before the intent committed its payment cannot re-derive its address.

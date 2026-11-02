@@ -1,0 +1,22 @@
+@media (max-width: 640px) {
+  :global(.ww-shell) :global(.ww-topbar) .notificationsAnchor {
+    position: static;
+  }
+  :global(.ww-topbar) .notificationsAnchor > button {
+    position: relative;
+  }
+}
+/* Notifications: bell unread dot + dropdown panel anchored under the bell. */
+:is(:global(.ww-shell), :global(.ww-invite)) .notificationsAnchor {
+  position: relative;
+}
+:is(:global(.ww-shell), :global(.ww-invite)) .notificationsBellDot {
+  position: absolute;
+  top: 12px;
+  right: 13px;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #ff5c8a;
+  box-shadow: 0 0 0 2px var(--surface-canvas);
+}

@@ -369,15 +369,6 @@ export function getPortalTuple(
   return tuple
 }
 
-/** The manifest tuple of the profile asset `symbol`; undefined where the profile lists no such asset. */
-export function getAssetTuple(
-  config: WebWalletConfig,
-  symbol: string,
-): Promise<OxideEnvTuple> | undefined {
-  const asset = config.assets.find((candidate) => candidate.symbol === symbol)
-  return asset && getPortalTuple(config, asset.portal, asset.expectedGitSha)
-}
-
 // TEMPORARY — remove once oxide's manifest carries registrationController. It is the one contract
 // the NameRegistry points at that the manifest schema does not publish, so the registration
 // schedule has nowhere else to look. The manifest value wins when present; a zero or failed read

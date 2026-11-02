@@ -5,13 +5,13 @@ import type { JwtProvider } from "@obsidion/sdk"
 import type { IZkJwtProver } from "./IZkJwtProver"
 import type { IZkJwtRegistryCheck } from "./IZkJwtRegistryCheck"
 import {
-  ZkJwtStorage,
+  type ZkJwtStorage,
   ZKJWT_EMAIL_HASH_VERSION,
   type ZkJwtState,
   type ZkJwtCacheMetadata,
   type ProofBundle,
 } from "./ZkJwtStorage"
-import { logger } from "src/utils/logger"
+import { logger } from "../../../utils/logger"
 
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 1 week
 

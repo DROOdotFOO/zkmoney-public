@@ -50,6 +50,7 @@ export default defineConfig({
     },
   },
   resolve: {
+    conditions: ["source"],
     alias: {
       src: path.resolve(__dirname, "./src"),
       buffer: "buffer",

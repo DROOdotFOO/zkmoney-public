@@ -1,33 +1,29 @@
 /**
- * PendingPaylinkMigrationService — the intra-rollup migration's deferred lane for paylinks it
- * cannot move. A creator paylink inside its claim window has no refund path (the contract asserts
+ * PendingPaylinkMigrationService — the upgrade's deferred lane for paylinks it cannot move. A
+ * creator paylink inside its claim window has no refund path (the contract asserts
  * chain time is past `until_claimable`), so the residual probe hands every still-escrowed historic
  * paylink to `recordPending` and `reconcile` re-derives each record from its row and chain time on
- * every boot. A `claimable`
- * record mints one "reclaim" notification (idempotent by id, so a failed mint retries next boot);
+ * every boot. A `claimable` record gets one "reclaim" notice (fire-once by id, so a missed one is
+ * recorded next boot);
  * the reclaim itself is the ordinary post-expiry refund, after which the returned balance is a
  * plain residual for the migration.
  */
 
-import type { PaylinkTransaction, Transaction } from "src/types/transactions"
-import { logger } from "src/utils/logger"
-import {
-  AppNotificationStore,
-  type CreateAppNotificationInput,
-} from "../notifications/AppNotificationStore"
 import {
   isPaylinkTransaction,
-  paylinkAmountLabel,
-} from "../notifications/PaylinkClaimedNotificationProducer"
-import {
+  type PaylinkTransaction,
+  type Transaction,
+} from "../../../types/transactions"
+import { logger } from "../../../utils/logger"
+import { bestEffort } from "../../../engine/errors"
+import { notElsewhere } from "../../../types/networkStamp"
+import type { Notifications } from "../../../engine/notifications"
+import type {
   PendingPaylinkMigrationStore,
-  type PendingPaylinkMigrationRecord,
+  PendingPaylinkMigrationRecord,
 } from "./PendingPaylinkMigrationStore"
-import { getActiveNetworkId } from "../../activeNetworkId"
 import type { CheckSpent } from "./PaylinkClaimReconciler"
 import { paylinkRefundEligibility } from "./refundParamsFromRow"
-
-export const PAYLINK_MIGRATION_PRODUCER_ID = "paylinkMigration"
 
 export function paylinkReclaimableNotificationId(txHash: string): string {
   return `paylink:reclaimable:${txHash.toLowerCase()}`
@@ -35,13 +31,13 @@ export function paylinkReclaimableNotificationId(txHash: string): string {
 
 export interface PendingPaylinkMigrationServiceDeps {
   store: PendingPaylinkMigrationStore
-  notificationStore: AppNotificationStore
+  notifications: Pick<Notifications, "has" | "record" | "retract">
   /** Active account's `transactions[]` — the rows the records re-derive from. */
-  accountTransactions: () => Promise<Transaction[] | null>
+  accountTransactions: () => Promise<readonly Transaction[] | null>
   /**
    * On-chain nullifier read, consulted once before a reclaim notice: a claim that landed in the
    * window but has not reached the row yet must not be announced as reclaimable. Until it is
-   * available no notice is minted; records still advance.
+   * available no notice is recorded; records still advance.
    */
   checkSpent?: CheckSpent
   /**
@@ -51,26 +47,6 @@ export interface PendingPaylinkMigrationServiceDeps {
   ownsStorage?: () => boolean
   /** Test seam; defaults to `Date.now`. */
   now?: () => number
-}
-
-function reclaimableNotification(
-  row: PaylinkTransaction,
-  timestampMs: number,
-): CreateAppNotificationInput {
-  return {
-    id: paylinkReclaimableNotificationId(row.txHash),
-    producer: PAYLINK_MIGRATION_PRODUCER_ID,
-    domain: "paylink",
-    sourceId: row.txHash.toLowerCase(),
-    title: "Paylink ready to reclaim",
-    description: `Your ${paylinkAmountLabel(
-      row,
-    )}paylink on the retired deployment expired unclaimed. Reclaim it to migrate the funds`,
-    timestampMs,
-    systemIcon: "clock.arrow.circlepath",
-    severity: "info",
-    target: { type: "paylink.reclaimable", txHash: row.txHash },
-  }
 }
 
 /** Work in flight on each store. Every service over one store runs its changes one at a time. */
@@ -96,11 +72,11 @@ export class PendingPaylinkMigrationService {
   }
 
   /** Still-escrowed rows the residual probe attributed to a retired deployment, whatever their window state. */
-  recordPending(rows: PaylinkTransaction[]): Promise<void> {
-    return this.exclusive(() => this.record(rows), undefined)
+  recordPending(rows: PaylinkTransaction[], networkId: string): Promise<void> {
+    return this.exclusive(() => this.record(rows, networkId), undefined)
   }
 
-  private async record(rows: PaylinkTransaction[]): Promise<void> {
+  private async record(rows: PaylinkTransaction[], networkId: string): Promise<void> {
     const { store } = this.deps
     await store.load()
     const nowMs = this.now()
@@ -115,7 +91,7 @@ export class PendingPaylinkMigrationService {
         txHash: row.txHash,
         untilClaimable: row.untilClaimable,
         tokenAddress: row.tokenAddress,
-        networkId: getActiveNetworkId(),
+        networkId: networkId.toLowerCase(),
         flavor: row.flavor,
         status: "waiting",
         detectedAtMs: nowMs,
@@ -131,23 +107,23 @@ export class PendingPaylinkMigrationService {
    */
   retire(txHashes: readonly string[]): Promise<void> {
     return this.exclusive(async () => {
-      const { store, notificationStore } = this.deps
-      await Promise.all([store.load(), notificationStore.load()])
+      const { store, notifications } = this.deps
+      await store.load()
       for (const txHash of txHashes) {
         this.assertOwner()
         await store.remove(txHash)
         this.assertOwner()
-        await notificationStore.remove(paylinkReclaimableNotificationId(txHash))
+        await notifications.retract(paylinkReclaimableNotificationId(txHash))
       }
     }, undefined)
   }
 
   /**
    * Re-derive every unresolved record from its row and `nowSec` (chain-tip seconds, never the wall
-   * clock — the contract gates on block time). Returns the full list for the caller's UI.
+   * clock — the contract gates on block time) on `networkId`. Returns the full list for the caller's UI.
    */
-  reconcile(nowSec: number): Promise<PendingPaylinkMigrationRecord[]> {
-    return this.exclusive(() => this.rederive(nowSec), [])
+  reconcile(nowSec: number, networkId: string): Promise<PendingPaylinkMigrationRecord[]> {
+    return this.exclusive(() => this.rederive(nowSec, networkId), [])
   }
 
   /** Runs `work` in the store's turn; work whose account changed ends with `dropped`. */
@@ -167,10 +143,13 @@ export class PendingPaylinkMigrationService {
     if (this.deps.ownsStorage?.() === false) throw new AccountChanged()
   }
 
-  private async rederive(nowSec: number): Promise<PendingPaylinkMigrationRecord[]> {
-    const { store, notificationStore } = this.deps
+  private async rederive(
+    nowSec: number,
+    networkId: string,
+  ): Promise<PendingPaylinkMigrationRecord[]> {
+    const { store } = this.deps
     await store.load()
-    let transactions: Transaction[] | null
+    let transactions: readonly Transaction[] | null
     try {
       transactions = await this.deps.accountTransactions()
     } catch (err) {
@@ -182,24 +161,17 @@ export class PendingPaylinkMigrationService {
       transactions.filter(isPaylinkTransaction).map((row) => [row.txHash?.toLowerCase(), row]),
     )
 
-    const activeNetworkId = getActiveNetworkId()
     for (const record of store.list()) {
       if (record.status === "resolved") continue
       // Another network's escrow: this chain's clock and nullifier tree say nothing about it.
-      if (
-        activeNetworkId !== undefined &&
-        record.networkId !== undefined &&
-        record.networkId !== activeNetworkId
-      ) {
-        continue
-      }
+      if (!notElsewhere(record, networkId)) continue
       const row = rowsByHash.get(record.txHash.toLowerCase())
       const next = row ? this.derive(record, row, nowSec) : this.resolved(record, "unavailable")
       if (next.status !== record.status) {
         this.assertOwner()
         await store.set(next)
       }
-      // Minted from state, not from the transition, so a mint that failed or was cut off retries.
+      // Recorded from state, not from the transition, so a notice that was cut off is recorded later.
       if (next.status === "claimable" && row) await this.notify(next, row)
     }
     return store.list()
@@ -209,9 +181,9 @@ export class PendingPaylinkMigrationService {
     record: PendingPaylinkMigrationRecord,
     row: PaylinkTransaction,
   ): Promise<void> {
-    const { store, notificationStore, checkSpent } = this.deps
-    await notificationStore.load()
-    if (notificationStore.get(paylinkReclaimableNotificationId(row.txHash))) return
+    const { store, notifications, checkSpent } = this.deps
+    const id = paylinkReclaimableNotificationId(row.txHash)
+    if (await notifications.has(id)) return
     // No check, no notice: the entry is fire-once, so it must never precede the nullifier read.
     if (!checkSpent) return
     let spent: boolean | undefined
@@ -228,11 +200,16 @@ export class PendingPaylinkMigrationService {
       await store.set(this.resolved(record, "claimed"))
       return
     }
-    try {
-      await notificationStore.createIfAbsent(reclaimableNotification(row, this.now()))
-    } catch (err) {
-      logger.warn("[PendingPaylinkMigrationService] notification mint failed:", err)
-    }
+    // A notice that fails to save is recorded on the next reconcile; the other links still run.
+    await bestEffort(
+      "unknown",
+      notifications.record({
+        id,
+        at: this.now(),
+        kind: "reclaimable",
+        data: { txHash: row.txHash },
+      }),
+    )
   }
 
   private derive(

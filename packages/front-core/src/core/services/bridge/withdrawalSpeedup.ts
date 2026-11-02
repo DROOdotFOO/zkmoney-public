@@ -25,7 +25,7 @@ import { MAX_RPC_CHECKPOINTS_DATA_LEN } from "@aztec-labs/stdlib/interfaces/api-
 import type { AztecNode } from "@aztec-labs/stdlib/interfaces/client"
 import type { Address, PublicClient } from "viem"
 
-import { logger } from "src/utils/logger"
+import { logger } from "../../../utils/logger"
 
 export type SpeedupRollupConstants = Pick<
   L1RollupConstants,

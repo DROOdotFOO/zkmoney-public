@@ -29,6 +29,7 @@ import {
   WITHDRAW_RELAYER_TIP,
 } from "@obsidion/core/constants"
 import {
+  bestEffort,
   withdrawalRecipients,
   paylinkIdentity,
   type AddressScreener,
@@ -50,7 +51,6 @@ import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import type { WithdrawalReceiveAsset } from "../withdraw/withdrawAssets"
 import {
   currentDeployment,
-  getWithdrawalStore,
   planSwapLeg,
   runBurn,
   swapRecordFields,
@@ -60,6 +60,7 @@ import {
   type WithdrawStage,
 } from "../withdraw/withdrawGateway"
 import { oxideTokenImmutablesOf, txAmountCap } from "../token/oxideToken"
+import { session } from "../../platform/session"
 
 /** Wallet + contracts + the enclave signer: everything a bearer exit needs, and no account. */
 export interface PaylinkExitDeps {
@@ -259,7 +260,7 @@ async function cashOutLinkFlow(
       deployment: await currentDeployment(tuple),
       ...swapRecordFields(swap, quote),
     },
-    burn: (seeded) => {
+    burn: (seeded, onTxHash) => {
       if (getConfig().network !== network) throw new Error("Network changed — reopen the link")
       onStage?.("proving")
       return exitPaylinkWithVoucher({
@@ -272,6 +273,7 @@ async function cashOutLinkFlow(
         withdrawal,
         operationId: op.operationId,
         zkProof,
+        onTxHash,
       })
     },
     // The burn's own figures, not the link packet's: the escrow note is what was spent.
@@ -282,6 +284,11 @@ async function cashOutLinkFlow(
   })
   if (result) onStage?.("submitting")
   // A burn left to the chain reports once the tracker marks its record mined.
-  void reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
+  void bestEffort(
+    "unknown",
+    session()
+      .withdrawals.all()
+      .then((burns) => reportPaylinkClaims(burns, webStorage)),
+  )
   return record
 }

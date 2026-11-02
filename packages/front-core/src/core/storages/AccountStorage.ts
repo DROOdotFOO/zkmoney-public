@@ -1,9 +1,10 @@
-import { AccountState, Transaction, WebAuthnData } from "src/types"
+import type { AccountState, WebAuthnData } from "../../types"
 import { assert } from "ts-essentials"
 import { ACCOUNT_STORAGE_KEY } from "./constants"
-import { globalEventEmitter } from "../services"
 import { AUTH_TYPE } from "@obsidion/sdk"
 import type { IStorageAdapter } from "./adapter"
+import { memoryStore } from "../../engine/store"
+import { legacyStore } from "../../engine/legacyStore"
 
 /**
  * Single-account wallet storage.
@@ -16,8 +17,14 @@ import type { IStorageAdapter } from "./adapter"
 export class AccountStorage {
   private static instance: AccountStorage | null = null
   private storage: IStorageAdapter
+  private writes = memoryStore(0)
+  /** The stored account, read again after every write. */
+  readonly current = legacyStore<AccountState | undefined>(
+    { read: () => this.getAccount(), subscribe: (onChange) => this.writes.subscribe(onChange) },
+    undefined,
+  )
 
-  private constructor(storage: IStorageAdapter) {
+  constructor(storage: IStorageAdapter) {
     this.storage = storage
   }
 
@@ -87,79 +94,6 @@ export class AccountStorage {
     return candidate as unknown as AccountState
   }
 
-  /**
-   * One-time migration helper: read the legacy `transactions[]` field off
-   * the persisted account blob NON-DESTRUCTIVELY. Returns the array, or
-   * `undefined` if there is nothing to migrate. The caller is expected to
-   * persist these rows into the new transaction storage key first, then
-   * call `stripLegacyTransactions()` to remove the field from the account
-   * blob.
-   *
-   * Called by `TransactionStorage` on first load when its own key is empty.
-   * Repeated calls return the same legacy rows until `stripLegacyTransactions`
-   * runs.
-   */
-  public async consumeLegacyTransactions(): Promise<Transaction[] | undefined> {
-    const raw = await this.storage.getItem(ACCOUNT_STORAGE_KEY)
-    if (raw === null) return undefined
-
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      return undefined
-    }
-
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return undefined
-    }
-
-    const candidate = parsed as Record<string, unknown>
-    if (!Array.isArray(candidate.transactions)) return undefined
-
-    const legacy = candidate.transactions as Transaction[]
-    return legacy
-  }
-
-  /**
-   * Strip the legacy `transactions` field from the persisted account blob.
-   * Caller must have already persisted the legacy rows into the new
-   * transaction storage key. Splitting this from `consumeLegacyTransactions`
-   * makes the migration atomic: the new key is written first, the old
-   * field is stripped second.
-   *
-   * Failure semantics:
-   * - If `consumeLegacyTransactions` rejects, no data has moved — the next
-   *   load retries from the still-readable account blob.
-   * - If the new-key write rejects, the migration gate clears and the next
-   *   load retries from the still-readable account blob.
-   * - If THIS strip rejects after the new-key write succeeded, the
-   *   migration result is durable (new key has the rows). Later loads
-   *   short-circuit on the now-non-null new key and do NOT retry strip;
-   *   the legacy field on the account blob is harmless residue.
-   */
-  public async stripLegacyTransactions(): Promise<void> {
-    const raw = await this.storage.getItem(ACCOUNT_STORAGE_KEY)
-    if (raw === null) return
-
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      return
-    }
-
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return
-    }
-
-    const candidate = parsed as Record<string, unknown>
-    if (!Array.isArray(candidate.transactions)) return
-
-    delete candidate.transactions
-    await this.storage.setItem(ACCOUNT_STORAGE_KEY, JSON.stringify(candidate))
-  }
-
   /** Returns the stored account, or `undefined` if none exists yet. */
   public async getAccount(): Promise<AccountState | undefined> {
     return this.loadAccount()
@@ -173,9 +107,10 @@ export class AccountStorage {
   /** Overwrite the stored account. */
   public async setAccount(accountState: AccountState): Promise<void> {
     await this.storage.setItem(ACCOUNT_STORAGE_KEY, JSON.stringify(accountState))
+    this.writes.update((n) => n + 1)
   }
 
-  /** Persist an update to the current account. Emits `emitAccountUpdated`. */
+  /** Persist an update to the current account. */
   public async updateAccount(accountState: AccountState): Promise<void> {
     const existing = await this.getAccount()
     assert(existing, "No account to update")
@@ -184,7 +119,6 @@ export class AccountStorage {
       "updateAccount cannot change completeAddress",
     )
     await this.setAccount(accountState)
-    globalEventEmitter.emitAccountUpdated({ accountId: accountState.completeAddress })
   }
 
   /** Convenience: add a WebAuthn-backed account. */

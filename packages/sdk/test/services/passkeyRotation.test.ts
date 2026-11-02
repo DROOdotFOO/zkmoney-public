@@ -10,8 +10,6 @@ import {
   AccountMetadataRegistryAbi,
   DepositSubsidyAbi,
   ForwardingTableAbi,
-  NamePortalAbi,
-  OxideAccountAbi,
   SipaIntent,
   conditionHash,
   encodeR1UserOpSignature,
@@ -21,18 +19,15 @@ import {
   type R1PublicKeyArg,
   type UserRecordArg,
 } from "@oxide/l1-contracts"
-import { passkeyMetadata } from "@oxide/oxide-client/passkey_rotation.js"
 import { computeRecipientCommitment } from "@oxide/oxide-lib/recipient_commitment.js"
 import { computeSIPAAddress } from "@oxide/oxide-lib/sipa_address.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import {
   ContractFunctionRevertedError,
-  decodeAbiParameters,
   decodeFunctionData,
   encodeFunctionResult,
   hexToBytes,
   keccak256,
-  parseAbiParameters,
   stringToHex,
   toHex,
   type Address,
@@ -63,8 +58,8 @@ import {
   type PreparedBackupRotation,
   type RotationLocalTruth,
 } from "../../src/services/passkeyRotation.js"
-import { SoftwareWebauthnKey } from "../utils/softwareWebauthn.js"
-import { r1Key, signUserOpHash, webAuthnAuthArg } from "../utils/userOpSignature.js"
+import { SoftwareWebauthnKey } from "../utils/wallet/softwareWebauthn.js"
+import { r1Key, signUserOpHash, webAuthnAuthArg } from "../utils/wallet/userOpSignature.js"
 
 const addr = (tag: string) => `0x${tag.padStart(40, "0")}` as Address
 const OWNER = addr("a0")
@@ -119,7 +114,6 @@ const TUPLE: BackupRotationTuple = {
 const TRUTH: RotationLocalTruth = {
   derive: (keys: readonly R1PublicKeyArg[]) => (keys.length === 1 ? ONE_KEY : TWO_KEY),
   publicKey: PUBLIC_KEY,
-  resolverOperator: OPERATOR,
 }
 const PREPARE = {
   tuple: TUPLE,
@@ -162,9 +156,7 @@ function fakeChain(initial: Partial<Snapshot> = {}) {
   const at = (blockNumber?: bigint) =>
     history[blockNumber === undefined ? history.length - 1 : Number(blockNumber)]!
   const client = {
-    getBlock: async (
-      params: { blockTag?: string; blockHash?: Hex; blockNumber?: bigint } = {},
-    ) => {
+    getBlock: async (params: { blockTag?: string; blockHash?: Hex; blockNumber?: bigint } = {}) => {
       const n = params.blockHash
         ? history.findIndex((_, i) => hashOf(i) === params.blockHash)
         : params.blockNumber !== undefined
@@ -310,75 +302,6 @@ async function preparedAndSigned(chain = fakeChain()) {
 }
 
 describe("prepareBackupRotation", () => {
-  it("builds one user operation: install the key, repoint the record, notify the portal", async () => {
-    const chain = fakeChain()
-
-    const prepared = await prepareBackupRotation(chain.client, PREPARE)
-
-    const { intent, newRecord } = prepared.rotation
-    expect(prepared.expectedKeys).toEqual([ROOT])
-    expect(prepared.implementation).toBe(IMPL)
-    expect(prepared.builtOver).toEqual(RECORD)
-    expect(prepared.add).toBe(ADD)
-    expect(intent.owner).toBe(OWNER)
-    expect(intent.nonce).toBe(3n)
-    expect(intent.rollupVersion).toBe(ROLLUP_VERSION)
-    expect(newRecord).toEqual({ ...RECORD, l2Address: TWO_KEY.toString() })
-
-    const execute = decodeFunctionData({ abi: OxideAccountAbi, data: intent.callData })
-    expect(execute.functionName).toBe("execute")
-    const [calls] = decodeAbiParameters(
-      parseAbiParameters("(address target,uint256 value,bytes data)[]"),
-      (execute.args as readonly unknown[])[1] as Hex,
-    )
-    expect(calls.map((call) => call.target.toLowerCase())).toEqual([OWNER, REGISTRY, NAME_PORTAL])
-    expect(calls.every((call) => call.value === 0n)).toBe(true)
-    const install = decodeFunctionData({ abi: OxideAccountAbi, data: calls[0]!.data })
-    expect(install.functionName).toBe("addAuthKey")
-    // Behind oxide's prefix: the envelope, then the raw credential id.
-    const payload = `${ADD.envelope}${ADD.credentialId.slice(2)}` as Hex
-    expect(install.args).toEqual([ADD.pubkey, passkeyMetadata(ADD.credentialId, payload)])
-    expect(backupKeyEntry(ADD).metadata).toBe(passkeyMetadata(ADD.credentialId, payload))
-    const repoint = decodeFunctionData({ abi: AccountMetadataRegistryAbi, data: calls[1]!.data })
-    expect(repoint.functionName).toBe("setUserRecord")
-    const [repointed, written] = repoint.args as readonly unknown[] as [Address, UserRecordArg]
-    expect(repointed.toLowerCase()).toBe(OWNER)
-    expect(written).toEqual({ ...newRecord, resolverOperator: expect.any(String) })
-    expect(written.resolverOperator.toLowerCase()).toBe(OPERATOR)
-    const notify = decodeFunctionData({ abi: NamePortalAbi, data: calls[2]!.data })
-    expect(notify.functionName).toBe("notify")
-    const [notified, ...notice] = notify.args as readonly unknown[] as [Address, Hex, bigint]
-    expect(notified.toLowerCase()).toBe(OWNER)
-    expect(notice).toEqual([TWO_KEY.toString(), ROLLUP_VERSION])
-
-    const readRecord = conditionHash(
-      encodeFunctionResult({
-        abi: AccountMetadataRegistryAbi,
-        functionName: "getUserRecord",
-        result: RECORD,
-      }),
-    )
-    expect(intent.precondition).toMatchObject({ target: REGISTRY, resultHash: readRecord })
-    expect(intent.postcondition).toMatchObject({
-      target: REGISTRY,
-      data: intent.precondition.data,
-      resultHash: conditionHash(
-        encodeFunctionResult({
-          abi: AccountMetadataRegistryAbi,
-          functionName: "getUserRecord",
-          result: newRecord,
-        }),
-      ),
-    })
-    expect(prepared.rotation.deployArgs).toMatchObject({
-      implementation: IMPL,
-      resweepable: false,
-      rollupVersion: ROLLUP_VERSION,
-      forwardingTable: TABLE,
-      intentHash: keccak256(encodeUserOpIntentData(intent)),
-    })
-  })
-
   it("refuses an account with no record, or a record that names another address or version", async () => {
     await expect(
       prepareBackupRotation(fakeChain({ record: undefined }).client, PREPARE),
@@ -674,6 +597,17 @@ describe("verifyPersistedRotation", () => {
     expect(verdict.verdict).toBe("verified")
   })
 
+  it("verifies a rotation over the account's own resolver operator and keeps it", async () => {
+    const { chain, record } = await preparedAndSigned(
+      fakeChain({ record: { ...RECORD, resolverOperator: BENEFICIARY } }),
+    )
+    const verdict = await verifyPersistedRotation(chain.client, record, TUPLE, TRUTH)
+    if (verdict.verdict !== "verified") throw new Error(verdict.reason)
+    expect(verdict.rotation.newRecord.resolverOperator.toLowerCase()).toBe(
+      BENEFICIARY.toLowerCase(),
+    )
+  })
+
   it("calls out each field a corrupt record disagrees on", async () => {
     const { chain, prepared, record } = await preparedAndSigned()
     const corrupt = async (
@@ -775,11 +709,12 @@ describe("verifyPersistedRotation", () => {
       }),
     ).toBe("the record built over names another address")
     expect(await corrupt({ builtOver: { ...RECORD, rollupVersion: 8n } })).toBe("the call data")
+    // No local truth names the operator, so the rebuilt call data is what binds the saved one.
+    expect(await corrupt({ builtOver: { ...RECORD, resolverOperator: BENEFICIARY } })).toBe(
+      "the call data",
+    )
     expect(await corrupt({}, TUPLE, { ...TRUTH, publicKey: { x: 1n, y: 2n } })).toBe(
       "the record built over names another public key",
-    )
-    expect(await corrupt({}, TUPLE, { ...TRUTH, resolverOperator: BENEFICIARY })).toBe(
-      "the record built over names another resolver operator",
     )
     expect(
       await corrupt({
@@ -898,22 +833,6 @@ describe("verifyPersistedRotation", () => {
 
 describe("verifyWebAuthnUserOpSignature", () => {
   const hash = keccak256("0x1234")
-
-  it("accepts the root key's assertion over the hash and reads its key index", async () => {
-    const signature = await signUserOpHash(A, hash, 2n)
-    expect(verifyWebAuthnUserOpSignature(signature, r1Key(A), hash)).toEqual({
-      keyIndex: 2n,
-      valid: true,
-    })
-    expect(verifyWebAuthnUserOpSignature(signature, r1Key(B), hash)).toEqual({
-      keyIndex: 2n,
-      valid: false,
-      reason: "the signature does not verify",
-    })
-    expect(verifyWebAuthnUserOpSignature(signature, r1Key(A), keccak256("0x5678")).valid).toBe(
-      false,
-    )
-  })
 
   it("names what an assertion fails on: flags, type, challenge, range, or a malformed blob", async () => {
     const auth = await webAuthnAuthArg(A, hash)

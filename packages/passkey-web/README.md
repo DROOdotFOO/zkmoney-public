@@ -12,10 +12,15 @@ The chain is `core → contracts → sdk → front-core → web-wallet`. This pa
 
 | Folder | What it holds |
 | --- | --- |
-| `src/policy/` | No DOM. Device posture, the user-agent parser, the phone-reach probe, the provider allowlist and its display names, the refusal errors, the refusal / phone-steps / iOS-floor copy, the environment record, the slot and route rules, the authenticator-class rule, the evidence gates, the backup passkey rules, the ceremony drivers, the creation-provenance rule, and the Aztec-free MSK derivation. |
+| `src/browser/` | No DOM. What the browser and device are: the user-agent parser, device posture, the in-app browser rule, the phone-reach probe, and the environment record. |
+| `src/rules/` | No DOM. Which passkeys and routes a wallet accepts: the provider allowlist and its display names, laptop creation, the slot and route rules with the authenticator-class rule, the evidence gates, the backup passkey rules, the creation-provenance rule, and the relying party per deployment. |
+| `src/refusals/` | No DOM. The typed refusal errors and the words a screen shows for them: refusal, phone-steps and iOS-floor copy. |
+| `src/options/` | No DOM. The choices offered when a passkey is made: sign-up and backup-add options. |
+| `src/telemetry/` | No DOM. The closed `passkey_ceremony` vocabulary, its inputs, and the tracker that emits one event per attempt. |
+| `src/drivers.ts`, `src/derivation.ts` | No DOM. The ceremony sequences the web fronts run, and the Aztec-free MSK derivation. |
 | `src/ceremony/` | The DOM. `BrowserPasskeyCeremony` over `navigator.credentials` (both salts, attachment and hints, the tab slot), the page-start lock on the browser's own passkey functions (`nativeLockScript`, an inline script a front puts at the top of `<head>`; `nativeLockFor` reads what it did and `keptPasskeyApiFor` the extension wrapper it kept aside), the user handle (the account name and where the passkey was made, `userHandle.ts`), authenticator-data parsing, public-key recovery, byte helpers. Nothing runs at module load, so the root export is safe to import from a node process. |
 
-A change under `src/policy/` that relaxes a refusal, a gate or the provider allowlist reaches every front that composes it, the funded wallet among them. Judge such a change against every consumer's risk, not only for parity.
+A change outside `src/ceremony/` that relaxes a refusal, a gate or the provider allowlist reaches every front that composes it, the funded wallet among them. Judge such a change against every consumer's risk, not only for parity.
 
 These rules are worth knowing before reading the code.
 

@@ -1,8 +1,9 @@
 # Compiles Noir packages with the pinned Aztec toolchain, one derivation per package: contracts with its own
 # `aztec compile`, circuits with its nargo. docs/conventions/noir-nix-build.md lists what each one's key covers.
 {
-  # JSON list of { dir, args?, vk? }: a repo-relative package directory, its compile arguments and, for a circuit
-  # whose verification key is pinned, vk = true, as scripts/build_contracts.sh decides them.
+  # JSON list of { dir, args?, vk? }: a repo-relative package directory, its compile arguments and,
+  # for a circuit whose verification key is pinned, vk = true, as
+  # packages/contracts/scripts/build_contracts.sh decides them.
   spec ? "[]",
 }:
 let
@@ -123,7 +124,8 @@ let
         + "run packages/contracts/nix/update-lock.sh with the packages built with Nix"
       ));
 
-  # Only the files nargo compiles: scripts/build_contracts.sh's target/ and codegen leftovers stay out of the key.
+  # Only the files nargo compiles: packages/contracts/scripts/build_contracts.sh's target/ and
+  # codegen leftovers stay out of the key.
   noirSource =
     dir:
     lib.fileset.toSource {
@@ -228,7 +230,8 @@ in
     installPhase = "install -Dm755 nimbus $out/bin/nimbus";
     dontFixup = true;
   });
-  # Each package's artifacts at <dir>/target, the way scripts/build_contracts.sh reads them.
+  # Each package's artifacts at <dir>/target, the way packages/contracts/scripts/build_contracts.sh
+  # reads them.
   contracts = pkgs.linkFarm "obsidion-noir-contracts" (
     lib.mapAttrs' (dir: build: lib.nameValuePair "${dir}/target" build) packages
   );

@@ -10,6 +10,7 @@ packages:
   - packages/front-core
   - packages/design-system
   - packages/generation-v5
+  - packages/lint-config
   - packages/web-wallet
   # packages/web-wallet-desktop is not a member: it has its own npm lockfile, so the Electron
   # toolchain stays out of the pnpm graph.

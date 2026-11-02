@@ -1,0 +1,54 @@
+.homeTxnsBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.homeTxnsTabs {
+  display: flex;
+  gap: 24px;
+}
+.homeTxnsTabs button {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.homeTxnsTabs button[data-active] {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.homeTxnsViewall {
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.homeTxnsRows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.homeTxnsEmpty {
+  padding: 16px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+@media (min-width: 641px) and (max-width: 960px) {
+  .homeTxnsBar {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+}
+@media (max-width: 640px) {
+  .homeTxnsBar {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .homeTxnsTabs {
+    gap: 20px;
+  }
+}

@@ -30,9 +30,9 @@ Enums appear under both subpaths from a single declaration: the runtime form liv
 
 ## Invariants
 
-These are load-bearing — the CI guardrail at `scripts/verify-core-isolation.mjs` enforces them on every push:
+The canonical test in `test/isolation.test.mjs` verifies that compiled public entry points stay within core and Node built-ins. Build core before running `pnpm test`.
 
-1. **No transitive imports of contract artifacts.** Resolution from every public subpath (`dist/types/index.js`, `dist/constants/index.js`, and `dist/oxide/index.js`) must never reach `@obsidion/contracts/dist/`, `@obsidion/sdk/dist/`, or `@aztec/*/dest/`.
+1. **No external runtime dependencies.** Resolution from every public subpath declared in `package.json` must stay within core and Node built-ins.
 2. **`@aztec/*` references are type-only.** Compiled output strips them. They are `devDependencies` used to typecheck this package, not dependencies imposed on consumers.
 3. **`process.env` reads stay verbatim.** The `process.env.X || "fallback"` evaluation timing is what consumers that write to `process.env` at module load depend on — do not memoize, lazy-getter, or convert to a getter property. The `_env()` helper guards `typeof process` for browser/worker contexts that lack a polyfill, but the eager-at-module-load semantics are preserved.
 

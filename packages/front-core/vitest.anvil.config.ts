@@ -5,6 +5,7 @@ import { defineConfig } from "vitest/config"
 // these so the canonical package test stays environment-free.
 export default defineConfig({
   resolve: {
+    conditions: ["source"],
     alias: { src: path.resolve(__dirname, "./src") },
   },
   test: {

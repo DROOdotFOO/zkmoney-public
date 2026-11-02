@@ -6,7 +6,8 @@
  * still inside its claim window is reported separately: nothing can refund it until the window
  * closes, so the modal only announces it and the pending-migration store waits it out. The
  * migration-detected modal shows iff any historic deployment reports residuals — re-checked every
- * boot until drained, so there is no persisted "seen" state to go stale. On a frozen portal the
+ * boot until drained. Only a frozen source on another rollup, which nothing new reaches, stops being
+ * read once drained (`retiredSourceSettled`). On a frozen portal the
  * balance and the deposits are what is still refundable: a refund pays on L1 and leaves the L2
  * notes in place, and a deposit claimed on L2 after the freeze still refunds. The balance takes in
  * the open payment links, whose escrows refund to L1 too, so their rows start no L2 reclaim: notes
@@ -110,7 +111,7 @@ export interface HistoricResidualDeps {
   publicClient: PublicClient
   current: OxideEnvTuple
   historic: OxideEnvTuple[]
-  rows: Transaction[]
+  rows: readonly Transaction[]
   /** What a frozen portal can still refund, or `undefined` while it is live. */
   frozenSource?(
     tuple: OxideEnvTuple,

@@ -24,7 +24,7 @@ import {
   readDepositSIPAImplementation,
   type SipaHoldingRead,
 } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 import { computeAccountSIPAAddress } from "../core/services/deposits/sipa/sipaAddress"
 import {
@@ -220,6 +220,8 @@ export interface ResolverPaymentWatcherDeps {
   ) => Promise<{ timestamp: bigint; balances: Map<string, Map<string, bigint>> }>
   store: Pick<SIPADepositStore, "get" | "list" | "create">
   l1ChainId: number
+  /** The wallet's network, stamped on the records a tick creates. */
+  networkId: string
   /** The records a tick created, so the caller can run the sync pass now. */
   onFunded?: (records: SIPADepositRecord[]) => void
   now?: () => number
@@ -344,6 +346,7 @@ export class ResolverPaymentWatcher {
         recoveryAddress: "",
         origin: candidate.origin,
         l1ChainId: this.deps.l1ChainId,
+        networkId: this.deps.networkId,
         amount: formatUnits(balance, token.decimals),
         tokenAddress: token.address,
         tokenSymbol: token.symbol,

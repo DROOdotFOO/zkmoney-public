@@ -85,7 +85,7 @@ export async function owePaylinkClaim(
 
 /** Sends every saved claim whose burn has mined, and forgets it. Never throws. */
 export async function reportPaylinkClaims(
-  records: WithdrawalRecord[],
+  records: readonly WithdrawalRecord[],
   storage: IStorageAdapter,
 ): Promise<void> {
   try {

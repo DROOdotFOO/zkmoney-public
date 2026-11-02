@@ -5,16 +5,17 @@
   "type": "module",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -b",
+    "build": "rm -rf dist && tsc -b tsconfig.build.json",
     "clean": "rm -rf ./dist .tsbuildinfo",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json && eslint",
     "typecheck:test": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
@@ -23,7 +24,9 @@
   },
   "devDependencies": {
     "@noble/hashes": "^1.7.0",
+    "@obsidion/lint-config": "workspace:*",
     "@types/node": "^22.19.6",
+    "eslint": "^9.36.0",
     "jsdom": "^25.0.1",
     "typescript": "5.7.3",
     "vitest": "^3.0.0"

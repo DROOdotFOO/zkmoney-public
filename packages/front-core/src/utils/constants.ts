@@ -1,6 +1,6 @@
 import { DEFAULT_DECIMALS, tokenDecimalsForNetwork, type Network } from "@obsidion/sdk"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { daiLogo, unknownLogo } from "src/assets"
+import { daiLogo, unknownLogo } from "../assets"
 
 // Transaction Toast Constants
 export const AUTO_COLLAPSE_TIME = 5000 // 5 seconds

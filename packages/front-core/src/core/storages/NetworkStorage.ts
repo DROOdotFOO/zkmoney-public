@@ -4,7 +4,7 @@ import { NETWORK_STORAGE_KEY } from "./storage-constants.js"
 import type { IStorageAdapter } from "./adapter.js"
 import { getActiveGenerationNode } from "../activeGenerationNode.js"
 import { setNodeApiKey } from "../nodeApiKey.js"
-import { logger } from "src/utils/logger"
+import { logger } from "../../utils/logger"
 
 export const DEFAULT_TESTNET_NAME = Network.TESTNET
 export const DEFAULT_SANDBOX_NAME = Network.SANDBOX

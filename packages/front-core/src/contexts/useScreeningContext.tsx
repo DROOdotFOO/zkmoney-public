@@ -1,6 +1,6 @@
-import { createContext, useContext, ReactNode } from "react"
+import { createContext, useContext, type ReactNode } from "react"
 import { assert } from "ts-essentials"
-import type { AddressScreener } from "src/core"
+import type { AddressScreener } from "../core"
 
 const ScreeningContext = createContext<AddressScreener | undefined>(undefined)
 

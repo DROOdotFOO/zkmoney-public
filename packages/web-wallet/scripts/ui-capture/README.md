@@ -91,19 +91,18 @@ Shared `--ww-safe-area-top`, `--ww-safe-area-right`, `--ww-safe-area-bottom`, an
 | Standard sheet | Shared modal owns base bottom padding plus the bottom token. |
 | Create, payment, transaction detail | Keep their `--sheet-pad-bottom` base override; shared modal adds the bottom token once. |
 | Registration | Inner card owns base content padding and scrolling. Outer sheet owns only the bottom inset, keeps `overflow: hidden`, and preserves its specialized height cap. |
-| Activity | The retained `.ww-activity-modal` CSS owns its inset and list scrolling; no current route mounts that legacy class. Its specialized height constraint remains unchanged. |
 | Phase 2 header | Apply the top token once at the outer header and horizontal tokens at the content edges. Avoid repeating them in the identity/search rows. |
 | Phase 2 primary menu | The independent fixed menu owns its top/right/bottom/left tokens; its content does not inherit a second inset from the page. |
 
 Phase 1 defines all four tokens and converts the existing sheet inset. Header/menu placement and any additional edge treatment belong to phase 2. The browser's bottom toolbar is outside the wallet: no fixed toolbar allowance or new app bottom navigation is introduced.
 
-Viewport-dependent sheet heights use `dvh`. Preserve standard desktop/phone caps and specialized activity/registration constraints; do not replace every sheet's height with the same value. Search uses `60dvh`. Static screenshots and `dvh` do not prove that an open keyboard leaves controls reachable.
+Viewport-dependent sheet heights use `dvh`. Preserve standard desktop/phone caps and specialized registration constraints; do not replace every sheet's height with the same value. Search uses `60dvh`. Static screenshots and `dvh` do not prove that an open keyboard leaves controls reachable.
 
 ## Verification
 
 Use the same fixture clock, state, and viewport for before/after comparisons. Capture Home, drawer, create/paylink and registration at all three presets; test widths 559, 560, 561, 600, 639, 640, and 641px, plus desktop at 1280×832. The intended spacing changes above 560px through 640px are create padding from `40px 64px` to `32px 24px` and educational-banner padding from `10px 66px` to `10px 24px`. Registration removes duplicate outer base padding while preserving the inner card's base padding. Record any other intended safe-area or dynamic-viewport correction with the evidence.
 
-Repeat representative captures with `--safe-area 20,12,34,12`. This overrides the shared CSS tokens and Chromium's underlying `env(safe-area-inset-*)` values, so the same command can compare older direct `env()` rules with token-based rules. Reports include each sheet's computed padding, height constraint and scroll dimensions, which help identify doubled padding. Check standard, create, payment, transaction-detail, activity, and registration variants; scroll to the final controls and verify their reachability. Repeat under `--color-scheme light` and `dark`; the product remains dark-only.
+Repeat representative captures with `--safe-area 20,12,34,12`. This overrides the shared CSS tokens and Chromium's underlying `env(safe-area-inset-*)` values, so the same command can compare older direct `env()` rules with token-based rules. Reports include each sheet's computed padding, height constraint and scroll dimensions, which help identify doubled padding. Check standard, create, payment, transaction-detail and registration variants; scroll to the final controls and verify their reachability. Repeat under `--color-scheme light` and `dark`; the product remains dark-only.
 
 Run `pnpm test:ui-capture` to check request isolation, output containment, and decoded video edge pixels as well as dimensions. It requires Chromium, ffmpeg and ffprobe. Run the focused demo tests and `pnpm build` after changing demo integration or product CSS.
 

@@ -8,11 +8,12 @@
  */
 import { useEffect, useSyncExternalStore } from "react"
 import { waitForRegistrationMessage } from "@obsidion/sdk"
-import { useAccountContext, useAztecContext, useContractServiceContext } from "@obsidion/front-core"
+import { useContractServiceContext, useResource } from "@obsidion/front-core"
 import { createExternalState } from "../../lib/externalState"
 import { claimSponsorContext } from "./claimSponsorship"
 import { RegistrationPendingError, type RegistrationPending } from "./registrationRail"
 import { RAIL_REGISTERED } from "./rails"
+import { useSession } from "../../platform/session"
 
 /**
  * Why this account cannot ride the sponsored rail yet, or false when it can: it holds a subscription
@@ -44,8 +45,8 @@ const railPending = createExternalState<RegistrationPending | false | undefined>
  * is waited on through the node rather than re-scanned from L1.
  */
 export function SponsoredRailReadinessMount(): null {
-  const { obsidionWallet } = useAztecContext()
-  const { obsidionAccount } = useAccountContext()
+  const obsidionWallet = useResource(useSession().wallet)
+  const obsidionAccount = useResource(useSession().account)
   const { contractService } = useContractServiceContext()
   useEffect(() => {
     if (!obsidionWallet || !obsidionAccount || !contractService) return

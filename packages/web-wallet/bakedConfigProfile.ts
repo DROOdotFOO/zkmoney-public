@@ -9,7 +9,7 @@ import { assertProfilePolicy, parseNetwork } from "./src/config/profilePolicy.js
 
 /**
  * Bakes the config profile into the bundle so the wallet can boot when the config service is
- * unreachable. `vite build` fetches the document `VITE_CONFIG_PROFILE_URL` names, runs the checks
+ * unreachable. `vite build` fetches `VITE_BAKED_CONFIG_PROFILE_URL` or `VITE_CONFIG_PROFILE_URL`, runs the checks
  * the wallet runs at boot (identity, network, `current`, the oxide-pointer policy), and serves the
  * result as `virtual:baked-config-profile`; the build fails if any of that fails. No URL, a
  * profile id the store does not hold yet, or `vite dev`, bakes nothing. `dist/build-target.json`
@@ -48,7 +48,7 @@ export async function bakeConfigProfile(
   env: Env,
   fetchImpl?: typeof fetch,
 ): Promise<BakedProfile | undefined> {
-  const profileUrl = env.VITE_CONFIG_PROFILE_URL
+  const profileUrl = env.VITE_BAKED_CONFIG_PROFILE_URL || env.VITE_CONFIG_PROFILE_URL
   if (!profileUrl) return undefined
   const expectedProfileId = env.VITE_CONFIG_EXPECTED_PROFILE_ID
   if (!expectedProfileId) {
@@ -67,7 +67,7 @@ export async function bakeConfigProfile(
     // refusing to build for a fallback that cannot exist yet deadlocks the deploy that would
     // publish it. Every other failure still fails the build. This is build time only — at boot a
     // 404 stays fatal, because there a missing document means one that was torn down.
-    if (e instanceof ConfigProfileError && e.code === "NOT_FOUND") {
+    if (e instanceof ConfigProfileError && e.code === "NOT_FOUND" && !env.VITE_BAKED_CONFIG_PROFILE_URL) {
       console.warn(
         `[bakedConfigProfile] ${profileUrl} does not exist yet — building with no baked profile`,
       )

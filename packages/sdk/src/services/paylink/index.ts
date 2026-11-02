@@ -3,31 +3,34 @@
  * Provides type-specific processors for handling different paylink commitments
  */
 
-export { PaylinkProcessorFactory } from "./PaylinkProcessorFactory.js"
-export { BasePaylinkProcessor } from "./processors/BasePaylinkProcessor.js"
-export type { DepositArg, PaylinkConstructorArgs } from "./processors/BasePaylinkProcessor.js"
-export { DirectPaylinkProcessor } from "./processors/DirectPaylinkProcessor.js"
-export { EmailPaylinkProcessor } from "./processors/EmailPaylinkProcessor.js"
+export { PaylinkProcessorFactory } from "./create/PaylinkProcessorFactory.js"
+export { BasePaylinkProcessor } from "./create/processors/BasePaylinkProcessor.js"
+export type {
+  DepositArg,
+  PaylinkConstructorArgs,
+} from "./create/processors/BasePaylinkProcessor.js"
+export { DirectPaylinkProcessor } from "./create/processors/DirectPaylinkProcessor.js"
+export { EmailPaylinkProcessor } from "./create/processors/EmailPaylinkProcessor.js"
 export {
   assertLinkChain,
   assertLinkClass,
   encodePaylinkInline,
   decodePaylinkInline,
   LINK_CLASS_REFUSAL,
-} from "./paylinkInlineCodec.js"
-export { resolveShortPaylink } from "./shortPaylink.js"
-export { buildOperationCall } from "./paylinkClaimSubmit.js"
-export { paylinkL1Caller } from "./paylinkL1Claim.js"
-export type { PaylinkL1Payout, PaylinkL1Proof } from "./paylinkL1Claim.js"
+} from "./link/paylinkInlineCodec.js"
+export { resolveShortPaylink } from "./link/shortPaylink.js"
+export { buildOperationCall } from "./claim/paylinkClaimSubmit.js"
+export { paylinkL1Caller } from "./claim/paylinkL1Claim.js"
+export type { PaylinkL1Payout, PaylinkL1Proof } from "./claim/paylinkL1Claim.js"
 export {
   exitPaylinkWithVoucher,
   paylinkVoucherUses,
   readPaylinkEscrowNote,
   type PaylinkExitArgs,
   type PaylinkVoucherDeps,
-} from "./paylinkVoucher.js"
-export { makePaylinkSpendMetadataResolver } from "./paylinkSpendMetadata.js"
-export { discoverFrozenEscrows, paylinkRefundOwner } from "./frozenEscrows.js"
+} from "./claim/paylinkVoucher.js"
+export { makePaylinkSpendMetadataResolver } from "./claim/paylinkSpendMetadata.js"
+export { discoverFrozenEscrows, paylinkRefundOwner } from "./escrow/frozenEscrows.js"
 export {
   assertPaylinkTerms,
   buildPaylinkNoteView,
@@ -39,7 +42,7 @@ export {
   type PaylinkNoteData,
   type PaylinkNoteView,
   type RawPaylinkNote,
-} from "./paylinkNoteData.js"
+} from "./escrow/paylinkNoteData.js"
 export {
   buildPaylinkCompleteAddress,
   deriveDeterministicPaylinkKeys,
@@ -50,7 +53,7 @@ export {
   registerPaylinkContractWithKeys,
   type PaylinkDerivedKeyMaterial,
   type PaylinkKeyMaterial,
-} from "./paylinkKeys.js"
+} from "./escrow/paylinkKeys.js"
 export {
   findDepositTxHash,
   findEscrowDepositTx,
@@ -58,7 +61,7 @@ export {
   scanPaylinkEscrows,
   type PaylinkScanNode,
   type RecoveredPaylinkEscrow,
-} from "./paylinkRecovery.js"
+} from "./escrow/paylinkRecovery.js"
 export type {
   CommitmentInput,
   DirectClaimInput,

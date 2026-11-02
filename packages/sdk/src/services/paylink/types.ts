@@ -1,27 +1,27 @@
 // Paylink types that depend on SDK-local runtime references (wallet, contract, and TEE
 // types) live here. The pure-data set lives in @obsidion/core/types and is re-exported
 // below so existing imports from this path keep working.
-export {
-  type EmailCommitmentInput,
-  type CommitmentInput,
-  type PayLinkAsset,
-  type BaseClaimInput,
-  type DirectClaimInput,
-  type ZkProofClaimInput,
-  type PaylinkWindow,
+export type {
+  EmailCommitmentInput,
+  CommitmentInput,
+  PayLinkAsset,
+  BaseClaimInput,
+  DirectClaimInput,
+  ZkProofClaimInput,
+  PaylinkWindow,
 } from "@obsidion/core/types"
 
-import { Account } from "@aztec-labs/aztec.js/account"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
-import { ContractBase } from "@aztec-labs/aztec.js/contracts"
-import { TxReceipt, TxHash } from "@aztec-labs/aztec.js/tx"
-import { Fr } from "@aztec-labs/aztec.js/fields"
-import { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import type { Account } from "@aztec-labs/aztec.js/account"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractBase } from "@aztec-labs/aztec.js/contracts"
+import type { TxReceipt, TxHash } from "@aztec-labs/aztec.js/tx"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
+import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
 import type { MethodOptions } from "../ServiceBase.js"
 import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
-import type { TokenService } from "../TokenService.js"
-import type { PaylinkKeyMaterial } from "./paylinkKeys.js"
+import type { TokenService } from "../token/TokenService.js"
+import type { PaylinkKeyMaterial } from "./escrow/paylinkKeys.js"
 import type { DirectClaimInput, ZkProofClaimInput } from "@obsidion/core/types"
 
 /**

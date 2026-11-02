@@ -69,36 +69,9 @@ import {
 import {
   desktopBridgeChannel,
   injectedWalletChannel,
-  isStuckSweep,
   type L1ExitChannel,
   type L1ExitStage,
 } from "./sipaRecovery"
-
-/**
- * Whether `record` can be self-swept.
- *
- * Only a stuck `sweeping` record qualifies, on the same staleness the recovery affordance uses: the
- * two exits are reached through one surface, so offering them on different clocks would show a
- * modal whose primary action is unavailable. `recoverable` is excluded outright — its balance sits
- * outside the sweep window, so a sweep there cannot land at all and Recover is the only way out.
- *
- * No message secret is needed: a sweep carries no signature, only the deploy args and the sweep
- * args. What it does need is the pair of derived fields the CREATE2 address is bound to, which a
- * self-initiated record created before discovery may not have yet.
- */
-export function canSelfSweep(
-  record: Pick<
-    SIPADepositRecord,
-    "phase" | "startTime" | "sweepTxHash" | "recipientHash" | "recoveryAddress" | "origin"
-  >,
-  now: number = Date.now(),
-): boolean {
-  return (
-    isStuckSweep(record, now) &&
-    !!record.recipientHash &&
-    !!(record.recoveryAddress || record.origin)
-  )
-}
 
 /**
  * A sweep stopped for a reason the user can act on: capacity, the per-deposit ceiling or a frozen portal. The sheet

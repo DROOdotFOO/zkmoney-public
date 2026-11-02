@@ -30,7 +30,7 @@
  */
 import { readFileSync } from "fs"
 import { resolve as resolvePath } from "path"
-import { Fr, Fq } from "@aztec-labs/aztec.js/fields"
+import { Fr, type Fq } from "@aztec-labs/aztec.js/fields"
 import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
 import { deriveMasterIncomingViewingSecretKey } from "@aztec-labs/stdlib/keys"
@@ -41,7 +41,7 @@ import {
   EcdsaK256AlphaAuthProvider,
   Network,
   NodeContractServiceStorage,
-  ObsidionAccount,
+  type ObsidionAccount,
   ObsidionFeeJuicePaymentMethod,
   PasswordFPCPaymentMethod,
   createNode,

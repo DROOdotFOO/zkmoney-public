@@ -17,8 +17,8 @@ Concrete examples already in this package:
   kernel.
 - `BridgeActivityFeed` — in-memory aggregator projecting the store into a
   unified subscribe-able feed.
-- `useAccount`, `useAsset`, `useBalance`, `useTransactions` etc. —
-  React hooks over front-core storage and services.
+- `accountResource`, `tokenResource`, `teeSignerResource` — session resources over the wallet;
+  `useResource` and `useStore` read them and the stores in React.
 
 What does NOT belong here:
 

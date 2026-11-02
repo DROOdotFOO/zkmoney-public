@@ -14,6 +14,8 @@ export interface RefundableSipaSource {
   messageSecret: string
   /** What the SIPA's sweeps deposit to on the portal. */
   recipientCommitment: string
+  /** Found by its commitment alone: `sipaAddress` is a placeholder that holds nothing on L1. */
+  direct?: boolean
 }
 
 /** Plain-data form of one `SIPA` event synced from this rollup's token. */
@@ -76,6 +78,7 @@ export async function scanRefundableDeposits(
       commitment: source.recipientCommitment as Hex,
       fromBlock: target.fromBlock,
       inflows: false,
+      ...(source.direct ? { direct: true } : {}),
     })),
   })
   if (strays.length)
@@ -87,9 +90,11 @@ export async function scanRefundableDeposits(
   for (const source of sources) {
     const seen = observed.get(source.sipaAddress.toLowerCase())
     if (!seen) throw new Error(`${source.sipaAddress} was not observed`)
-    const balance = seen.balances?.get(target.token.toLowerCase())
-    if (balance === undefined) throw new Error(`${source.sipaAddress}'s balance was not read`)
-    if (balance > 0n) inTransit.push({ source, balance })
+    if (!source.direct) {
+      const balance = seen.balances?.get(target.token.toLowerCase())
+      if (balance === undefined) throw new Error(`${source.sipaAddress}'s balance was not read`)
+      if (balance > 0n) inTransit.push({ source, balance })
+    }
     for (const sweep of seen.sweeps)
       deposits.push({
         sipaAddress: source.sipaAddress,

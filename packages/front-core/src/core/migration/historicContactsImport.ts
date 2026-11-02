@@ -7,7 +7,7 @@ import type { IStorageAdapter } from "../storages/adapter"
 import type { Contact, ContactStorage } from "../storages/ContactStorage"
 import { CONTACT_STORAGE_KEY } from "../storages/storage-constants"
 import type { RetiredDatabase } from "./historicActivityImport"
-import { logger } from "src/utils/logger"
+import { logger } from "../../utils/logger"
 
 export const HISTORIC_CONTACTS_IMPORTED_KEY = "@obsidion/historic-contacts/imported/v1"
 

@@ -7,7 +7,7 @@
 import {
   PASSKEY_NATIVE_LOCKS,
   type PasskeyNativeLock,
-} from "../policy/passkeyTelemetryVocabulary.js"
+} from "../telemetry/passkeyTelemetryVocabulary.js"
 
 /** The browser's own method prints `function NAME() { [native code] }`, whitespace aside. */
 export const NATIVE_PRINT_PATTERN = "^function NAME\\(\\)\\s*\\{\\s*\\[native code\\]\\s*\\}$"

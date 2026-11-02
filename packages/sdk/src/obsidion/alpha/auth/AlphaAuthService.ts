@@ -1,6 +1,6 @@
-import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { PrfSlot, SignInRoute } from "@obsidion/core/types"
-import { AlphaAuthProvider } from "./AlphaAuthProvider.js"
+import type { AlphaAuthProvider } from "./AlphaAuthProvider.js"
 
 /** Both candidate MSKs from a dual-salt recovery, one per PRF slot. */
 export type RecoverCandidates = { first?: Fr; second?: Fr }

@@ -36,15 +36,6 @@ export function linkExpiryLabel(expiresAt: number | undefined, now: number): str
   return days === 1 ? "1 day" : `${days} days`
 }
 
-/** Compact display form of a share URL — host only, path elided. */
-export function shareDisplayUrl(url: string): string {
-  try {
-    return `${new URL(url).host}/...`
-  } catch {
-    return url
-  }
-}
-
 /** The message a shared request link travels with, so the chat shows a sentence and not a bare URL. */
 export function requestShareText(amount: number): string {
   return amount > 0 ? `Requesting ${requestAmountLabel(amount)} on zk.money` : "Requesting a payment on zk.money"

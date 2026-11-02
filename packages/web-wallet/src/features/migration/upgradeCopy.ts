@@ -2,6 +2,7 @@ import type { MetadataMigrationPhase, MetadataMigrationRecord } from "@obsidion/
 import type { WalletAction } from "../actionGate"
 import type { SavingsAccount } from "../savings/AccountSwitcher"
 import type { UpgradeStatus } from "./migrationDialog"
+import { usd } from "../../ui/format"
 
 /** Where a run stands, as the upgrade dialog says it. */
 export const upgradePhaseLabel: Record<MetadataMigrationPhase, string> = {
@@ -110,8 +111,11 @@ export const recipientNotUpgradedCopy = {
 export const offerCopy = {
   title: "Upgrade to a faster zk.money",
   lead: "Upgrade to send and receive faster. It takes about 40 minutes, and your balance stays safe.",
-  /** A destination without the metadata flow moves a live balance whole. */
-  liveLead: "Upgrade to send and receive faster. Your balance stays safe.",
+}
+
+/** A migration operation's one line, from a decimal amount. */
+export function migrationSummary(amount: string): string {
+  return `${usd(Number(amount))} to the new version`
 }
 
 export const keepOpenCopy = {

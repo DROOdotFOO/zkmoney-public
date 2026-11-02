@@ -14,7 +14,7 @@ import { deriveStealthKey, isSettledSipaPhase } from "@obsidion/front-core"
 import type {
   Contact,
   PaylinkTransaction,
-  PaymentRequest,
+  StoredRequest,
   SIPADepositRecord,
   Transaction,
   WithdrawalRecord,
@@ -43,6 +43,9 @@ export const DEMO_COMPLETE_ADDRESS = `0x${"ab".repeat(288)}`
 
 /** L2 oxide token — the address TokenStorage and BalanceStorage agree on. */
 export const DEMO_L2_TOKEN = `0x${"5c".repeat(32)}`
+
+/** The network every seeded record is stamped with: demo mode boots no wallet. */
+export const DEMO_NETWORK_ID = `0x${"de".repeat(20)}`
 
 /** The L1 account that paid the funded demo deposits — the deposit sheet's Funder. */
 export const DEMO_L1_FUNDER = "0xf0de1000000000000000000000000000000fd0e1" as Address
@@ -95,6 +98,20 @@ const l1Recipient = (seed: string): Address => getAddress(address(seed))
 
 /** Base units at the flat 18 decimals, for the fields writers persist raw. */
 const atomic = (display: string): string => parseUnits(display, 18).toString()
+
+/** A fixture row before the activity store's key and raw amount, which `keyed` derive. */
+type DemoRow = Transaction extends infer T
+  ? T extends Transaction
+    ? Omit<T, "id" | "amountAtomic">
+    : never
+  : never
+
+const keyed = (row: DemoRow): Transaction =>
+  ({
+    ...row,
+    id: row.operationId ?? row.txHash,
+    amountAtomic: "token" in row && row.token ? parseUnits(String(row.token.amount), 18) : 0n,
+  }) as Transaction
 
 const daiToken = (amount: number) => ({
   address: DEMO_L2_TOKEN,
@@ -283,7 +300,7 @@ const DEMO_PAYLINK = "https://zk.money/link#demo"
  * `paylink`: `markCreateRowClaimed` / `markCreateRowRefunded` scrub it as they set the flag. Their
  * status pill reads `paylinkStatusFor`, which never looks at the URL.
  */
-function creatorLinkRows(now: number): PaylinkTransaction[] {
+function creatorLinkRows(now: number): Omit<PaylinkTransaction, "id" | "amountAtomic">[] {
   const sec = (ms: number) => Math.floor(ms / 1000)
   const base = {
     action: "Pay To Email" as const,
@@ -381,7 +398,7 @@ function provingSince(at: number): number {
 
 export function demoTransactions(now: number): Transaction[] {
   const [ada, bo, cleo] = CONTACT_ADDRESSES as [string, string, string]
-  return [
+  const rows: DemoRow[] = [
     // The two pending sends are the chat's delivery marks: no hash yet means the proof is still
     // running (spinner), a hash means it is in the mempool (one tick).
     {
@@ -392,7 +409,7 @@ export function demoTransactions(now: number): Transaction[] {
       status: "pending",
       // Pre-submit rows persist with an empty hash until the wallet mints the real one.
       txHash: "",
-      queueId: "demo-send-proving",
+      operationId: "demo-send-proving",
     },
     // A pre-submit row a closed tab left behind: `recoverInterrupted` fails it on the next load.
     {
@@ -402,7 +419,7 @@ export function demoTransactions(now: number): Transaction[] {
       timestamp: now - 2 * HOUR,
       status: "pending",
       txHash: "",
-      queueId: "demo-send-interrupted",
+      operationId: "demo-send-interrupted",
     },
     {
       action: "send",
@@ -436,10 +453,10 @@ export function demoTransactions(now: number): Transaction[] {
       token: daiToken(8),
       to: ada,
       timestamp: now - 3 * DAY,
-      // The send path stores the thrown message verbatim; this is aztec.js's receipt wait giving up
+      // The send path keeps the thrown message as detail; this is aztec.js's receipt wait giving up
       // on a transaction the sequencer dropped after it was broadcast.
       status: "failed",
-      error: `Transaction ${hash("44")} was dropped. Reason: unknown`,
+      failure: { code: "tx.failed", detail: `Transaction ${hash("44")} was dropped. Reason: unknown` },
       txHash: hash("44"),
     },
     {
@@ -451,6 +468,7 @@ export function demoTransactions(now: number): Transaction[] {
       timestamp: now - 4 * DAY,
       status: "success",
       txHash: hash("55"),
+      requestId: "req_demo_done",
     },
     ...creatorLinkRows(now),
     {
@@ -490,6 +508,7 @@ export function demoTransactions(now: number): Transaction[] {
       txHash: hash("c9"),
     },
   ]
+  return rows.map(keyed)
 }
 
 /**
@@ -622,8 +641,8 @@ export function demoWithdrawals(now: number): WithdrawalRecord[] {
       phase: "failed",
       startTime: now - 8 * DAY,
       endTime: now - 8 * DAY + MINUTE,
-      // Pre-mine throw, carried over from the burn call verbatim: the passkey never answered.
-      error: "Passkey assertion returned no credential",
+      // Pre-mine throw: the passkey never answered.
+      failure: { code: "withdrawal.failed", detail: "Passkey assertion returned no credential" },
     },
   ]
 }
@@ -634,7 +653,7 @@ export function demoWithdrawals(now: number): WithdrawalRecord[] {
  * every row: the announce (and the receiver's ingest on the incoming one) carries them alongside the
  * display amount.
  */
-export function demoRequests(now: number, networkId: string): PaymentRequest[] {
+export function demoRequests(now: number, networkId: string): StoredRequest[] {
   const token = { tokenAddress: DEMO_L2_TOKEN, tokenDecimals: 18, networkId }
   return [
     {
@@ -788,10 +807,9 @@ export function demoRequests(now: number, networkId: string): PaymentRequest[] {
       amountAtomic: atomic("60"),
       asset: WALLET_TOKEN_SYMBOL,
       direction: "outgoing",
-      status: "fulfilled",
+      status: "pending",
       createdAt: now - 9 * DAY,
       kind: "contact",
-      fulfillmentTxHash: hash("55"),
     },
   ]
 }

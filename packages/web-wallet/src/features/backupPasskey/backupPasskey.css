@@ -99,3 +99,38 @@
 .ww-backup__fine {
   text-align: center;
 }
+/* The recovery card sits on the Activity row's card surface; these lay out its line, facts and note. */
+.ww-backup__recovery-line {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+.ww-backup__recovery-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.ww-backup__recovery-facts .ww-sheet__fact b,
+.ww-backup__recovery-facts .ww-sheet__fact a {
+  color: var(--text-primary);
+}
+.ww-backup__recovery-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+/* Two classes, so the link keeps its green over the design system's button reset, which inherits. */
+.ww-backup__recovery-note .ww-deposit__link {
+  color: var(--accent-green, #6c9);
+}
+.ww-backup__recovery-checked {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Re-measures src/feePaymentMethod/claimFpcGasTable.ts against a running sandbox.
+# Re-measures src/feePaymentMethod/claimFpc/gas/claimFpcGasTable.ts against a running sandbox.
 #
 # The per-call budgets (claimFpcGasBudgets.ts) derive from two registration-gated rows and the lone
 # L1-operation broadcasts, and every case that prices a per-call policy reads the budgets from the
@@ -26,4 +26,4 @@ rm -rf pxe-*
 CLAIMFPC_GAS_REPORT=1 CI=true npx vitest run --config vitest.sandbox.config.ts test/fpc
 
 # The second pass re-records the budget rows it imported, so check the table it left behind.
-CI=true npx vitest run test/feePaymentMethod/claimFpcGasInventory.test.ts
+CI=true npx vitest run test/feePaymentMethod/claimFpc/gas/claimFpcGasInventory.test.ts

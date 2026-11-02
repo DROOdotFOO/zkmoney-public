@@ -1,0 +1,106 @@
+@media (min-width: 641px) {
+  :global(.ww-panel):global(.ww-receive).requests {
+    width: 600px;
+  }
+}
+:global(.ww-panel__scroll).requestsBody {
+  gap: var(--space-24);
+  padding: 0;
+  overflow: visible;
+}
+.requests :global(.ww-chip-row) {
+  margin-bottom: 0;
+}
+.requests :global(.ww-chip-row) :global(.ww-activity__chip) {
+  padding: 8px 20px;
+  font-size: 15px;
+}
+.requestsCode {
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--surface-card);
+}
+.requestsQr {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  flex: none;
+  border-radius: 10px;
+  background: #fff;
+}
+.requestsCodeText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 16px;
+}
+.requestsCodeText span {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+:global(.ww-chip-row).requestsCodeActions {
+  flex: none;
+}
+@media (max-width: 640px) {
+  .requestsCode {
+    flex-wrap: wrap;
+  }
+  :global(.ww-chip-row).requestsCodeActions {
+    width: 100%;
+  }
+  .requestsCodeActions :global(.ww-activity__chip) {
+    flex: 1;
+    text-align: center;
+  }
+}
+.requestsList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+/* Desktop: a row's buttons show on hover or focus, left of the amount, which keeps its place. */
+.requestsListHover :global(.zkm-activity-row) {
+  position: relative;
+}
+.requestsListHover :global(.zkm-activity-row__right) {
+  min-width: 136px;
+}
+.requestsListHover :global(.zkm-activity-row__actions) {
+  position: absolute;
+  top: 50%;
+  right: 160px;
+  flex-wrap: nowrap;
+  gap: 8px;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.requestsListHover :global(.zkm-activity-row):hover :global(.zkm-activity-row__actions),
+.requestsListHover :global(.zkm-activity-row):focus-within :global(.zkm-activity-row__actions) {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* The name gives the buttons their room, and ellipsizes rather than sitting under them. */
+.requestsListHover :global(.zkm-activity-row):hover :global(.zkm-activity-row__who),
+.requestsListHover :global(.zkm-activity-row):focus-within :global(.zkm-activity-row__who) {
+  padding-right: 176px;
+}
+.requestsListHover :global(.zkm-activity-action) {
+  flex: none;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+.requestsEmpty {
+  padding: var(--space-8);
+  font-size: 14px;
+  text-align: center;
+  color: var(--text-secondary);
+}

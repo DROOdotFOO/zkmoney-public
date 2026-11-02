@@ -32,7 +32,7 @@ import {
   resolveWithdrawalWiring,
   withdrawalRecipients,
   type WithdrawalRecord,
-  type WithdrawalStorage,
+  type Withdrawals,
   type WithdrawalWiring,
 } from "@obsidion/front-core"
 import { getConfig, l1Transport, type WebWalletConfig } from "../../config/env"
@@ -46,7 +46,7 @@ import {
 } from "../deposit/sipaRecovery"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { portalDomain } from "../token/oxideToken"
-import { getWithdrawalStore } from "./withdrawGateway"
+import { session } from "../../platform/session"
 
 /** Said whenever the withdrawal turns out to be released already, from either check. */
 const ALREADY_RELEASED =
@@ -74,7 +74,7 @@ export interface SelfFinalizeDeps {
   /** The L1 portal that releases the withdrawal. */
   portal: Address
   l1: PublicClient
-  store: Pick<WithdrawalStorage, "patch" | "get">
+  store: Pick<Withdrawals, "apply" | "get">
   /** Injectable for tests. */
   isSpent?: typeof isWithdrawalSpent
 }
@@ -148,11 +148,14 @@ export async function selfFinalizeWithdrawal(
   // to see the release on chain. Read the phase and the epoch back rather than echoing the
   // snapshot: the tracker can write `done` or demote the record while the receipt is awaited, and
   // the snapshot would rewind the one and un-fence the other.
-  const current = deps.store.get(record.l2TxHash) ?? record
-  await deps.store.patch(record.l2TxHash, {
-    phase: current.phase,
-    finalizeTxHash: hash,
-    reorgEpoch: current.reorgEpoch,
+  const current = (await deps.store.get(record.l2TxHash)) ?? record
+  await deps.store.apply(record.l2TxHash, {
+    type: "patch",
+    fields: {
+      phase: current.phase,
+      finalizeTxHash: hash,
+      reorgEpoch: current.reorgEpoch,
+    },
   })
   return hash
 }
@@ -264,7 +267,7 @@ export async function selfFinalize(
     channel,
     build,
     ...ctx,
-    store: getWithdrawalStore(),
+    store: session().withdrawals,
   })
 }
 

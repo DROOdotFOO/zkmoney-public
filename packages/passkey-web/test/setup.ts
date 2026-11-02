@@ -12,10 +12,7 @@ if (typeof window !== "undefined") {
         request: (name: string, fn: () => Promise<unknown>) => {
           const previous = queues.get(name) ?? Promise.resolve()
           const run = previous.then(fn, fn)
-          queues.set(
-            name,
-            run.catch(() => {}),
-          )
+          queues.set(name, run)
           return run
         },
       },

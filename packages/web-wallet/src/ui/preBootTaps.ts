@@ -9,7 +9,7 @@ import {
 import { createExternalState } from "../lib/externalState"
 
 /**
- * Taps the pre-boot screen takes for the wallet. "Open account" waits for the landing the wallet
+ * Taps the pre-boot screen takes for the wallet. "Create Account" waits for the landing the wallet
  * then shows, which runs it once. A route change is the wallet's router's to make: at once when it
  * is up, else as it starts.
  */

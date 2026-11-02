@@ -38,6 +38,28 @@ export interface FrozenExitProgress {
   hashes: Hex[]
 }
 
+export type FrozenExitSent = { refunded: bigint; hashes: Hex[] }
+export type FrozenExitDone = FrozenExitSent & { left: bigint; to: Address }
+
+export interface FrozenSourceFunds {
+  /** Refundable now, in the portal's token units. */
+  refundable: bigint
+  /** The part of `refundable` held in payment links. */
+  links: bigint
+  /** Not refundable yet. */
+  waiting: bigint
+}
+
+export interface FrozenFunds {
+  main: FrozenSourceFunds
+  /** Absent where Savings is not frozen. */
+  savings?: FrozenSourceFunds
+  /** The Savings scan failed; Main's still stands. */
+  savingsFailed?: boolean
+  /** What this browser's open payment links hold, which Main's `links` should match. */
+  openLinks: bigint
+}
+
 // Outlives the screen: a second run would resend the first one's unconfirmed batch.
 let running = false
 // A sent refund whose receipt never came. The next run waits for it, so it never sends it twice.

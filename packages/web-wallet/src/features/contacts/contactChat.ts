@@ -1,92 +1,61 @@
 /**
- * Pure assembly glue for the contact detail payments chat (R15): maps a stored contact and the web
- * data sources onto the shared `buildChatMessages`, and maps chat roles onto bubble presentation.
- * UI-free so vitest covers it without DOM.
+ * The contact detail chat's view: who the chat is with, each chat item as a bubble's words, and a
+ * role's bubble presentation.
  */
 import {
-  buildChatMessages,
   contactRowFromEntry,
+  formatDateLabel,
+  formatTimeLabel,
   isPaymentContactEntry,
-  type ChatMessage,
-  type ChatMessageRole,
+  type ChatContact,
+  type ChatItem,
+  type ChatRole,
   type Contact,
-  type PaymentRequest,
-  type SIPADepositRecord,
-  type SelectedContact,
-  type Transaction,
-  type WithdrawalRecord,
 } from "@obsidion/front-core"
+import { usdCents } from "../../ui/screens/activityView"
+import copy from "./contactChat.copy"
 
-/** Chat identity for a stored contact. Pending-handshake rows have no payable address — they
- *  select tag-only, so the chat stays empty until the handshake completes. */
-export function selectedContactOf(entry: Contact): SelectedContact {
+/** One chat bubble. */
+export interface ChatMessage {
+  id: string
+  /** The section separator, e.g. "03 February". */
+  dateLabel: string
+  /** "11:15", or the transfer's state. */
+  timeLabel: string
+  /** Signed dollars, e.g. "+$25.23". */
+  amount: string
+  role: ChatRole
+  memo?: string
+  item: ChatItem
+}
+
+/** Chat identity for a stored contact. A pending handshake has no payable address yet. */
+export function chatContactOf(entry: Contact): ChatContact {
   if (isPaymentContactEntry(entry)) {
     const row = contactRowFromEntry(entry)
     return {
-      id: row.id,
-      name: row.name,
       tag: row.tag,
       address: row.address,
       retiredAddresses: entry.retiredAddresses,
       addressKind: row.addressKind,
-      provenance: row.provenance,
     }
   }
-  const tag = entry.tag ?? entry.name
-  return { id: tag, name: entry.name, tag, addressKind: "aztec-l2" }
+  return { tag: entry.tag ?? entry.name, addressKind: "aztec-l2" }
 }
 
-/** The web data sources the contact chat merges. Paylink rows arrive through `transactions`. */
-export interface ContactChatSources {
-  transactions?: Transaction[]
-  requests?: PaymentRequest[]
-  sipaDeposits?: SIPADepositRecord[]
-  withdrawals?: WithdrawalRecord[]
-}
-
-export function buildContactChat(
-  entry: Contact,
-  sources: ContactChatSources,
-  txUrl?: (txHash: string) => string,
-): ChatMessage[] {
-  return buildChatMessages(
-    selectedContactOf(entry),
-    {
-      transactions: sources.transactions,
-      requests: sources.requests,
-      bridge: { sipaDeposits: sources.sipaDeposits, withdrawals: sources.withdrawals },
-    },
-    txUrl,
-  )
-}
-
-/** The record a chat bubble opens. */
-export type ChatMessageSource =
-  | { kind: "request"; id: string }
-  | { kind: "transaction"; transaction: Transaction }
-  | { kind: "deposit"; record: SIPADepositRecord }
-  | { kind: "withdrawal"; record: WithdrawalRecord }
-
-/**
- * Resolves a bubble to its record by id, never by role: a fulfilled request stands in as a
- * `received-confirmed` bubble until its transfer row arrives, so the role alone would send it
- * looking for a transaction that doesn't exist.
- */
-export function chatMessageSource(
-  message: ChatMessage,
-  sources: ContactChatSources,
-): ChatMessageSource | undefined {
-  const id = message.id
-  if (sources.requests?.some((r) => r.id === id)) return { kind: "request", id }
-  const transaction = sources.transactions?.find(
-    (tx) => (tx.txHash || tx.queueId || String(tx.timestamp)) === id,
-  )
-  if (transaction) return { kind: "transaction", transaction }
-  const deposit = sources.sipaDeposits?.find((d) => d.sipaAddress === id)
-  if (deposit) return { kind: "deposit", record: deposit }
-  const withdrawal = sources.withdrawals?.find((w) => (w.l2TxHash ?? w.localId) === id)
-  if (withdrawal) return { kind: "withdrawal", record: withdrawal }
-  return undefined
+export function chatMessageOf(item: ChatItem): ChatMessage {
+  return {
+    id: item.id,
+    dateLabel: formatDateLabel(item.ts),
+    timeLabel: item.status ? copy.time[item.status] : formatTimeLabel(item.ts),
+    amount:
+      item.amount === "detecting"
+        ? copy.detecting
+        : `${item.amount.sign}${usdCents(item.amount.money)}`,
+    role: item.role,
+    memo: item.memo,
+    item,
+  }
 }
 
 /** Bubble presentation for a chat role. */
@@ -110,7 +79,7 @@ export interface BubbleView {
   settled: boolean
 }
 
-export function bubbleViewOf(role: ChatMessageRole): BubbleView {
+export function bubbleViewOf(role: ChatRole): BubbleView {
   const base = {
     error: false,
     struck: false,
@@ -118,33 +87,34 @@ export function bubbleViewOf(role: ChatMessageRole): BubbleView {
     request: false,
     settled: false,
   } as const
+  const { label } = copy
   if (role === "request-out")
-    return { ...base, side: "right", label: "Owes you", icon: "clock", request: true }
+    return { ...base, side: "right", label: label.owesYou, icon: "clock", request: true }
   if (role === "request-in")
-    return { ...base, side: "left", label: "You owe", icon: "clock", request: true }
+    return { ...base, side: "left", label: label.youOwe, icon: "clock", request: true }
   if (role === "request-paid")
-    return { ...base, side: "left", label: "You paid", icon: "check", settled: true }
+    return { ...base, side: "left", label: label.youPaid, icon: "check", settled: true }
   if (role === "request-declined")
     return {
       ...base,
       side: "left",
-      label: "Declined",
+      label: label.declined,
       icon: "reply-slash",
       error: true,
       struck: true,
     }
   const side = role.startsWith("sent-") ? "right" : "left"
   const icon = side === "right" ? "forward" : "reply"
-  const verb = side === "right" ? "Sent" : "Received"
+  const verb = side === "right" ? label.sent : label.received
   if (role.endsWith("-proving"))
-    return { ...base, side, label: "Pending", icon: "clock-outline", tick: "proving" }
+    return { ...base, side, label: label.pending, icon: "clock-outline", tick: "proving" }
   if (role.endsWith("-pending"))
-    return { ...base, side, label: "Pending", icon: "clock-outline", tick: "sent" }
+    return { ...base, side, label: label.pending, icon: "clock-outline", tick: "sent" }
   if (role.endsWith("-failed") || role.endsWith("-cancelled"))
     return {
       ...base,
       side,
-      label: role.endsWith("-cancelled") ? "Cancelled" : "Failed",
+      label: role.endsWith("-cancelled") ? label.cancelled : label.failed,
       icon: "reply-slash",
       error: true,
       struck: true,

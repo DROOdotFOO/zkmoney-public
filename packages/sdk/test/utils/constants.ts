@@ -1,5 +1,5 @@
 import { AZTEC_NODE_URL, L1_RPC_URL as CORE_L1_RPC_URL } from "@obsidion/core/constants"
-import { PayLinkAsset } from "../../src/services/paylink/types.js"
+import type { PayLinkAsset } from "../../src/services/paylink/types.js"
 
 export const SHARED_MUTABLE_DELAY_BLOCKS = 25 // 10 blocks == 360 secs
 export const SANDBOX_URL = AZTEC_NODE_URL

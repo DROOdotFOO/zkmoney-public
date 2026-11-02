@@ -9,7 +9,7 @@
 import type { SkyEscrowArgs } from "@oxide/experiments/sky/sky_savings.js"
 import type { Address, Hex } from "viem"
 import { buildSkyEscrowRecoverCall, buildSkyEscrowRunCall } from "@obsidion/sdk"
-import { SWAP_STUCK_THRESHOLD_MS } from "../core/services/bridge/WithdrawalTrackingService"
+import { SWAP_STUCK_THRESHOLD_MS } from "../core/services/bridge/withdrawalPhases"
 import type { WithdrawalRecord } from "../core/services/bridge/types"
 import { savingsRoute } from "../core/services/savings/savingsMoveQuote"
 import { isSavingsMovePending, type SavingsMove } from "./savingsMoves"

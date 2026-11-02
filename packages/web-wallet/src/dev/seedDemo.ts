@@ -15,25 +15,23 @@ import {
   AccountStorage,
   BalanceStorage,
   ContactStorage,
-  RequestStorage,
   SIPADepositStore,
   TokenStorage,
-  TRANSACTIONS_STORAGE_KEY,
   type SIPADepositRecord,
   type Transaction,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { getConfig } from "../config/env"
 import { primeOxideDeployment, primeOxideTuple } from "../config/oxideTuple"
-import { getWithdrawalStore } from "../features/withdraw/withdrawGateway"
 import { loadWalletIdentity, saveWalletIdentity } from "../features/identity/walletIdentity"
 import { getAuthService } from "../platform/auth/useAuthenticator"
 import { WebPasskeyIdentityMap } from "../platform/auth/WebPasskeyIdentityMap"
 import { activateTab } from "../platform/storage/activeTab"
-import { contactsWriteLock, requestsWriteLock } from "../platform/storage/contactsLock"
+import { contactsWriteLock } from "../platform/storage/contactsLock"
 import { WebStorageAdapter, WEB_STORAGE_PREFIX } from "../platform/storage/WebStorageAdapter"
 import { deviceStorage } from "../platform/storage/rollupStorage"
 import { walletStorage } from "../platform/storage/walletStorage"
+import { activeNamespace, session, switchSession } from "../platform/session"
 import {
   disableDemoMode,
   DEMO_DEFAULT_SCENARIO,
@@ -55,6 +53,7 @@ import {
   DEMO_L2_ADDRESS,
   DEMO_L2_TOKEN,
   DEMO_MSK_HEX,
+  DEMO_NETWORK_ID,
   DEMO_OXIDE_DEPLOYMENT,
   DEMO_OXIDE_TUPLE,
   DEMO_PASSKEY_PUBKEY_HEX,
@@ -68,14 +67,11 @@ import { createL1RpcHandler, installL1RpcStub, registerDemoSipaPrediction } from
  * Demo mode owns this origin's wallet state — seeding on top of whatever is there would duplicate
  * contacts and interleave two accounts' history. Scoped to the keys the wallet itself writes.
  */
-function resetWalletStorage(): void {
+async function resetWalletStorage(): Promise<void> {
   // Both prefixes: front-core's stores go through the adapter, while the identity record and the
   // session are written directly.
-  for (const key of walletStorage.keys()) {
-    if (key.startsWith(WEB_STORAGE_PREFIX) || key.startsWith("webwallet.")) {
-      walletStorage.removeItem(key)
-    }
-  }
+  await walletStorage.commitRemoveUnder(WEB_STORAGE_PREFIX)
+  await walletStorage.commitRemoveUnder("webwallet.")
   // A hidden-balance pref left behind would blank the seeded figure.
   deviceStorage.removeItem("webwallet.hide-balances")
 }
@@ -108,7 +104,7 @@ async function seedIdentity(rpId: string): Promise<void> {
   await saveWalletIdentity({ handle: DEMO_HANDLE, address: DEMO_L2_ADDRESS, claimedAt: Date.now() })
 }
 
-/** Token row + scoped balance record — the pair `useAsset` hydrates the home figure from. */
+/** Token row + scoped balance record — the pair the balances store reads the home figure from. */
 async function seedBalance(networkType: string, balance: bigint): Promise<void> {
   const adapter = new WebStorageAdapter()
   await TokenStorage.get(adapter).addToken({
@@ -128,7 +124,7 @@ async function seedDeposits(records: SIPADepositRecord[]): Promise<void> {
   const store = SIPADepositStore.get(new WebStorageAdapter())
   for (const record of records) {
     const { sipaAddress, phase, ...rest } = record
-    await store.upsert(sipaAddress, { ...rest, phase }, rest)
+    await store.upsert(sipaAddress, { ...rest, phase }, { ...rest, networkId: DEMO_NETWORK_ID })
     // Teach the fake Registry this fixture's CREATE2 answer — the self-sweep refuses to deploy
     // unless `predictSIPA` reproduces the record's own address.
     registerDemoSipaPrediction(record.recipientHash, sipaAddress)
@@ -136,17 +132,14 @@ async function seedDeposits(records: SIPADepositRecord[]): Promise<void> {
 }
 
 async function seedWithdrawals(records: WithdrawalRecord[]): Promise<void> {
-  const store = getWithdrawalStore()
-  for (const record of records) await store.create(record)
+  const store = session().withdrawals
+  for (const record of records) await store.create({ ...record, networkId: DEMO_NETWORK_ID })
 }
 
-/**
- * `TransactionStorage.addTokenTransaction` stamps `Date.now()`, which would pile every fixture row
- * onto the same minute. The persisted shape is a plain `Transaction[]`, so past-dated history is
- * written directly — typed, so a schema change surfaces at compile time.
- */
+/** Past-dated history, written as the rows themselves so every fixture keeps its own time. */
 async function seedTransactions(rows: Transaction[]): Promise<void> {
-  await new WebStorageAdapter().setItem(TRANSACTIONS_STORAGE_KEY, JSON.stringify(rows))
+  const { activity } = session()
+  for (const row of rows) await activity.insertPending({ ...row, networkId: DEMO_NETWORK_ID })
 }
 
 async function seedContactsAndRequests(
@@ -160,7 +153,7 @@ async function seedContactsAndRequests(
   const contacts = ContactStorage.get(adapter, contactsWriteLock)
   await contacts.initialize()
   await contacts.addEntries(longContacts ? longDemoContacts() : demoContacts())
-  const requests = RequestStorage.get(adapter, requestsWriteLock)
+  const { requests } = session()
   for (const request of demoRequests(now, networkId)) await requests.add(request)
 }
 
@@ -221,9 +214,10 @@ export async function seedDemo(scenario: DemoScenario): Promise<boolean> {
   console.info(`[demo] seeding scenario "${scenario}" — this origin's wallet state is replaced`)
   console.info(demoHelp())
 
-  resetWalletStorage()
+  await resetWalletStorage()
   primeOxideTuple(config, DEMO_OXIDE_TUPLE)
   primeOxideDeployment(config, DEMO_OXIDE_DEPLOYMENT)
+  switchSession(activeNamespace())
   // Onboarding uses mockOnboarding's local transitions and starts without an identity or provider.
   // Its token lists still read the table.
   if (scenario === "onboarding") {

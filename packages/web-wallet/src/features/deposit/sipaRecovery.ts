@@ -46,7 +46,7 @@ import {
 import {
   predictAccountAddress,
   encodeAccountInitCode,
-  IntraRollupMigrationService,
+  detectHistoricDeployments,
   readDepositSIPAImplementation,
 } from "@obsidion/sdk"
 import type { OxideEnvTuple } from "@obsidion/core/types"
@@ -66,6 +66,7 @@ import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { isDesktopL1SubmitActive, submitViaDesktopBridge } from "../../platform/desktopBridge"
 import { WebStorageAdapter } from "../../platform/storage/WebStorageAdapter"
 import { getL1Clients } from "./l1Wallet"
+import { EmptyDepositError } from "./depositReadErrors"
 import { AlreadySweptError, readSipaDeployed, UNTRACKED_TOKEN_ZERO } from "./sipaSweep"
 import { predictSipaCandidate } from "./sipaPredict"
 import { recoveryProbeTokens } from "./loadDepositFacts"
@@ -73,24 +74,9 @@ import { recoveryProbeTokens } from "./loadDepositFacts"
 /** The stuck-sweep clock the activity feed and both exits share. */
 export { isStuckSweep, STUCK_SWEEP_MS }
 
-/** Why a record offers the exit: `unsweepable` can never be swept, `stuck` still can. */
-export type RecoveryReason = "unsweepable" | "stuck" | "registration-quote" | "stranded"
 
 /** Progress of one L1 submission — shared by both exits. */
 export type L1ExitStage = "signing" | "awaiting-browser" | "confirming"
-
-/**
- * Whether `record` offers the recovery exit, and on which grounds. The note's message secret is
- * half the recovery key, so a record discovered without one cannot sign at all.
- */
-export function recoveryReasonFor(
-  record: Pick<SIPADepositRecord, "phase" | "messageSecret" | "startTime" | "sweepTxHash">,
-  now: number = Date.now(),
-): RecoveryReason | null {
-  if (!record.messageSecret) return null
-  if (record.phase === "recoverable") return "unsweepable"
-  return isStuckSweep(record, now) ? "stuck" : null
-}
 
 /** Who the transaction pays and how it reaches L1. Shared by the recovery and self-sweep exits. */
 export interface L1ExitChannel {
@@ -433,7 +419,7 @@ async function recoveryDeployment(
   const deployments: Parameters<typeof sipaDeployArgCandidates>[1] = []
   if (!record.origin) {
     const config = getConfig()
-    const { historic } = await IntraRollupMigrationService.detectHistoricDeployments({
+    const { historic } = await detectHistoricDeployments({
       ...config.oxideProfile,
       network: config.network,
       publicClient,
@@ -508,10 +494,17 @@ async function registrationCandidate(
 }
 
 /** What the Settings recovery needs for a token stranded at one of this wallet's deposit addresses. */
+export interface StrandedToken {
+  record: SIPADepositRecord
+  token: SipaFundingToken
+  balance: string
+}
+
 export async function readStrandedToken(
   sipa: Address,
   token: Address,
-): Promise<{ record: SIPADepositRecord; token: SipaFundingToken; balance: string }> {
+  networkId: string,
+): Promise<StrandedToken> {
   const config = getConfig()
   const store = SIPADepositStore.get(new WebStorageAdapter())
   const stored = async () => {
@@ -522,9 +515,10 @@ export async function readStrandedToken(
   // registration record, else re-derived from the master secret and the wallet's name.
   const ok = () => true
   const failed = () => false
-  const healed = await healRegistrationDeposits(config).then(ok, failed)
+  const healed = await healRegistrationDeposits(config, networkId).then(ok, failed)
   const rederived =
-    (await stored()) !== null || (await rederiveRegistrationDeposit(config, sipa).then(ok, failed))
+    (await stored()) !== null ||
+    (await rederiveRegistrationDeposit(config, networkId, sipa).then(ok, failed))
   const record = await stored()
   if (!record) {
     throw new Error(
@@ -548,7 +542,7 @@ export async function readStrandedToken(
     .catch(() => {
       throw new Error("That address is not an ERC-20 token on this network.")
     })
-  if (balance === 0n) throw new Error("This deposit address holds none of that token.")
+  if (balance === 0n) throw new EmptyDepositError()
   const [symbol, decimals] = await Promise.all([
     client.readContract({ ...erc20, functionName: "symbol" }).catch(() => "tokens"),
     client.readContract({ ...erc20, functionName: "decimals" }).catch(() => undefined),
@@ -565,12 +559,17 @@ export async function readStrandedToken(
  * Seeds this wallet's registration address when it is `sipa`, as on a device with no registration
  * record. A claim's fee is the last try; a refused claim means this name's address is not found.
  */
-async function rederiveRegistrationDeposit(config: WebWalletConfig, sipa: Address) {
+async function rederiveRegistrationDeposit(
+  config: WebWalletConfig,
+  networkId: string,
+  sipa: Address,
+) {
   const identity = loadWalletIdentity()
   const secret = await getAuthService().getSecretKey()
   if (!identity?.handle || !secret) return
   const target = sipa.toLowerCase()
-  await seedRederivedRegistrations(config, secret, identity.handle, identity.address as Hex, {
+  const l2Address = identity.address as Hex
+  await seedRederivedRegistrations(config, networkId, secret, identity.handle, l2Address, {
     keep: async (found) =>
       found.filter((f) => f.derivation.sipaAddress.toLowerCase() === target).slice(0, 1),
     quotedFee: async (deps, owner, nameHash) => {

@@ -16,44 +16,41 @@
  *
  * **Manual / pre-merge gate.** Skipped via `TESTNET_SKIP=1`.
  */
-import { describe, it, beforeAll, afterAll, expect } from "vitest"
+import { describe, it, beforeAll, afterAll } from "vitest"
 
 import { setupTestnet, skipUnlessTestnet } from "./setupTestnet.js"
 import type { TestnetSetupResult } from "./setupTestnet.js"
 
-describe.skipIf(skipUnlessTestnet())(
-  "pending-record resume — testnet E2E",
-  () => {
-    let setup: TestnetSetupResult
+describe.skipIf(skipUnlessTestnet())("pending-record resume — testnet E2E", () => {
+  let setup: TestnetSetupResult
 
-    beforeAll(async () => {
-      setup = await setupTestnet()
-    }, 5 * 60_000)
+  beforeAll(async () => {
+    setup = await setupTestnet()
+  }, 5 * 60_000)
 
-    afterAll(async () => {
-      await setup?.teardown()
-    })
+  afterAll(async () => {
+    await setup?.teardown()
+  })
 
-    it.todo(
-      "wallet.sendTx({ wait: NO_WAIT }) → record persisted in pendingTxStore " +
-        "→ wallet instance discarded (no TxLifecycleService attached) → " +
-        "fresh wallet + TxLifecycleService.get(...) with SAME store → " +
-        "resumeAll() → pending record reconciled (remove called once, " +
-        "TransactionStorage status patched, exactly one transactionsUpdated event)",
-    )
+  it.todo(
+    "wallet.sendTx({ wait: NO_WAIT }) → record persisted in pendingTxStore " +
+      "→ wallet instance discarded (no TxLifecycleService attached) → " +
+      "fresh wallet + TxLifecycleService.get(...) with SAME store → " +
+      "resumeAll() → pending record reconciled (remove called once, " +
+      "TransactionStorage status patched, exactly one transactionsUpdated event)",
+  )
 
-    it.todo(
-      "symmetric path: receipt resolves DROPPED → record removed; " +
-        "TransactionStorage status reflects the drop",
-    )
+  it.todo(
+    "symmetric path: receipt resolves DROPPED → record removed; " +
+      "TransactionStorage status reflects the drop",
+  )
 
-    /**
-     * Implementation note: the test must NOT instantiate a
-     * TxLifecycleService in the FIRST process — otherwise the listener
-     * picks up the create event and the pending record gets reconciled
-     * by the listener path, not the resumeAll() path. The whole point
-     * of this test is the listener-attach gap that resumeAll() has to
-     * close.
-     */
-  },
-)
+  /**
+   * Implementation note: the test must NOT instantiate a
+   * TxLifecycleService in the FIRST process — otherwise the listener
+   * picks up the create event and the pending record gets reconciled
+   * by the listener path, not the resumeAll() path. The whole point
+   * of this test is the listener-attach gap that resumeAll() has to
+   * close.
+   */
+})

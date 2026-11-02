@@ -1,5 +1,5 @@
 import {
-  createClassArtifactResolver,
+  type createClassArtifactResolver,
   DEFAULT_CONTRACTS,
   ensureContractRegisteredInPXE,
   getBroadcasterArtifact,

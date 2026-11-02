@@ -3,12 +3,10 @@ import type { Address, Hash } from "viem"
 
 import type { SIPADepositRecord } from "../../src/core/services/deposits/SIPADepositStore"
 import {
-  reconcileSipaRequestFulfillments,
   requestLinkedSipaAddresses,
   sipaDepositFulfillsRequest,
 } from "../../src/core/paymentRequest/sipaRequestFulfillment"
-import type { IStorageAdapter } from "../../src/core/storages/adapter"
-import { RequestStorage, type PaymentRequest } from "../../src/core/storages/RequestStorage"
+import type { StoredRequest } from "../../src/engine/requests"
 
 const SIPA = "0xAbCdEf0123456789abcdef0123456789abcdef01" as Address
 const OTHER = "0x0000000000000000000000000000000000000001" as Address
@@ -16,17 +14,7 @@ const CLAIM = "0x" + "ab".repeat(32)
 const SWEEP = ("0x" + "cd".repeat(32)) as Hash
 const NET = "1000000000000000000"
 
-function memoryAdapter(): IStorageAdapter {
-  const map = new Map<string, string>()
-  return {
-    getItem: async (k) => map.get(k) ?? null,
-    setItem: async (k, v) => void map.set(k, v),
-    removeItem: async (k) => void map.delete(k),
-    clear: async () => map.clear(),
-  }
-}
-
-function pendingLink(overrides: Partial<PaymentRequest> = {}): PaymentRequest {
+function pendingLink(overrides: Partial<StoredRequest> = {}): StoredRequest {
   return {
     id: "req-1",
     contactTag: "",
@@ -96,12 +84,11 @@ describe("sipaDepositFulfillsRequest", () => {
     ).toBe(true)
   })
 
-  it("ignores unknown SIPAs, incoming rows, and already-fulfilled rows", () => {
+  it("ignores unknown SIPAs and incoming rows", () => {
     expect(sipaDepositFulfillsRequest(deposit({ sipaAddress: OTHER }), pendingLink())).toBe(false)
     expect(sipaDepositFulfillsRequest(deposit(), pendingLink({ direction: "incoming" }))).toBe(
       false,
     )
-    expect(sipaDepositFulfillsRequest(deposit(), pendingLink({ status: "fulfilled" }))).toBe(false)
     expect(sipaDepositFulfillsRequest(deposit(), pendingLink({ sipaAddress: undefined }))).toBe(
       false,
     )
@@ -117,68 +104,5 @@ describe("requestLinkedSipaAddresses", () => {
         pendingLink({ sipaAddress: OTHER.toUpperCase() as Address }),
       ]),
     ).toEqual(new Set([SIPA.toLowerCase(), OTHER.toLowerCase()]))
-  })
-})
-
-describe("reconcileSipaRequestFulfillments", () => {
-  it("flips a matching pending row and stamps claimTxHash", async () => {
-    const store = new RequestStorage(memoryAdapter())
-    await store.add(pendingLink())
-    await reconcileSipaRequestFulfillments(store, [deposit()])
-    const row = await store.findById("req-1")
-    expect(row?.status).toBe("fulfilled")
-    expect(row?.fulfillmentTxHash).toBe(CLAIM)
-  })
-
-  it("falls back to sweepTxHash when the claim hash is missing", async () => {
-    const store = new RequestStorage(memoryAdapter())
-    await store.add(pendingLink())
-    await reconcileSipaRequestFulfillments(store, [deposit({ claimTxHash: undefined })])
-    expect((await store.findById("req-1"))?.fulfillmentTxHash).toBe(SWEEP)
-  })
-
-  it("leaves the row pending on broadcast, sweeping, underpay, or unknown SIPA", async () => {
-    const store = new RequestStorage(memoryAdapter())
-    await store.add(pendingLink({ id: "broadcast" }))
-    await store.add(pendingLink({ id: "sweeping" }))
-    await store.add(pendingLink({ id: "underpay" }))
-    await store.add(pendingLink({ id: "unknown" }))
-    await reconcileSipaRequestFulfillments(store, [
-      deposit({ phase: "broadcast" }),
-      deposit({ phase: "sweeping" }),
-      deposit({ netAmount: "1" }),
-      deposit({ sipaAddress: OTHER }),
-    ])
-    for (const id of ["broadcast", "sweeping", "underpay", "unknown"]) {
-      expect((await store.findById(id))?.status).toBe("pending")
-    }
-  })
-
-  it("fulfills one row per deposit: the live one over the codes it replaced", async () => {
-    const store = new RequestStorage(memoryAdapter())
-    await store.add(pendingLink({ id: "old", status: "cancelled", createdAt: 1 }))
-    await store.add(pendingLink({ id: "older", status: "cancelled", createdAt: 0 }))
-    await store.add(pendingLink({ id: "live", createdAt: 2 }))
-    await reconcileSipaRequestFulfillments(store, [deposit()])
-    await reconcileSipaRequestFulfillments(store, [deposit()])
-    expect((await store.findById("live"))?.status).toBe("fulfilled")
-    expect((await store.findById("old"))?.status).toBe("cancelled")
-    expect((await store.findById("older"))?.status).toBe("cancelled")
-  })
-
-  it("fulfills only the newest cancelled row when none is live", async () => {
-    const store = new RequestStorage(memoryAdapter())
-    await store.add(pendingLink({ id: "old", status: "cancelled", createdAt: 0 }))
-    await store.add(pendingLink({ id: "new", status: "cancelled", createdAt: 1 }))
-    await reconcileSipaRequestFulfillments(store, [deposit()])
-    expect((await store.findById("new"))?.status).toBe("fulfilled")
-    expect((await store.findById("old"))?.status).toBe("cancelled")
-  })
-
-  it("flips a cancelled row — fulfilled always wins", async () => {
-    const store = new RequestStorage(memoryAdapter())
-    await store.add(pendingLink({ status: "cancelled" }))
-    await reconcileSipaRequestFulfillments(store, [deposit()])
-    expect((await store.findById("req-1"))?.status).toBe("fulfilled")
   })
 })

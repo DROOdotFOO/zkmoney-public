@@ -28,8 +28,10 @@ export const proveTxPerfLogsEnabled = import.meta.env.VITE_PROVE_TX_PERF_LOGS ==
 export const zkMoneyLinkHostEnabled = import.meta.env.VITE_ZK_MONEY_LINK_HOST === "true"
 
 /**
- * Adding a backup passkey from account settings (`VITE_BACKUP_PASSKEY_SETTINGS`). Off by default:
- * the rotation that moves the account to a two-key address runs on demo steps that never touch the
- * account, and the entry shows nothing while off.
+ * Lets a user start adding a backup passkey from the Passkeys sheet in settings
+ * (`VITE_BACKUP_PASSKEY_SETTINGS`). Off by default. The rotation signs a real L1 user operation,
+ * moves the balance and re-roots the wallet. It must stay off until it takes turns with the
+ * upgrade's record update, which uses the same nonce. Off hides only the "Add a backup passkey"
+ * row; a rotation already saved still shows and runs to the end.
  */
 export const backupPasskeySettingsEnabled = import.meta.env.VITE_BACKUP_PASSKEY_SETTINGS === "true"

@@ -11,6 +11,7 @@
 import type { WithdrawalGroupLeg, WithdrawalPhase } from "@obsidion/core/types"
 import type { QueueStatus, SwapEscrowLayout, SwapEscrowOutput } from "@obsidion/sdk"
 import type { Address, Hash, Hex } from "viem"
+import type { Failure } from "../../../engine/errors"
 
 /**
  * Why a withdrawal terminalized in `failed` phase, on records written by an
@@ -70,7 +71,7 @@ export interface WithdrawalRecord {
   /**
    * Why a `phase === "failed"` row terminalized, on rows an earlier version
    * wrote. Nothing sets it now; a pre-mine burn throw leaves it undefined with
-   * a descriptive `error`.
+   * a `failure`.
    */
   cancelReason?: WithdrawalCancelReason
 
@@ -86,7 +87,7 @@ export interface WithdrawalRecord {
   /** Hash of the L2 block containing the burn tx (reorg anchor, re-writable). */
   blockHash?: string
 
-  /** Network the record was created on (rollup L1 address). Unset only pre-boot. */
+  /** Network the record was created on: see `OnNetwork`. */
   networkId?: string
 
   /** Incremented on each reorg demote; stale forward writes carry an older epoch. */
@@ -289,8 +290,8 @@ export interface WithdrawalRecord {
   /** Current phase (see WithdrawalPhase). */
   phase: WithdrawalPhase
 
-  /** Error message when phase === "failed". */
-  error?: string
+  /** Why it failed, when phase === "failed". */
+  failure?: Failure
 
   /** ms epoch when the user tapped Confirm. */
   startTime: number

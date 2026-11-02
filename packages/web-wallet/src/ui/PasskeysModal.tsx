@@ -18,10 +18,9 @@ import {
   envelopeSlot,
   parseKeyMetadata,
   resolveOxideIdentity,
-  useAccountContext,
-  useAztecContext,
   useContractServiceContext,
   type ParsedKeyMetadata,
+  useResource,
 } from "@obsidion/front-core"
 import {
   BACKUP_ADD_SHEET_COPY,
@@ -72,6 +71,7 @@ import { getAuthService } from "../platform/auth/useAuthenticator"
 import { authenticatorFor, type AuthenticatorRecord } from "../platform/auth/WebPasskeyIdentityMap"
 import { Modal } from "./Modal"
 import { MAX_PASSKEY_NAME, readPasskeyNames, savePasskeyName } from "./passkeyNames"
+import { handOffAccount, useSession } from "../platform/session"
 
 type KeyLabel = "Sign-up" | "Backup" | "Unknown key"
 
@@ -491,6 +491,7 @@ const UNREGISTERED_FACTS: EntryFacts = {
   plan: true,
   moves: 0,
   withdrawalInFlight: false,
+  openLink: false,
   historicBalance: false,
 }
 
@@ -504,8 +505,7 @@ export function PasskeysModal({
   onAction?: (action: EntryAction) => void
 }) {
   const { contractService } = useContractServiceContext()
-  const { obsidionWallet } = useAztecContext()
-  const { setObsidionAccount } = useAccountContext()
+  const obsidionWallet = useResource(useSession().wallet)
   const [keys, setKeys] = useState<AccountKeys | "unreadable" | "unverified">()
   const [names, setNames] = useState(readPasskeyNames)
   const [reads, setReads] = useState(0)
@@ -554,7 +554,7 @@ export function PasskeysModal({
     buildBackupFlowDeps({
       wallet: obsidionWallet,
       owner: record.owner as Address,
-      switchAccount: setObsidionAccount,
+      switchAccount: handOffAccount,
     }).then(
       (built) => {
         if (stale) return
@@ -638,7 +638,7 @@ export function PasskeysModal({
             )}
           </section>
         )}
-        {backupPasskeySettingsEnabled && obsidionWallet && record && panelDeps && (
+        {obsidionWallet && record && panelDeps && (
           <BackupPasskeyPanel
             record={record}
             deps={panelDeps}
@@ -650,7 +650,7 @@ export function PasskeysModal({
             }}
           />
         )}
-        {backupPasskeySettingsEnabled && obsidionWallet && record && !panelDeps && (
+        {obsidionWallet && record && !panelDeps && (
           <p className="ww-sheet__note" aria-live="polite">
             {depsFailed ? (
               <>
@@ -669,7 +669,7 @@ export function PasskeysModal({
             )}
           </p>
         )}
-        {backupPasskeySettingsEnabled && pending === "unreadable" && (
+        {pending === "unreadable" && (
           <p className="ww-sheet__note" aria-live="polite">
             {entryCopy.unreadable}{" "}
             <button
@@ -682,22 +682,20 @@ export function PasskeysModal({
             </button>
           </p>
         )}
+        {cancelled && pending === null && (
+          <p className="ww-sheet__note" data-testid="backup-cancelled">
+            {panelCopy.cancelled} {panelCopy.leftoverPasskey}
+          </p>
+        )}
         {showEntry && (
-          <>
-            {cancelled && (
-              <p className="ww-sheet__note" data-testid="backup-cancelled">
-                {panelCopy.cancelled} {panelCopy.leftoverPasskey}
-              </p>
-            )}
-            <BackupEntry
-              keys={keys}
-              wallet={obsidionWallet}
-              contractService={contractService}
-              attempt={attempt}
-              onStarted={() => setCancelled(false)}
-              onAction={onAction}
-            />
-          </>
+          <BackupEntry
+            keys={keys}
+            wallet={obsidionWallet}
+            contractService={contractService}
+            attempt={attempt}
+            onStarted={() => setCancelled(false)}
+            onAction={onAction}
+          />
         )}
       </div>
     </Modal>

@@ -1,8 +1,10 @@
 import {
   AccountStorage,
   compAddrToAztecAddrStr,
-  useAztecContext,
-  type UseAuthenticator,
+  valueOf,
+  type Resource,
+  type WebAuthnData,
+  WalletError,
 } from "@obsidion/front-core"
 import { Network } from "@obsidion/core/constants"
 import {
@@ -11,9 +13,10 @@ import {
   DEFAULT_CEREMONY_TIMING,
   type PasskeyCeremony,
 } from "@obsidion/passkey-web"
-import { AUTH_TYPE } from "@obsidion/sdk"
+import { AUTH_TYPE, type ObsidionWallet } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
+import { followSavedSession } from "../session"
 import { walletStorage } from "../storage/walletStorage"
 import { webStorage } from "../storage/WebStorageAdapter"
 import { WebAlphaAuthService, type StoredAccountSnapshot } from "./WebAlphaAuthService"
@@ -57,7 +60,8 @@ export function getAuthService(): WebAlphaAuthService {
     // as it does for the other build flags that relax a check.
     const virtualAuthenticators = import.meta.env.VITE_E2E_VIRTUAL_AUTHENTICATORS === "true"
     if (virtualAuthenticators && config.network === Network.MAINNET) {
-      throw new Error(
+      throw new WalletError(
+        "config.invalid",
         "VITE_E2E_VIRTUAL_AUTHENTICATORS widens the passkey provider allowlist — not valid on mainnet",
       )
     }
@@ -71,6 +75,7 @@ export function getAuthService(): WebAlphaAuthService {
       ceremony: virtualAuthenticators ? recordingCreateRequests(ceremony) : ceremony,
       laptopHints: virtualAuthenticators ? null : undefined,
       extraProviders: virtualAuthenticators ? [CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID] : undefined,
+      onSessionSaved: followSavedSession,
     })
   }
   return singleton
@@ -96,22 +101,36 @@ async function readStoredAccount(): Promise<StoredAccountSnapshot | null> {
   }
 }
 
+/** Names `signer` as the stored account's signer, at the address it already holds. */
+export async function writeStoredSigner(signer: WebAuthnData): Promise<void> {
+  const accounts = AccountStorage.get()
+  const account = await accounts.getAccount()
+  if (account?.signKeyConfig.type !== AUTH_TYPE.WEB_AUTHN) return
+  await accounts.addWebauthnAccount(account.name, account.completeAddress, signer)
+}
+
 /**
- * `UseAuthenticator` for front-core's `AccountProvider`/`useAccount`. Web has
- * no biometric unlock modal — a locked MSK surfaces through `useAccount`'s
- * `unlockError`/`retryUnlock` flow instead (recover → verify → commit). The
- * wallet's address derivation and the stored account are handed to the service
- * in the same render front-core's account effect depends on, so a cached key
- * can be proved before that effect asks for it.
+ * The auth service over `wallet`: its address derivation and the stored account, so a cached key
+ * can be proved before the account's unlock asks for it.
  */
-export const useAuthenticator: UseAuthenticator = () => {
-  const { obsidionWallet } = useAztecContext()
+export function walletAuth(wallet: ObsidionWallet): WebAlphaAuthService {
   const service = getAuthService()
-  if (obsidionWallet) {
-    service.setAddressDeriver(async (msk, passkeys) =>
-      (await obsidionWallet.deriveAccountAddress(msk, passkeys)).toString(),
-    )
-    service.setAccountReader(readStoredAccount)
+  service.setAddressDeriver(async (msk, passkeys) =>
+    (await wallet.deriveAccountAddress(msk, passkeys)).toString(),
+  )
+  service.setAccountReader(readStoredAccount)
+  service.setSignerWriter(writeStoredSigner)
+  return service
+}
+
+/** Hands the page's wallet to the auth service once it is up, whichever session the page runs. */
+export function bindWalletAuth(wallet: Resource<ObsidionWallet>): void {
+  const bind = () => {
+    const ready = valueOf(wallet)
+    if (!ready) return
+    off()
+    walletAuth(ready)
   }
-  return { showUnlockModal: false, authService: service }
+  const off = wallet.subscribe(bind)
+  bind()
 }

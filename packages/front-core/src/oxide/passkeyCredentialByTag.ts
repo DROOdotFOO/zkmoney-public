@@ -85,14 +85,30 @@ export function answeringKey(
  * entries cannot answer and are skipped.
  */
 export function candidateCredentialIds(keys: readonly InstalledPasskey[]): string[] {
-  const ids: string[] = []
+  return installedCredentials(keys).map((c) => c.credentialId)
+}
+
+/** An installed key's credential id, and whether it is a backup: an id behind an envelope. */
+export type InstalledCredential = { credentialId: string; backup: boolean; key: InstalledPasskey }
+
+/** {@link candidateCredentialIds} with each key. */
+export function installedCredentials(keys: readonly InstalledPasskey[]): InstalledCredential[] {
+  const out: InstalledCredential[] = []
   for (const key of keys) {
     const { parsed } = key
     if (parsed.kind === "unknown") continue
-    if (parsed.kind === "credential-id") ids.push(parsed.credentialId)
-    else ids.push(parsed.credentialId ?? metadataToCredentialId(key.metadata))
+    if (parsed.kind === "credential-id") {
+      out.push({ credentialId: parsed.credentialId, backup: false, key })
+    } else {
+      const backup = parsed.credentialId !== undefined
+      out.push({
+        credentialId: parsed.credentialId ?? metadataToCredentialId(key.metadata),
+        backup,
+        key,
+      })
+    }
   }
-  return ids
+  return out
 }
 
 /**

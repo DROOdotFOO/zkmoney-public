@@ -9,7 +9,7 @@ import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAd
 import { resetSingleton } from "../../__test-helpers__/resetSingleton"
 import {
   SIPADepositStore,
-  type SIPADepositRecord,
+  type SIPADepositFields,
 } from "../../../src/core/services/deposits/SIPADepositStore"
 import {
   ActivityFeed,
@@ -30,8 +30,9 @@ function makeStore(): SIPADepositStore {
   return SIPADepositStore.get(new InMemoryStorageAdapter())
 }
 
-function sipaFallback(startTime: number): Omit<SIPADepositRecord, "sipaAddress" | "phase"> {
+function sipaFallback(startTime: number): SIPADepositFields {
   return {
+    networkId: "0xnet",
     recipientL2Address: RECIPIENT,
     messageSecret: "0x" + "11".repeat(32),
     recipientHash: "0x" + "22".repeat(32),

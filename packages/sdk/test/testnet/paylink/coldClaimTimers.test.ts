@@ -98,7 +98,9 @@ describe("coldClaimTimers (offline)", () => {
     })
 
     it("passes a clean timing report (labels + numbers only)", () => {
-      expect(() => assertNoSecrets({ phase: "sync", median: 1234, samples: [1, 2, 3] })).not.toThrow()
+      expect(() =>
+        assertNoSecrets({ phase: "sync", median: 1234, samples: [1, 2, 3] }),
+      ).not.toThrow()
     })
   })
 
@@ -113,7 +115,10 @@ describe("coldClaimTimers (offline)", () => {
           { sync: 200, prove: 8000, simulate: 50 },
           { sync: 250, prove: 8100, simulate: 55 },
         ],
-        coldDiagnostics: [{ anchorBlock: 100, blocksWalked: 5 }, { anchorBlock: 101, blocksWalked: 4 }],
+        coldDiagnostics: [
+          { anchorBlock: 100, blocksWalked: 5 },
+          { anchorBlock: 101, blocksWalked: 4 },
+        ],
         warmDiagnostics: [{ anchorBlock: 100 }, { anchorBlock: 101 }],
       })
       expect(report.representativeDominant?.phase).toBe("sync")

@@ -42,8 +42,24 @@ export { FPCPaymentType } from "../constants/index.js"
 
 // ── Contract service ─────────────────────────────────────────────────
 
-// FetchFunction type for pluggable fetch method
-export type FetchFunction = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+/** The part of a `fetch` response core and its consumers read. */
+export interface FetchResponse {
+  readonly ok: boolean
+  readonly status: number
+  json(): Promise<unknown>
+}
+
+/** The request options core and its consumers pass. */
+export interface FetchInit {
+  method?: string
+  headers?: Record<string, string>
+  body?: string
+  signal?: AbortSignal
+  cache?: "no-cache"
+}
+
+/** A pluggable `fetch`, typed by shape so core needs no DOM types. The global `fetch` satisfies it. */
+export type FetchFunction = (input: string, init?: FetchInit) => Promise<FetchResponse>
 
 export interface ContractServiceOptions {
   fetchFunction?: FetchFunction

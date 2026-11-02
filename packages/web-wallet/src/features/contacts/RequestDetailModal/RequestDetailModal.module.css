@@ -1,0 +1,36 @@
+.reviewCardDivider {
+  border-top: 1px solid var(--border-hairline);
+}
+/* Request detail modal: colored status + hash rows, red cancel pill, cancel-confirm art card. */
+.requestDetailStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+:global(.ww-shell) .dangerBtn {
+  width: 100%;
+  padding: 16px;
+  border-radius: 9999px;
+  border: 1px solid var(--border-hairline);
+  background: rgba(254, 112, 139, 0.05);
+  color: var(--accent-pink);
+  font-size: 18px;
+  font-weight: 600;
+  text-align: center;
+}
+:global(.ww-shell) .dangerBtn:disabled {
+  opacity: 0.6;
+}
+.cancelConfirm {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  text-align: center;
+}
+.cancelConfirmTitle {
+  font-size: 20px;
+  font-weight: 700;
+}

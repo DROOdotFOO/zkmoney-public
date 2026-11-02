@@ -1,6 +1,8 @@
 // Oxide's relayer prices an L1 operation from an `eth_simulateV1` run with a state override, and the
 // wallet prices a swap-on-withdraw tip the same way, so every L1 RPC the wallet runs on must serve both.
 
+import type { FetchFunction } from "../types/index.js"
+
 /** The RPC answered that it does not serve `eth_simulateV1`. */
 export class L1RpcSimulationUnsupportedError extends Error {
   constructor(readonly host: string, readonly detail: string) {
@@ -21,7 +23,7 @@ const JSON_RPC_METHOD_NOT_FOUND = -32601
  */
 export async function assertL1RpcSimulates(
   url: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: FetchFunction = fetch,
 ): Promise<void> {
   const host = new URL(url).host
   let body: { result?: unknown; error?: { code?: number; message?: string } }
@@ -52,7 +54,7 @@ export async function assertL1RpcSimulates(
     // A throttled or failing server says nothing about the method.
     if (response.status === 429 || response.status >= 500)
       throw new Error(`HTTP ${response.status}`)
-    body = await response.json()
+    body = (await response.json()) as typeof body
   } catch (e) {
     throw new Error(`L1 RPC ${host}: eth_simulateV1 probe failed: ${(e as Error).message}`)
   }

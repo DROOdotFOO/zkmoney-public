@@ -7,31 +7,32 @@
   "type": "module",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js"
     },
     "./test": {
+      "source": "./src/test.ts",
       "import": "./dist/test.js",
       "require": "./dist/test.js"
     },
     "./backend": {
+      "source": "./src/backend.ts",
       "types": "./dist/backend.d.ts",
       "import": "./dist/backend.js",
       "require": "./dist/backend.js"
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -b",
+    "build": "rm -rf dist && tsc -b tsconfig.build.json",
     "clean": "rm -rf ./dist .tsbuildinfo",
     "verify-live-decimals": "tsx scripts/verify-live-decimals.ts",
-    "generate:malformed-jwt": "tsx scripts/generate-malformed-jwt-fixtures.mjs",
-    "sync:malformed-jwt": "tsx scripts/sync-malformed-jwt-to-noir.mjs",
-    "prove:zkjwt": "node scripts/generate-zkjwt-proof.mjs",
-    "prove:zkjwt:bb": "node scripts/generate-zkjwt-proof.mjs --prove",
+    "generate:malformed-jwt": "tsx scripts/jwt/generate-malformed-jwt-fixtures.mjs",
+    "sync:malformed-jwt": "tsx scripts/jwt/sync-malformed-jwt-to-noir.mjs",
+    "prove:zkjwt": "node scripts/jwt/generate-zkjwt-proof.mjs",
+    "prove:zkjwt:bb": "node scripts/jwt/generate-zkjwt-proof.mjs --prove",
     "test": "CI=true vitest run",
-    "test:coverage": "vitest run --coverage scripts/debugInnerHash.test.ts scripts/computeDomainSeparator.test.ts",
-    "validate:script": "./validate-script.sh run-tests.sh",
-    "test:with-validation": "npm run validate:script && ./run-tests.sh",
+    "typecheck": "tsc --noEmit && eslint",
     "typecheck:test": "tsc -p tsconfig.test.json",
     "gas:record": "./scripts/record-claimfpc-gas.sh"
   },
@@ -83,7 +84,7 @@
   "devDependencies": {
     "@aztec-foundation/bb.js": "v6.0.0",
     "@aztec-foundation/noir-noir_js": "v6.0.0",
-    "@aztec-labs/standard-contracts": "v6.0.0",
+    "@obsidion/lint-config": "workspace:*",
     "@obsidion/oxide-build": "workspace:*",
     "@oxide/oxide-lib-tee": "workspace:*",
     "@oxide/tee-enclave": "workspace:*",
@@ -92,6 +93,7 @@
     "@types/node": "^18.19.83",
     "@vitest/coverage-v8": "2.1.9",
     "@xmtp/node-sdk": "^4.5.0",
+    "eslint": "^9.36.0",
     "fake-indexeddb": "^6.2.3",
     "jsonwebtoken": "^9.0.2",
     "tsx": "^4.21.0"

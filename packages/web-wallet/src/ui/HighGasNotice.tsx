@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react"
 import { Network } from "@obsidion/core/constants"
-import { useAztecContext } from "@obsidion/front-core"
+import { useResource } from "@obsidion/front-core"
 import { formatGwei, parseGwei } from "viem"
 import { getConfig } from "../config/env"
 import { l1PublicClient } from "../config/oxideTuple"
 import { pauseWhenHidden } from "../platform/visibilityScheduler"
 import { Warning } from "./Warning"
+import { useSession } from "../platform/session"
 
 const HIGH_GAS = parseGwei("1")
 const POLL_MS = 60_000
@@ -58,7 +59,7 @@ export function HighGasNotice() {
 
 /** Says the app is unavailable while Aztec fees are above what the ClaimFPC sponsors. */
 export function HighL2FeeNotice() {
-  const { obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
   const read = useMemo(
     () => obsidionWallet && (() => obsidionWallet.sponsoredFeesAboveCap()),
     [obsidionWallet],

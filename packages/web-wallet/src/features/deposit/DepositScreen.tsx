@@ -9,9 +9,9 @@ import {
   SIPADepositStore,
   type AddressRoute,
   type SIPADepositRecord,
-  useAztecContext,
   useCachedRecords,
   useContractServiceContext,
+  useResource,
 } from "@obsidion/front-core"
 import type { SipaIntentName } from "@obsidion/core/oxide"
 import { GradientText, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
@@ -37,7 +37,11 @@ import { OweRegistrationBroadcast } from "../broadcasts/useOweRegistrationBroadc
 import { RegistrationAskLine, useRegistrationAsk } from "../onboarding/RegistrationAskLine"
 import { formatDepositDue } from "../onboarding/steps/DepositTermsRows"
 import { ChooseNameSheet } from "../onboarding/ChooseNameSheet"
-import { confirmRegistrationTag, useRegistrationTagConfirmed } from "../onboarding/openRegistration"
+import {
+  confirmRegistrationTag,
+  useOpenRegistration,
+  useRegistrationTagConfirmed,
+} from "../onboarding/openRegistration"
 import { buildErc20TransferUriWithoutAmount } from "../requests/eip681"
 import { DepositFromWalletModal, type SentDeposit } from "./DepositFromWalletModal"
 import { DepositCoinModal, DepositTokensStatus } from "./DepositCoinModal"
@@ -93,6 +97,7 @@ import {
 } from "./unresolvedSend"
 import { depositValuation } from "./depositValuation"
 import { useDepositArrivalMinutes } from "./depositArrival"
+import { useSession } from "../../platform/session"
 
 /** Shown, unfunded addresses still publishing above which the screen waits instead of deriving. */
 const PUBLISHING_LIMIT = 2
@@ -147,13 +152,19 @@ export const FEE_UNAVAILABLE_NOTE = "Use Retry to load the fee and continue."
  */
 export function DepositScreen(props: { onClose?: () => void } = {}) {
   const owed = useOwedRegistration() !== null
+  // Unknown while the withdrawals load: the screen waits rather than offer a plain deposit.
+  const open = useOpenRegistration()
+  const known = open === null || open.stage !== undefined
   // A registration settles on the fee token's row.
   const intent = owed ? "registration" : "deposit"
   const { tokens, failed, retry } = useDepositTokensRead(intent)
-  if (tokens?.offered.length) return <DepositScreenBody {...props} tokens={tokens} intent={intent} />
+  if (known && tokens?.offered.length)
+    return <DepositScreenBody {...props} tokens={tokens} intent={intent} />
   const title = owed ? "Deposit to activate your account" : "Deposit funds"
   // A table that offers Main no token has nothing to deposit, as when it cannot be read.
-  const status = <DepositTokensStatus failed={failed || !!tokens} onRetry={retry} />
+  const status = (
+    <DepositTokensStatus failed={failed || (!!tokens && !tokens.offered.length)} onRetry={retry} />
+  )
   if (props.onClose) {
     return <DepositCoinModal title={title} status={status} onClose={props.onClose} />
   }
@@ -200,7 +211,7 @@ function DepositScreenBody({
       else navigate("/", { replace: true })
     }
   }, [owed, navigate, onClose])
-  const { obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
   const { contractService } = useContractServiceContext()
   const gateway = getSipaDepositGateway()
   const config = getConfig()
@@ -293,9 +304,7 @@ function DepositScreenBody({
   const fee = facts?.fee
   // A target's sweep takes its own fee, so a deposit sent to it is shown at that fee.
   const sentFacts =
-    facts && target?.fee !== undefined
-      ? { ...facts, sweepFeeAtomic: target.fee }
-      : facts
+    facts && target?.fee !== undefined ? { ...facts, sweepFeeAtomic: target.fee } : facts
   const sentRecord = sent ? sentDepositRecord(sent, stored, l1ChainId, sentFacts) : undefined
   const { copied, copy } = useCopy()
   // Without the fee nothing may be funded: the wallet path would charge amount + 0 while the sweep
@@ -536,14 +545,14 @@ function DepositScreenBody({
       : [capacityView.statusText, capacityView.detailText].filter(Boolean).join(" ")
   // A swapped coin's credit is set by the swap rate, so no figure is promised for it.
   // The sweep floors each coin on its own, so only what the address holds in the picked coin counts.
-  const held = token.symbol === settlement.symbol ? (target?.held ?? 0n) : 0n
+  const held = token.symbol === settlement.symbol ? target?.held ?? 0n : 0n
   // The least to send, before the address: a target's ask, less what its address holds.
   const askLeft =
     target?.ask === undefined
       ? undefined
       : held > 0n && held < target.ask
-        ? target.ask - held
-        : target.ask
+      ? target.ask - held
+      : target.ask
   const depositMinimum = !target
     ? MINIMUM_DEPOSIT
     : askLeft === undefined
@@ -589,8 +598,8 @@ function DepositScreenBody({
           depositFee != null
             ? tokenFigure(depositFee, settlement.symbol)
             : quoteFailed
-              ? "Unavailable"
-              : QUOTE_PENDING
+            ? "Unavailable"
+            : QUOTE_PENDING
         }
         testId="deposit-fee"
         info={<InfoButton label="About the deposit fee" onClick={() => setAboutLimits("limit")} />}

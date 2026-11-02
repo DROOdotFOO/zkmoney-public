@@ -5,7 +5,7 @@
  * the broadcast already landed, so a broadcast an earlier page sent is never proven twice.
  */
 import type { OperationStore } from "../operations/OperationStore"
-import { logger } from "src/utils/logger"
+import { logger } from "../../../utils/logger"
 import type { BroadcastJob, BroadcastLedger, BroadcastSource } from "./BroadcastLedger"
 import { nextBroadcast, nextRetryAt } from "./broadcastOrder"
 

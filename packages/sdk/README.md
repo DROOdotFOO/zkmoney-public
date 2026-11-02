@@ -21,28 +21,11 @@ What does NOT belong here:
 - Browser-only runtime adapters → `web-wallet/src/`.
 - Noir source or codegen pipeline → `@obsidion/contracts`.
 
-### Run All Tests
+### Run Tests
 
 ```shell
-AZTEC_VERSION=2.0.3 ./run-tests.sh
-```
-
-if exclude certain tests
-
-```shell
-AZTEC_VERSION=2.0.3 ./run-tests.sh --exclude-contract-service
-```
-
-### Available Options
-
-- `--exclude-contract-service`: Skip contract service tests (also skips testnet PXE)
-
-### Debugging Docker Issues
-
-If you encounter Docker networking issues, run with verbose mode:
-
-```shell
-AZTEC_VERSION=2.0.3 ./run-tests.sh
+pnpm test           # sandbox-free unit tests
+pnpm test:sandbox   # needs a running sandbox
 ```
 
 ### Run Individual Tests

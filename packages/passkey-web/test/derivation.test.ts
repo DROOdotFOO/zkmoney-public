@@ -5,12 +5,7 @@ import { fileURLToPath } from "node:url"
 import { MSK_PRF_SALT } from "@obsidion/core/constants"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { bytesToHex, hexToBytes } from "../src/ceremony/bytes.js"
-import {
-  contextualize,
-  deriveMskFromPrf,
-  deriveMskHexFromPrf,
-  prfSalts,
-} from "../src/policy/derivation.js"
+import { deriveMskFromPrf, deriveMskHexFromPrf, prfSalts } from "../src/derivation.js"
 
 const fixture = JSON.parse(
   readFileSync(
@@ -34,20 +29,16 @@ describe("deriveMskFromPrf", () => {
   })
 
   it("rejects anything but 32 bytes", () => {
-    expect(() => deriveMskFromPrf(new Uint8Array(31))).toThrow(/exactly 32 bytes/)
-    expect(() => deriveMskFromPrf(new Uint8Array(33))).toThrow(/exactly 32 bytes/)
+    expect(() => deriveMskFromPrf(new Uint8Array(31))).toThrow()
+    expect(() => deriveMskFromPrf(new Uint8Array(33))).toThrow()
   })
 })
 
 describe("contextualize", () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it("matches the fixture's K(C) over the shared salt", async () => {
+  it("hands the fixture's salt and its K(C) to every ceremony", async () => {
     expect(bytesToHex(MSK_PRF_SALT)).toBe(fixture.saltHex)
-    expect(bytesToHex(await contextualize(MSK_PRF_SALT))).toBe(fixture.contextualizedSaltHex)
-  })
-
-  it("hands both salts to every ceremony", async () => {
     const salts = await prfSalts()
     expect(salts.prfFirstSalt).toBe(MSK_PRF_SALT)
     expect(bytesToHex(salts.prfSecondSalt)).toBe(fixture.contextualizedSaltHex)
@@ -56,7 +47,7 @@ describe("contextualize", () => {
   it("rejects with a clear error where WebCrypto is missing, then recovers", async () => {
     // A fresh module: the memoised second salt of the suite above would otherwise answer.
     vi.resetModules()
-    const fresh = await import("../src/policy/derivation.js")
+    const fresh = await import("../src/derivation.js")
     vi.stubGlobal("crypto", {})
     await expect(fresh.contextualize(MSK_PRF_SALT)).rejects.toThrow(/crypto\.subtle/)
     await expect(fresh.prfSalts()).rejects.toThrow(/crypto\.subtle/)

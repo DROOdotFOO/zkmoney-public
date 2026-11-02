@@ -10,6 +10,7 @@ import { credentialIdHash, parseKeyMetadata } from "../../src/oxide/passkeyEnvel
 import {
   answeringKey,
   candidateCredentialIds,
+  installedCredentials,
   readPasskeyCredentialsByTag,
   type InstalledPasskey,
 } from "../../src/oxide/passkeyCredentialByTag"
@@ -318,6 +319,25 @@ describe("readPasskeyCredentialsByTag", () => {
       it("skips an unknown entry, which nothing can answer for", () => {
         const tiny = key(`0x${"07".repeat(8)}`)
         expect(candidateCredentialIds([installed(root), installed(tiny)])).toEqual([ROOT_ID])
+      })
+    })
+
+    describe("installedCredentials", () => {
+      it("marks only an id behind an envelope as a backup", () => {
+        const whole = metadataToCredentialId(backup.metadata)
+        const listed = installedCredentials([
+          installed(backupNamed),
+          installed(root),
+          installed(backup),
+          installed(key(`0x${"07".repeat(8)}`)),
+        ])
+        expect(listed.map(({ credentialId, backup }) => ({ credentialId, backup }))).toEqual([
+          { credentialId: BACKUP_ID, backup: true },
+          { credentialId: ROOT_ID, backup: false },
+          // An envelope entry with no appended id is a root whose raw id begins with 0x01.
+          { credentialId: whole, backup: false },
+        ])
+        expect(listed[0]!.key).toEqual(installed(backupNamed))
       })
     })
 

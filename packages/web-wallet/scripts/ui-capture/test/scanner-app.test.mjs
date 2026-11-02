@@ -104,7 +104,7 @@ async function connectGeometry(page) {
 test("actual app scanner transitions, payload routes, guards and dev module worker", { timeout: 360_000 }, async () => {
   const output = await mkdtemp(path.join(tmpdir(), "ult-785-scanner-app-"))
   const report = { evidence: "actual App, shell, Modal, Share, classifier and worker; local demo identity/services and controlled media; no device or deployed claims", cases: [], screenshots: [], workerRequests: [], sourceHashes: {} }
-  for (const file of ["src/App.tsx", "src/ui/AppShell.tsx", "src/ui/Modal.tsx", "src/ui/shell.css", "src/ui/PhoneIcon.tsx", "src/features/contacts/ContactsScreen.tsx", "src/features/scan/ScannerModal.tsx", "scripts/ui-capture/camera.mjs", "scripts/ui-capture/fixtures/scanner.ts", "src/features/contacts/ConnectReceiveScreen.tsx", "src/features/scan/useScanShare.ts", "src/features/scan/ScanNavigation.tsx", "src/features/scan/scanner.css", "src/features/scan/decodeQrImage.ts", "vite.config.ts"]) {
+  for (const file of ["src/App.tsx", "src/ui/AppShell/AppShell.tsx", "src/ui/Modal.tsx", "src/ui/shell.css", "src/ui/PhoneIcon.tsx", "src/features/contacts/ContactsScreen/ContactsScreen.tsx", "src/features/scan/ScannerModal.tsx", "scripts/ui-capture/camera.mjs", "scripts/ui-capture/fixtures/scanner.ts", "src/features/contacts/ConnectReceiveScreen.tsx", "src/features/scan/useScanShare.ts", "src/features/scan/ScanNavigation.tsx", "src/features/scan/scanner.css", "src/features/scan/decodeQrImage.ts", "vite.config.ts"]) {
     report.sourceHashes[file] = createHash("sha256").update(await readFile(path.join(walletDir, file))).digest("hex")
   }
   const { server, origin } = await startCaptureServer(Number(process.env.UI_CAPTURE_TEST_PORT ?? 5785))

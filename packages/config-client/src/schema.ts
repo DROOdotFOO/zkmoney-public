@@ -24,7 +24,6 @@ export const NETWORK_L1_CHAIN_IDS: Record<ProfileNetwork, number> = {
   mainnet: 1,
 }
 
-const nonEmpty = z.string().min(1)
 const l1Address = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "expected 20-byte 0x-hex L1 address")
 const field32 = z.string().regex(/^0x[0-9a-fA-F]{64}$/, "expected 32-byte 0x-hex value")
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/, "expected lowercase SHA-256 value")

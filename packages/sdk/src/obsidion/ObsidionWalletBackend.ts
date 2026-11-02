@@ -6,16 +6,20 @@ import {
 } from "@aztec-labs/accounts/schnorr"
 import { AccountManager, ContractInitializationStatus } from "@aztec-labs/aztec.js/wallet"
 import { NO_FROM } from "@aztec-labs/aztec.js/account"
-import { Account, BaseAccount, type Salt } from "@aztec-labs/aztec.js/account"
-import { Fr, Fq } from "@aztec-labs/aztec.js/fields"
+import type { Account, Salt } from "@aztec-labs/aztec.js/account"
+import { Fr, type Fq } from "@aztec-labs/aztec.js/fields"
 import {
   deriveMasterIncomingViewingSecretKey,
   deriveMasterMessageSigningSecretKey,
 } from "@aztec-labs/stdlib/keys"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
-import { ObsidionWallet, type ObsidionWalletOptions } from "./ObsidionWallet.js"
+import {
+  ObsidionWallet,
+  readNetworkId,
+  type CreateWalletOptions,
+  type ObsidionWalletOptions,
+} from "./ObsidionWallet.js"
 import type { AlphaAuthProvider } from "./alpha/auth/AlphaAuthProvider.js"
-import { TESTNET_TIMEOUT } from "../utils/constants.js"
 import { ObsidionFeeJuicePaymentMethod } from "../feePaymentMethod/obsidion_feepayment_method.js"
 import {
   createPXE,
@@ -24,7 +28,7 @@ import {
   type PXEConfig,
   type PXECreationOptions,
 } from "@aztec-labs/pxe/server"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
 import type { SendInteractionOptions, WaitOpts } from "@aztec-labs/aztec.js/contracts"
 import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
@@ -57,8 +61,8 @@ export class ObsidionWalletBackend extends ObsidionWallet {
    */
   private allowDirectFeeJuice = false
 
-  constructor(pxe: PXE, node: AztecNode, walletOpts?: ObsidionWalletOptions) {
-    super(pxe, node, walletOpts)
+  constructor(pxe: PXE, node: AztecNode, networkId: string, walletOpts?: ObsidionWalletOptions) {
+    super(pxe, node, networkId, walletOpts)
   }
 
   /**
@@ -85,21 +89,20 @@ export class ObsidionWalletBackend extends ObsidionWallet {
     node: AztecNode,
     overridePXEConfig?: Partial<PXEConfig>,
     options: PXECreationOptions = { loggers: {} },
-    walletOpts?: ObsidionWalletOptions,
+    walletOpts?: CreateWalletOptions,
   ): Promise<ObsidionWalletBackend> {
+    const networkId = await readNetworkId(node, walletOpts)
     const pxeConfig = Object.assign(getPXEConfig(), {
       proverEnabled: overridePXEConfig?.proverEnabled ?? false,
       autoSync: overridePXEConfig?.autoSync ?? false,
       ...overridePXEConfig,
     })
-    const l1Contracts = await node.getL1ContractAddresses()
-    const rollupAddress = l1Contracts.rollupAddress
     // Honor caller-provided dataDirectory (e.g. tests that want isolation);
     // default to the rollup-keyed path so prod restarts reuse the cache.
-    pxeConfig.dataDirectory = pxeConfig.dataDirectory ?? `pxe-${rollupAddress}`
+    pxeConfig.dataDirectory = pxeConfig.dataDirectory ?? `pxe-${networkId}`
 
     const pxe = await createPXE(node, pxeConfig, options)
-    return new ObsidionWalletBackend(pxe, node, walletOpts)
+    return new ObsidionWalletBackend(pxe, node, networkId, walletOpts)
   }
 
   /**

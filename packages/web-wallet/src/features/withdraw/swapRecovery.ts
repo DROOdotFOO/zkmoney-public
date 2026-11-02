@@ -10,8 +10,6 @@
 import { isAddress, type Address, type Hex } from "viem"
 import { decodePaylinkInline, L1SwapEscrowReader } from "@obsidion/sdk"
 import {
-  canRecoverSwap,
-  canSelfExecuteSwap,
   createOxideL1Reader,
   deriveSkyEscrowSalts,
   deriveSwapEscrowRecoverySalt,
@@ -38,19 +36,9 @@ import {
 } from "../deposit/sipaRecovery"
 import { getL1Clients } from "../deposit/l1Wallet"
 import { getSavingsMoveStore } from "../savings/savingsMoveStore"
-import { getWithdrawalStore, ownSwapRecoverer, type SwapRecoverer } from "./withdrawGateway"
+import { ownSwapRecoverer, type SwapRecoverer } from "./withdrawGateway"
+import { session } from "../../platform/session"
 
-/** Why a swap record offers an exit: `unswappable` can never fill, `stuck` still can. */
-export type SwapExitReason = "unswappable" | "stuck"
-
-/** Whether `record` offers a swap exit, and on which grounds. */
-export function swapExitReasonFor(
-  record: WithdrawalRecord,
-  now: number = Date.now(),
-): SwapExitReason | null {
-  if (canRecoverSwap(record)) return "unswappable"
-  return canSelfExecuteSwap(record, now) ? "stuck" : null
-}
 
 export interface SwapExitOptions {
   /** Recovery only: where the DAI goes. Defaults to the withdrawal's own recipient. */
@@ -112,7 +100,7 @@ export async function executeSwapWithdrawal(
     "Run your zk.money swap",
     opts,
   )
-  return await runSwapEscrowExecute({ record, channel, reader, store: getWithdrawalStore() })
+  return await runSwapEscrowExecute({ record, channel, reader, store: session().withdrawals })
 }
 
 /**
@@ -150,7 +138,7 @@ export async function recoverSwapWithdrawal(
     record,
     channel,
     reader,
-    store: getWithdrawalStore(),
+    store: session().withdrawals,
     recovery: { account, salt: deriveSwapEscrowRecoverySalt(secret, nonce) },
     signAccount,
     target,

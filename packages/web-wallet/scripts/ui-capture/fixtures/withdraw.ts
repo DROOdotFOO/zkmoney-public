@@ -2,8 +2,9 @@ import * as actual from "../../../src/features/withdraw/withdrawGateway"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { WithdrawalRecord } from "@obsidion/front-core"
 import { parseUnits, type Address } from "viem"
+import { session } from "../../../src/platform/session"
 import { fixtureState, inOperation, operation } from "./control"
-import { TX_HASH, SIPA } from "./data"
+import { ROLLUP, TX_HASH, SIPA } from "./data"
 export * from "../../../src/features/withdraw/withdrawGateway"
 let sequence = 0
 /** `extra.rawAmount` carries the burn's gross where it is not the typed amount — a paylink cash-out
@@ -16,11 +17,12 @@ export async function captureWithdrawal(
   signing = true,
   flow: "withdraw" | "paylink-claim-l1" = "withdraw",
 ) {
-  const store = actual.getWithdrawalStore()
+  const store = session().withdrawals
   const localId = `capture-withdraw-${++sequence}`
   const rawAmount = extra.rawAmount ?? parseUnits(amount, 18).toString()
   await store.create({
     localId,
+    networkId: ROLLUP,
     recipient,
     amount,
     tokenSymbol: "DAI",
@@ -39,15 +41,18 @@ export async function captureWithdrawal(
     async () => {
       try {
         await operation("withdraw", onStage, signing)
-        return await store.markMined(
-          localId,
-          TX_HASH,
-          4212,
+        const mined = await store.apply(localId, {
+          type: "mined",
+          l2TxHash: TX_HASH,
+          blockNumber: 4212,
           rawAmount,
-          WITHDRAW_RELAYER_TIP.toString(),
-        )
+          relayerTip: WITHDRAW_RELAYER_TIP.toString(),
+        })
+        if (!mined) throw new Error(`no withdrawal record ${localId}`)
+        return mined
       } catch (error) {
-        await store.patch(localId, { phase: "failed", error: String(error) })
+        const failed = { phase: "failed", error: String(error) } as const
+        await store.apply(localId, { type: "patch", fields: failed })
         throw error
       }
     },

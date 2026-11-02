@@ -5,8 +5,7 @@
  * admin paths. Same passive-eviction semantics and same `isExpired` formula
  * as the encrypted persistent variant (`PendingTxStore` in front-core):
  * records past the TTL ceiling are marked-not-deleted; `list()` and `get()`
- * filter them out; `listExpired()` exposes them to
- * `TxLifecycleService.expireAndTerminalize`.
+ * filter them out; `listExpired()` exposes them.
  */
 
 import type {

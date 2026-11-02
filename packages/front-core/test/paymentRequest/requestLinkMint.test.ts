@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest"
 import {
   buildRequestShareUrl,
   decodeRequestInline,
-  formatExpiryDuration,
   mintRequestLink,
+  randomCodeRequestId,
   RequestLinkMintError,
   type MintRequestLinkArgs,
   type PaymentRequest,
@@ -97,6 +97,14 @@ describe("mintRequestLink", () => {
     }
   })
 
+  it("unlists a Receive code minted without an amount, and nothing else", () => {
+    const code = (amountInput: string) =>
+      mintRequestLink(args({ amountInput, compact: true, requestId: randomCodeRequestId() })).row
+    expect(code("").unlisted).toBe(true)
+    expect(code("5").unlisted).toBeUndefined()
+    expect(mintRequestLink(args({ amountInput: "" })).row.unlisted).toBeUndefined()
+  })
+
   it("stores the human amount on the row", () => {
     expect(mintRequestLink(args({ amountInput: "1250" })).row.amount).toBe(1250)
   })
@@ -109,15 +117,6 @@ describe("mintRequestLink", () => {
     const minted = mintRequestLink(args({ noteInput: "   " }))
     expect(minted.note).toBeUndefined()
     expect(decodeRequestInline(minted.url.split("#")[1]).note).toBeUndefined()
-  })
-})
-
-describe("formatExpiryDuration", () => {
-  it("picks the coarsest fitting unit", () => {
-    expect(formatExpiryDuration(7 * 86_400_000)).toBe("7 days")
-    expect(formatExpiryDuration(86_400_000)).toBe("1 day")
-    expect(formatExpiryDuration(5 * 3_600_000)).toBe("5 hours")
-    expect(formatExpiryDuration(300_000)).toBe("5 mins")
   })
 })
 

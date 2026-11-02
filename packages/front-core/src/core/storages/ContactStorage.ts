@@ -1,6 +1,8 @@
 import { CONTACT_STORAGE_KEY } from "./storage-constants.js"
 import type { IStorageAdapter, StorageLock } from "./adapter.js"
-import { logger } from "src/utils/logger"
+import { logger } from "../../utils/logger"
+import type { ReadonlyStore } from "../../engine/store"
+import { legacyStore, type Sourced } from "../../engine/legacyStore"
 
 /**
  * Address format a `Contact.address` is stored in:
@@ -343,6 +345,11 @@ export class ContactStorage {
   /** Cross-context write mutex (web: navigator.locks). Absent = writes run directly. */
   private lock?: StorageLock
   private listeners = new Set<() => void>()
+  /** The entries, read again after every change. */
+  readonly rows: ReadonlyStore<Sourced<readonly Contact[]>> = legacyStore<readonly Contact[]>(
+    { read: () => this.getEntries(), subscribe: (listener) => this.onChange(listener) },
+    [],
+  )
 
   private constructor(storage: IStorageAdapter, lock?: StorageLock) {
     this.storage = storage

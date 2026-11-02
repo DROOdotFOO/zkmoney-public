@@ -7,20 +7,22 @@ import {
   estimateWithdrawalSpeedup,
   type SavingsMoveEta,
   type SavingsMoveTiming,
-  useAztecContext,
+  useResource,
 } from "@obsidion/front-core"
+import type { ObsidionWallet } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { loadArrivalGrid } from "../deposit/depositArrival"
 import { etaLabel } from "../withdraw/WithdrawalSpeedPicker"
 import { speedupEstimator } from "../withdraw/useFasterWithdrawal"
+import { useSession } from "../../platform/session"
 
 /** A burn that has landed: its release is estimated from where it sits in its epoch. */
 const LANDED = { expected: 0, earliest: 0, latest: 0 }
 
 let loading: Promise<SavingsMoveTiming> | undefined
 
-type SavingsNode = NonNullable<ReturnType<typeof useAztecContext>["obsidionWallet"]>["node"]
+type SavingsNode = ObsidionWallet["node"]
 
 async function loadTiming(node: SavingsNode | undefined): Promise<SavingsMoveTiming> {
   if (!node) throw new Error("Savings timing needs the node")
@@ -41,7 +43,7 @@ async function loadTiming(node: SavingsNode | undefined): Promise<SavingsMoveTim
 
 /** The timing every move's note shares; undefined while it loads or where a read failed. */
 export function useSavingsMoveTiming(): SavingsMoveTiming | undefined {
-  const node = useAztecContext().obsidionWallet?.node
+  const node = useResource(useSession().wallet)?.node
   const [timing, setTiming] = useState<SavingsMoveTiming>()
   useEffect(() => {
     if (!node) return
@@ -59,16 +61,6 @@ export function useSavingsMoveTiming(): SavingsMoveTiming | undefined {
     }
   }, [node])
   return timing
-}
-
-/** The clock a countdown reads, ticking every `tickMs`. */
-export function useNowMs(tickMs = 30_000): number {
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), tickMs)
-    return () => clearInterval(timer)
-  }, [tickMs])
-  return now
 }
 
 /** "About 12 min left" while a leg counts down, "Usually about 25 min" for a typical duration. */

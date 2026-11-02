@@ -25,10 +25,11 @@ import { WAITING_FOR_UNLOCK, WAIT_MS, freshPayloads, payloadDeadlineMs } from ".
 /** The broadcast for a record whose session payload is gone: re-derived and re-signed. */
 async function rebuild(
   config: WebWalletConfig,
+  networkId: string,
   record: PendingRegistrationRecord,
   keys: NonNullable<Awaited<ReturnType<typeof unlockedSessionKeys>>>,
 ): Promise<RegistrationBroadcastPayload> {
-  const signDeps = await buildRetrySignDeps(record.tag, keys, config)
+  const signDeps = await buildRetrySignDeps(record.tag, keys, config, networkId)
   const { accountService } = signDeps
   const result = await rebuildRegistrationBroadcast(await buildWebDetectionDeps(config), record, {
     ...signDeps,
@@ -72,7 +73,10 @@ export async function registrationBroadcastPayload(
   // A cached payload whose claim or signed terms have lapsed would be refused at the sweep.
   const cached = freshPayloads.get(record.sipaAddress.toLowerCase())
   const fresh = cached && payloadDeadlineMs(cached) > Date.now() + WAIT_MS ? cached : undefined
-  return { payload: fresh ?? (await rebuild(config, record, keys)), account: keys.account }
+  return {
+    payload: fresh ?? (await rebuild(config, wallet.networkId, record, keys)),
+    account: keys.account,
+  }
 }
 
 export function registrationExecutor(

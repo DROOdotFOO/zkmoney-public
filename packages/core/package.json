@@ -6,21 +6,31 @@
   "type": "module",
   "exports": {
     "./types": {
+      "source": "./src/types/index.ts",
       "types": "./dist/types/index.d.ts",
       "import": "./dist/types/index.js",
       "require": "./dist/types/index.js"
     },
     "./constants": {
+      "source": "./src/constants/index.ts",
       "types": "./dist/constants/index.d.ts",
       "import": "./dist/constants/index.js",
       "require": "./dist/constants/index.js"
     },
     "./oxide": {
+      "source": "./src/oxide/index.ts",
       "types": "./dist/oxide/index.d.ts",
       "import": "./dist/oxide/index.js",
       "require": "./dist/oxide/index.js"
     },
+    "./errors": {
+      "source": "./src/errors/index.ts",
+      "types": "./dist/errors/index.d.ts",
+      "import": "./dist/errors/index.js",
+      "require": "./dist/errors/index.js"
+    },
     "./text": {
+      "source": "./src/text/index.ts",
       "types": "./dist/text/index.d.ts",
       "import": "./dist/text/index.js",
       "require": "./dist/text/index.js"
@@ -29,13 +39,15 @@
   "scripts": {
     "build": "rm -rf dist && tsc -b",
     "clean": "rm -rf ./dist .tsbuildinfo",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && eslint",
     "test": "node --test"
   },
   "devDependencies": {
+    "@obsidion/lint-config": "workspace:*",
     "@aztec-labs/aztec.js": "v6.0.0",
     "@aztec-labs/stdlib": "v6.0.0",
     "@types/node": "^18.19.83",
+    "eslint": "^9.36.0",
     "typescript": "5.7.3"
   }
 }

@@ -40,6 +40,14 @@ export async function withRefundInFlight<T>(secret: string, run: () => Promise<T
   }
 }
 
+let snapshot: { version: number; secrets: ReadonlySet<string> } | undefined
+
+/** The secrets whose refund runs now; the same set until one starts or ends. */
+export function refundsInFlight(): ReadonlySet<string> {
+  if (snapshot?.version !== version) snapshot = { version, secrets: new Set(inFlight.keys()) }
+  return snapshot.secrets
+}
+
 /** Bumps on every change; a `useSyncExternalStore` snapshot. */
 export function refundInFlightVersion(): number {
   return version

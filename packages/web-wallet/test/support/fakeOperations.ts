@@ -121,17 +121,34 @@ export function fakeOperationsModule() {
   const use = () => useSyncExternalStore(records.subscribe, records.get)
   const tabLineOf = (record: FakeRecord | null, on: boolean) =>
     record?.state === "sent" ? "safe" : record?.state === "local" && on ? "keep" : undefined
-  const ended = () => records.get().filter((r) => r.endedAt !== undefined && !r.dismissedAt)
+  const ended = () => records.get().filter((r) => r.endedAt !== undefined)
   const busyLabel = () => {
     const current = currentOperation(inProgress())
     return current ? flowCopy(current.flow).busy : "Another transaction in progress…"
   }
+  /** A store over the records, keeping its reference until they change. */
+  const view = <T>(compute: () => T) => {
+    let input: FakeRecord[] | undefined
+    let output!: T
+    return {
+      get: () => {
+        if (records.get() !== input) {
+          input = records.get()
+          output = compute()
+        }
+        return output
+      },
+      subscribe: records.subscribe,
+    }
+  }
   let nextId = 0
   return {
+    runningOperations: view(inProgress),
+    endedOperations: view(ended),
+    operationsLoaded: { get: () => true, subscribe: () => () => {} },
     getOperationStore: () => store,
     getOperationsInProgress: inProgress,
     useOperationsInProgress: () => (use(), inProgress()),
-    useEndedOperations: () => (use(), { ended: ended(), loaded: true }),
     currentOperation,
     tabBoundOperation,
     useCurrentOperation: () => (use(), currentOperation(inProgress())),

@@ -16,7 +16,7 @@ import { formatUnits } from "viem"
 import { GradientText, Icon, PrimaryGradientButton, type StatusBadgeStyle } from "@obsidion/web-ds"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 import { getConfig } from "../../config/env"
-import { migrationAmounts } from "../../features/migration/migrationFee"
+import { migrationAmounts } from "@obsidion/front-core"
 import { TabLine } from "../../features/operations/TabLine"
 import { waitingNote } from "../../features/withdraw/waitingNote"
 import {

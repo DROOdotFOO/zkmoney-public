@@ -12,13 +12,13 @@ import {
 import {
   MetadataMigrationService,
   type MetadataMigrationServiceOptions,
-} from "../../../sdk/src/services/MetadataMigrationService.js"
+} from "../../../sdk/src/services/migration/MetadataMigrationService.js"
 import {
   FrozenMetadataMigrationSource,
   type FrozenMigrationRuntime,
   type FrozenRefundCandidate,
-} from "../../../sdk/src/services/FrozenMetadataMigrationSource.js"
-import { SipaSelfResolver } from "../../../sdk/src/services/sipaSelfResolve.js"
+} from "../../../sdk/src/services/migration/FrozenMetadataMigrationSource.js"
+import { SipaSelfResolver } from "../../../sdk/src/services/sipa/sipaSelfResolve.js"
 import { selfSipaResolverKeys } from "../../src/oxide/oxideAccountKeys"
 import { MetadataMigrationController } from "../../src/core/migration/MetadataMigrationController"
 import { WITHDRAW_RELAYER_TIP as TIP } from "@obsidion/core/constants"
@@ -35,18 +35,18 @@ const chain = vi.hoisted(() => ({
   subscribe: vi.fn(async (args) => ({ calls: args.innerCalls, gate: args.gate })),
   sponsor: vi.fn(async (args) => ({ calls: args.innerCalls })),
 }))
-vi.mock("../../../sdk/src/feePaymentMethod/claimSponsoredCall.js", () => ({
+vi.mock("../../../sdk/src/feePaymentMethod/claimFpc/claimSponsoredCall.js", () => ({
   buildClaimSubscribePayload: chain.subscribe,
   buildClaimSponsorPayload: chain.sponsor,
 }))
-vi.mock("../../../sdk/src/feePaymentMethod/claimFpcBatchGas.js", () => ({
+vi.mock("../../../sdk/src/feePaymentMethod/claimFpc/gas/claimFpcBatchGas.js", () => ({
   claimFpcSponsoredFee: () => ({}),
 }))
-vi.mock("../../../sdk/src/services/claimSponsor.js", () => ({
+vi.mock("../../../sdk/src/services/claimFpc/claimSponsor.js", () => ({
   claimFpcSubscriptionUses: async () => (chain.recurring ? 10 : 0),
   hasClaimFpcSubscription: async () => chain.recurring,
 }))
-vi.mock("../../../sdk/src/services/registrationMessage.js", () => ({
+vi.mock("../../../sdk/src/services/name/registrationMessage.js", () => ({
   registrationInbox: () => ({}),
   findRegistrationMessage: async () =>
     chain.attestation ? { status: "ready", leafIndex: 3n } : undefined,

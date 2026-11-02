@@ -1,8 +1,10 @@
 import { useState } from "react"
 import { isAddress, type Address } from "viem"
 import { GradientText, PrimaryGradientButton, TextField } from "@obsidion/web-ds"
+import { useResource } from "@obsidion/front-core"
+import { useSession } from "../../platform/session"
 import { Modal } from "../../ui/Modal"
-import { DepositExitModal } from "./DepositExitModal"
+import { DepositExitModal } from "./DepositExitModal/DepositExitModal"
 import { readStrandedToken } from "./sipaRecovery"
 
 /**
@@ -15,6 +17,7 @@ export function StrandedRecoveryModal({ onClose }: { onClose: () => void }) {
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState<string>()
   const [found, setFound] = useState<Awaited<ReturnType<typeof readStrandedToken>>>()
+  const networkId = useResource(useSession().wallet)?.networkId
 
   if (found) {
     return (
@@ -28,12 +31,13 @@ export function StrandedRecoveryModal({ onClose }: { onClose: () => void }) {
     )
   }
 
-  const valid = isAddress(sipa) && isAddress(token)
+  const valid = isAddress(sipa) && isAddress(token) && !!networkId
   const check = async () => {
+    if (!networkId) return
     setChecking(true)
     setError(undefined)
     try {
-      setFound(await readStrandedToken(sipa as Address, token as Address))
+      setFound(await readStrandedToken(sipa as Address, token as Address, networkId))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {

@@ -1,90 +1,90 @@
 /**
- * Whether a pasted address is an ether.fi Cash deposit address. ether.fi deploys each account's
- * deposit contract on Ethereum mainnet through its top-up factory when the account is created, and
- * the factory keeps the set of what it deployed, so the answer is one read, before the account has
- * ever received funds. The address is the same on every chain, so the mainnet factory answers for
- * every network this wallet runs on. A refusal blocks the sheet: funds sent elsewhere never reach
- * the Cash balance.
+ * Whether a pasted address is an ether.fi Cash deposit address. ether.fi uses one factory address
+ * on every chain: on Optimism, where Cash accounts live, it creates each account's safe; on
+ * Ethereum mainnet it deploys the account's top-up contract at the same address. Either factory
+ * knowing the address confirms it, so an account whose mainnet top-up contract is not deployed yet
+ * still passes. A refusal from both blocks the sheet: funds sent elsewhere never reach the Cash
+ * balance.
  */
 import { useEffect, useState } from "react"
 import { createPublicClient, http, parseAbi, type Address, type PublicClient } from "viem"
-import { mainnet } from "viem/chains"
+import { mainnet, optimism } from "viem/chains"
 import { Network } from "@obsidion/core/constants"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 
-/** ether.fi's TopUpSourceFactory on Ethereum mainnet, from cash-v3's `deployments/mainnet/1/deployments.json`. */
-export const ETHERFI_TOPUP_FACTORY: Address = "0xF4e147Db314947fC1275a8CbB6Cde48c510cd8CF"
+/** ether.fi's factory: TopUpSourceFactory on Ethereum mainnet, EtherFiSafeFactory on Optimism. */
+export const ETHERFI_FACTORY: Address = "0xF4e147Db314947fC1275a8CbB6Cde48c510cd8CF"
 
-export const ETHERFI_TOPUP_FACTORY_ABI = parseAbi([
+export const ETHERFI_FACTORY_ABI = parseAbi([
   "function isTopUpContract(address topUpContract) view returns (bool)",
+  "function isEtherFiSafe(address account) view returns (bool)",
 ])
 
 export type EtherfiAddressVerdict =
   | { kind: "idle" } // no parseable address
   | { kind: "checking" }
-  | { kind: "confirmed" } // the factory deployed it
-  | { kind: "rejected" } // the factory did not
-  | { kind: "unknown" } // the read did not answer
+  | { kind: "confirmed" } // the mainnet factory deployed its top-up contract
+  | { kind: "account" } // the Optimism factory created its safe; no mainnet deposit yet
+  | { kind: "rejected" } // neither factory knows it
+  | { kind: "unknown" } // a read did not answer, and none confirmed it
+
+type Reader = Pick<PublicClient, "readContract">
 
 export interface EtherfiCheckDeps {
-  client: Pick<PublicClient, "readContract">
+  mainnet: Reader
+  optimism: Reader
 }
 
 const DEBOUNCE_MS = 300
-
-export const ETHERFI_VERDICT_COPY: Record<
-  Exclude<EtherfiAddressVerdict["kind"], "idle" | "checking">,
-  { title: string; body: string; tone: "success" | "warning" | "error" }
-> = {
-  confirmed: {
-    title: "ether.fi Cash address confirmed",
-    body: "ether.fi's deposit factory on Ethereum deployed this address.",
-    tone: "success",
-  },
-  rejected: {
-    title: "This isn't an ether.fi Cash address",
-    body:
-      "ether.fi's deposit factory on Ethereum has no record of it. Funds sent here would not reach " +
-      "a Cash balance. Copy the address from ether.fi's share-address page.",
-    tone: "error",
-  },
-  unknown: {
-    title: "Couldn't confirm this is an ether.fi address",
-    body: "The check did not finish. Make sure the address came from ether.fi before you continue.",
-    tone: "warning",
-  },
-}
 
 export async function checkEtherfiAddress(
   address: Address,
   deps: EtherfiCheckDeps,
 ): Promise<EtherfiAddressVerdict> {
-  const deployed = await deps.client.readContract({
-    address: ETHERFI_TOPUP_FACTORY,
-    abi: ETHERFI_TOPUP_FACTORY_ABI,
-    functionName: "isTopUpContract",
-    args: [address],
-  })
-  return { kind: deployed ? "confirmed" : "rejected" }
+  const ask = (client: Reader, functionName: "isTopUpContract" | "isEtherFiSafe") =>
+    client.readContract({
+      address: ETHERFI_FACTORY,
+      abi: ETHERFI_FACTORY_ABI,
+      functionName,
+      args: [address],
+    })
+  const [topUp, safe] = await Promise.allSettled([
+    ask(deps.mainnet, "isTopUpContract"),
+    ask(deps.optimism, "isEtherFiSafe"),
+  ])
+  if (topUp.status === "fulfilled" && topUp.value) return { kind: "confirmed" }
+  if (safe.status === "fulfilled" && safe.value) return { kind: "account" }
+  if (topUp.status === "rejected" || safe.status === "rejected") return { kind: "unknown" }
+  return { kind: "rejected" }
 }
 
-/** Where a build whose L1 is not mainnet asks; serves browsers from any origin. */
+/** Open RPCs that serve browsers from any origin, for builds that name none of their own. */
 export const PUBLIC_MAINNET_RPC_URL = "https://ethereum-rpc.publicnode.com"
+export const PUBLIC_OPTIMISM_RPC_URL = "https://optimism-rpc.publicnode.com"
 
 /**
  * The mainnet client to ask: the wallet's own L1 client on mainnet, else a mainnet RPC of its own,
  * since a testnet or sandbox build's L1 client points at another chain.
  * `VITE_ETHEREUM_MAINNET_RPC_URL` names that RPC; the public one stands in otherwise.
  */
-export function etherfiFactoryClient(): Pick<PublicClient, "readContract"> {
+export function etherfiFactoryClient(): Reader {
   const config = getConfig()
   if (config.network === Network.MAINNET) return l1PublicClient(config)
   const url = import.meta.env.VITE_ETHEREUM_MAINNET_RPC_URL || PUBLIC_MAINNET_RPC_URL
   return createPublicClient({ chain: mainnet, transport: http(url, { timeout: 15_000 }) })
 }
 
-const liveDeps = (): EtherfiCheckDeps => ({ client: etherfiFactoryClient() })
+/** `VITE_OPTIMISM_RPC_URL` names the Optimism RPC; the public one stands in otherwise. */
+export function etherfiOptimismClient(): Reader {
+  const url = import.meta.env.VITE_OPTIMISM_RPC_URL || PUBLIC_OPTIMISM_RPC_URL
+  return createPublicClient({ chain: optimism, transport: http(url, { timeout: 15_000 }) })
+}
+
+const liveDeps = (): EtherfiCheckDeps => ({
+  mainnet: etherfiFactoryClient(),
+  optimism: etherfiOptimismClient(),
+})
 
 /**
  * The verdict for the address in the field: `idle` while there is none, `checking` through the

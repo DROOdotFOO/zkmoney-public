@@ -13,6 +13,7 @@ import {
   fundRotation,
   FundingCheckpointError,
   moveRotation,
+  noteRecovery,
   PUBLISH_BOUND,
   PUBLISH_INTERVAL_MS,
   publishDue,
@@ -33,6 +34,8 @@ import {
 } from "../../../src/core/rotation/backupRotationFlow"
 import {
   BackupRotationStore,
+  fundingLocalId,
+  moveDeclined,
   moveProgress,
   persistedRotation,
   type BackupPublish,
@@ -73,6 +76,7 @@ interface World {
   rows: Map<string, FundingRow>
   balance: bigint
   sweep?: SweepSeen
+  recovery?: `0x${string}`
   final: boolean
   releaseFinal: boolean
   shape: SpendShape
@@ -110,6 +114,7 @@ function harness(over: Partial<World> = {}) {
       isFinal: vi.fn(async () => world.final),
       sipaBalance: vi.fn(async () => world.balance),
       sweep: vi.fn(async () => world.sweep),
+      recovery: vi.fn(async () => world.recovery),
       releaseFinal: vi.fn(async () => world.releaseFinal),
     },
     node: {
@@ -144,6 +149,9 @@ function harness(over: Partial<World> = {}) {
         world.receipts.set(hash, receipt(TxStatus.PENDING))
         await onTxHash(hash, { expiresAtMs: 5000 })
       }),
+      declined: vi.fn(
+        (err: unknown) => err instanceof DOMException && err.name === "NotAllowedError",
+      ),
     },
   }
   return { deps, world, store, storage }
@@ -288,7 +296,7 @@ describe("the happy path", () => {
 
     const first = await moveRotation(deps, rerooted)
     expect(first.wait).toBe("chunk")
-    expect(deps.move.send).toHaveBeenCalledWith("tok", 2n * DAI, expect.any(Function))
+    expect(deps.move.send).toHaveBeenCalledWith("tok", 2n * DAI, expect.any(Function), undefined)
     expect(first.record.move?.runs[0]).toMatchObject({ m: 2, depositBound: false })
     expect(first.record.move?.runs[0]?.chunks[0]).toMatchObject({
       state: "submitted",
@@ -331,8 +339,87 @@ describe("the happy path", () => {
     const swept = await resumeRotation(deps, (await store.get(OWNER))!)
     expect(swept.record.phase).toBe("rerooted")
     expect(deps.reroot).toHaveBeenCalledTimes(1)
-    const moving = await resumeRotation(deps, swept.record)
+    const asking = await resumeRotation(deps, swept.record)
+    expect(asking.wait).toBe("approval")
+    expect(deps.move.send).not.toHaveBeenCalled()
+    const moving = await resumeRotation(deps, asking.record, { prompt: true })
     expect(moving.wait).toBe("chunk")
+    expect(deps.move.send).toHaveBeenCalledTimes(1)
+  })
+
+  it("stops before a chunk's send once the screen the tap came from has closed", async () => {
+    const { deps, store } = harness()
+    const send = deps.move.send as ReturnType<typeof vi.fn>
+    const closed = new AbortController()
+    closed.abort()
+    await store.put(signedRecord("rerooted"))
+    const approved = await resumeRotation(deps, (await store.get(OWNER))!, {
+      prompt: true,
+      signal: closed.signal,
+    })
+    expect(approved.wait).toBe("approval")
+    expect(send).not.toHaveBeenCalled()
+
+    send.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
+    const declined = await resumeRotation(deps, approved.record, { prompt: true })
+    expect(declined.wait).toBe("declined")
+    const retried = await retryMove(deps, declined.record, { signal: closed.signal })
+    expect(retried.wait).toBe("approval")
+    expect(moveDeclined(retried.record)).toBe(false)
+    expect(retried.record.move?.runs[0]?.chunks.map((c) => c.state)).toEqual(["planned", "planned"])
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it("puts a chunk back to wait for a tap when its screen closes before the prompt opens", async () => {
+    const { deps, store } = harness()
+    const send = deps.move.send as ReturnType<typeof vi.fn>
+    const planned = ["planned", "planned"]
+    // The screen closes while the send prepares; the key then refuses to ask.
+    const open = new AbortController()
+    send.mockImplementationOnce(async (_t, _a, _h, signal?: AbortSignal) => {
+      open.abort()
+      signal?.throwIfAborted()
+    })
+    await store.put(signedRecord("rerooted"))
+    const closed = await resumeRotation(deps, (await store.get(OWNER))!, {
+      prompt: true,
+      signal: open.signal,
+    })
+    expect(send.mock.calls[0]![3]).toBe(open.signal)
+    expect(closed.wait).toBe("approval")
+    expect(moveDeclined(closed.record)).toBe(false)
+    expect(closed.record.move?.runs[0]?.chunks.map((c) => c.state)).toEqual(planned)
+
+    // Any other failure still throws, closed screen or not.
+    const later = new AbortController()
+    send.mockImplementationOnce(async () => {
+      later.abort()
+      throw new Error("node down")
+    })
+    await expect(
+      resumeRotation(deps, closed.record, { prompt: true, signal: later.signal }),
+    ).rejects.toThrow("node down")
+
+    const sent = await resumeRotation(deps, (await store.get(OWNER))!, { prompt: true })
+    expect(sent.wait).toBe("chunk")
+    expect(send).toHaveBeenCalledTimes(3)
+  })
+
+  it("a resume that lifts a route park stops before the move's send unless it may prompt", async () => {
+    const { deps, store } = harness()
+    await store.put(
+      signedRecord("attention", {
+        attention: "route",
+        suspended: "rerooted",
+        sweep: { index: "3", blockHash: word(0x60), credited: "1400" },
+      }),
+    )
+    const asking = await resumeRotation(deps, (await store.get(OWNER))!)
+    expect(asking).toMatchObject({ wait: "approval", record: { phase: "rerooted" } })
+    expect(deps.move.send).not.toHaveBeenCalled()
+    expect(asking.record.move?.runs[0]?.chunks.map((c) => c.state)).toEqual(["planned", "planned"])
+    const sent = await resumeRotation(deps, asking.record, { prompt: true })
+    expect(sent.wait).toBe("chunk")
     expect(deps.move.send).toHaveBeenCalledTimes(1)
   })
 })
@@ -1497,6 +1584,184 @@ describe("the watch", () => {
   })
 })
 
+describe("recovery", () => {
+  const RECOVERY = word(0xaa)
+  /** A stranded attempt over a funding the portal released to its deposit address. */
+  const stranded = async (over: Partial<World> = {}, record = {}) => {
+    const made = harness({ balance: 1400n, ...over })
+    made.world.rows.set(fundingLocalId("attempt-1"), {
+      phase: "done",
+      l2TxHash: word(30),
+      withdrawalId: word(0x77),
+      startTime: 5,
+      recipient: SIPA,
+    })
+    await made.store.put(
+      signedRecord("attention", {
+        attention: "stranded",
+        suspended: "funded",
+        fundings: [funding({ outcome: "mined" })],
+        publish: { count: PUBLISH_BOUND, history: [] },
+        ...record,
+      }),
+    )
+    return made
+  }
+
+  it("ends a stranded attempt at recovered once its recovery is final, and a reload reads it", async () => {
+    const { deps, store, storage } = await stranded()
+    const parked = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+    expect(parked).toMatchObject({ phase: "attention", attention: "stranded" })
+    const noted = await noteRecovery(deps, parked, RECOVERY)
+    expect(noted).toMatchObject({ phase: "attention", recovery: { txHash: RECOVERY } })
+    balances(deps, 0n, 1400n)
+    const waiting = (await resumeRotation(deps, noted)).record
+    expect(waiting).toMatchObject({ phase: "attention", attention: "stranded" })
+    balances(deps, 0n, 0n)
+    const ended = (await resumeRotation(deps, waiting)).record
+    expect(ended).toMatchObject({
+      phase: "recovered",
+      attention: undefined,
+      suspended: undefined,
+      recovery: { txHash: RECOVERY },
+      fundings: [{ outcome: "swept" }],
+    })
+    expect(ended.rotation?.sharedSecretSalt).toBeUndefined()
+    expect(ended.rotation?.signature).toBeUndefined()
+    expect(ended.backup.envelopeHex).toBeUndefined()
+    const reloaded = await new BackupRotationStore(storage).get(OWNER)
+    expect(reloaded).toEqual(ended)
+    expect((await resumeRotation(deps, reloaded!)).record).toEqual(ended)
+    expect(deps.fund).not.toHaveBeenCalled()
+  })
+
+  it("reads a recovery it did not see confirm from the chain", async () => {
+    const { deps, store, world } = await stranded({ balance: 0n, recovery: RECOVERY })
+    const ended = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+    expect(ended).toMatchObject({ phase: "recovered", recovery: { txHash: RECOVERY } })
+    expect(deps.l1.recovery).toHaveBeenCalledWith(SIPA, 50)
+    world.recovery = undefined
+    await store.put(
+      signedRecord("attention", {
+        attention: "stranded",
+        suspended: "funded",
+        fundings: [funding({ outcome: "swept" })],
+      }),
+    )
+    const released = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+    expect(released.phase).toBe("published")
+  })
+
+  it("lets a sweep that lands first win over the recovery", async () => {
+    const { deps, store, world } = await stranded({}, { recovery: { txHash: RECOVERY } })
+    world.sweep = { index: "3", blockNumber: 60, blockHash: word(0x60), credited: 1400n }
+    balances(deps, 0n, 0n)
+    const swept = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+    expect(swept).toMatchObject({ phase: "swept", attention: undefined, recovery: undefined })
+    expect(deps.verify).toHaveBeenCalled()
+  })
+
+  it("installs a change that ran anyway once its money is gone, instead of ending it at recovered", async () => {
+    const { deps, store } = await stranded({ balance: 0n }, { recovery: { txHash: RECOVERY } })
+    ;(deps.fundability as ReturnType<typeof vi.fn>).mockResolvedValue("applied")
+    const record = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+    expect(record).toMatchObject({ phase: "rerooted", recovery: undefined })
+  })
+
+  it("ends a damaged record whose money was recovered, without judging it again", async () => {
+    const { deps, store } = await stranded({}, { attention: "corrupt" })
+    ;(deps.verify as ReturnType<typeof vi.fn>).mockResolvedValue(CORRUPT)
+    const parked = (await store.get(OWNER))!
+    expect(cancellable(parked)).toBe(false)
+    const noted = await noteRecovery(deps, parked, RECOVERY)
+    balances(deps, 0n, 1400n)
+    expect(await resumeRotation(deps, noted)).toMatchObject({
+      record: { phase: "attention", attention: "corrupt" },
+      wait: "recovery",
+    })
+    balances(deps, 0n, 0n)
+    const ended = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+    expect(ended).toMatchObject({ phase: "recovered", recovery: { txHash: RECOVERY } })
+    expect(deps.verify).toHaveBeenCalledTimes(0)
+  })
+
+  it("ends a damaged record whose recovery confirmed after the tab closed, re-checking until it is final", async () => {
+    const { deps, store, world } = await stranded({}, { attention: "corrupt" })
+    const parked = await resumeRotation(deps, (await store.get(OWNER))!)
+    expect(parked.record).toMatchObject({ phase: "attention", attention: "corrupt" })
+    expect(parked.wait).toBeUndefined()
+    world.recovery = RECOVERY
+    balances(deps, 0n, 1400n)
+    expect(await resumeRotation(deps, (await store.get(OWNER))!)).toMatchObject({
+      record: { phase: "attention", attention: "corrupt" },
+      wait: "recovery",
+    })
+    balances(deps, 0n, 0n)
+    const ended = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+    expect(ended).toMatchObject({ phase: "recovered", recovery: { txHash: RECOVERY } })
+    expect(deps.verify).not.toHaveBeenCalled()
+  })
+
+  it("notes a recovery only on an attempt parked over its money", async () => {
+    const { deps, store } = harness()
+    await store.put(signedRecord("funded", { fundings: [funding()] }))
+    await expect(noteRecovery(deps, (await store.get(OWNER))!, RECOVERY)).rejects.toThrow(
+      "moved on",
+    )
+    await store.put(signedRecord("attention", { attention: "corrupt", suspended: "signed" }))
+    await expect(noteRecovery(deps, (await store.get(OWNER))!, RECOVERY)).rejects.toThrow(
+      "moved on",
+    )
+  })
+
+  it("returns a finished attempt to done once a funding that landed after its sweep is recovered", async () => {
+    const { deps, store } = harness({ balance: 1400n })
+    const sweep = { index: "3", blockHash: word(0x60), credited: "1400" }
+    await store.put(
+      finish(
+        signedRecord("attention", {
+          attention: "stranded",
+          suspended: "done",
+          sweep,
+          fundings: [funding({ outcome: "swept" })],
+        }),
+      ),
+    )
+    const parked = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+    expect(parked).toMatchObject({ phase: "attention", suspended: "done" })
+    expect(parked.rotation?.sharedSecretSalt).toBe(storedRotation().sharedSecretSalt)
+    const noted = await noteRecovery(deps, parked, RECOVERY)
+    balances(deps, 0n, 0n)
+    const done = (await resumeRotation(deps, noted)).record
+    expect(done).toMatchObject({ phase: "done", sweep, recovery: { txHash: RECOVERY } })
+    expect(done.rotation?.sharedSecretSalt).toBeUndefined()
+  })
+
+  it("parks a recovered attempt again over money that lands later, until that is recovered too", async () => {
+    const { deps, store } = harness({ balance: 5n })
+    // As `endRecovered` leaves it: nothing could land, so the salt left too.
+    const stripped = finish(
+      signedRecord("recovered", { recovery: { txHash: RECOVERY }, fundings: [] }),
+    )
+    await store.put({
+      ...stripped,
+      rotation: { ...stripped.rotation!, sharedSecretSalt: undefined },
+    })
+    const parked = (await resumeRotation(deps, (await store.get(OWNER))!)).record
+    expect(parked).toMatchObject({
+      phase: "attention",
+      attention: "stranded",
+      suspended: "recovered",
+      recovery: undefined,
+    })
+    const again = word(0xab)
+    const noted = await noteRecovery(deps, parked, again)
+    balances(deps, 0n, 0n)
+    const ended = (await resumeRotation(deps, noted)).record
+    expect(ended).toMatchObject({ phase: "recovered", recovery: { txHash: again } })
+  })
+})
+
 describe("the re-root", () => {
   it("keeps each checkpoint as it is written, so a failed re-root resumes past it", async () => {
     const { deps, store } = harness()
@@ -1772,6 +2037,48 @@ describe("the move", () => {
     expect(deps.move.send).toHaveBeenCalledTimes(2)
   })
 
+  it("waits for the user after a declined prompt, sending nothing until they try again", async () => {
+    const { deps, store } = harness()
+    const send = deps.move.send as ReturnType<typeof vi.fn>
+    send.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
+    await store.put(signedRecord("rerooted"))
+    const declined = await moveRotation(deps, (await store.get(OWNER))!)
+    expect(declined.wait).toBe("declined")
+    expect(moveDeclined(declined.record)).toBe(true)
+    expect(declined.record.move?.runs[0]?.chunks[0]).toEqual({
+      token: "tok",
+      amount: expect.any(String),
+      state: "planned",
+    })
+    const resumed = await resumeRotation(deps, declined.record)
+    expect(resumed.wait).toBe("declined")
+    expect(moveDeclined(resumed.record)).toBe(true)
+    expect(send).toHaveBeenCalledTimes(1)
+    const retried = await retryMove(deps, resumed.record)
+    expect(retried.wait).toBe("chunk")
+    expect(moveDeclined(retried.record)).toBe(false)
+    expect(retried.record.move?.runs[0]?.chunks[0]).toMatchObject({ state: "submitted" })
+    expect(send).toHaveBeenCalledTimes(2)
+    await expect(retryMove(deps, retried.record)).rejects.toThrow(RotationFlowError)
+  })
+
+  it("drops a decline once a re-cut leaves nothing to send", async () => {
+    const { deps, store, world } = harness()
+    await store.put(signedRecord("rerooted"))
+    const first = await moveRotation(deps, (await store.get(OWNER))!)
+    world.receipts.set(word(0x101), receipt(TxStatus.PROPOSED))
+    ;(deps.move.send as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new DOMException("closed", "NotAllowedError"),
+    )
+    const declined = await moveRotation(deps, first.record)
+    expect(moveDeclined(declined.record)).toBe(true)
+    world.shape = { notes: [], depositTotal: 0n, balance: 0n }
+    const recut = await moveRotation(deps, declined.record)
+    expect(recut).toMatchObject({ wait: "chunk", record: { phase: "moved" } })
+    expect(recut.record.move?.runs[0]?.declined).toBeUndefined()
+    expect(moveDeclined(recut.record)).toBe(false)
+  })
+
   it("waits on an included chunk that reverted, moving nothing, and re-cuts it once checkpointed", async () => {
     const { deps, store, world } = harness()
     await store.put(signedRecord("rerooted"))
@@ -1832,7 +2139,7 @@ describe("the move", () => {
     expect(first.record.move?.runs[0]?.chunks.map((c) => c.token)).toEqual(["tok", "tok2"])
     world.receipts.set(word(0x101), receipt(TxStatus.FINALIZED))
     const second = await moveRotation(deps, first.record)
-    expect(deps.move.send).toHaveBeenLastCalledWith("tok2", DAI, expect.any(Function))
+    expect(deps.move.send).toHaveBeenLastCalledWith("tok2", DAI, expect.any(Function), undefined)
     world.receipts.delete(word(0x102))
     world.finalizedAt = 5001
     const resent = await moveRotation(deps, second.record)
@@ -1840,7 +2147,7 @@ describe("the move", () => {
       token: "tok2",
       state: "submitted",
     })
-    expect(deps.move.send).toHaveBeenLastCalledWith("tok2", DAI, expect.any(Function))
+    expect(deps.move.send).toHaveBeenLastCalledWith("tok2", DAI, expect.any(Function), undefined)
     expect(deps.move.shape).toHaveBeenLastCalledWith("tok2")
   })
 

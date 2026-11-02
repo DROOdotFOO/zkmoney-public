@@ -1,0 +1,36 @@
+export default {
+  // A network without a swap stack cannot price the escrow, so the sheet stops at the amount step.
+  noSwapStack:
+    "Swap routes are not available on this network, so this withdrawal cannot be priced here.",
+  short: "Your balance can't cover {what} ({amount}) plus the $1 minimum.",
+  shortGasAndFees: "the gas share and fees",
+  shortFees: "the fees",
+  title: "Withdraw",
+  back: "Back",
+  close: "Close",
+  available: "Available:",
+  amount: "Amount",
+  minimum: "Minimum $1",
+  max: "MAX",
+  limitInfo: "About the withdrawal limit",
+  overspent: "Balance not enough",
+  gas: {
+    title: "Gas for the address",
+    mode: "Fresh mode",
+    body: "A share can arrive as ETH with the funds, so the address can spend without anyone funding it with gas.",
+    share: "About {amount} of ETH lands with the funds.",
+    noneEth: "No gas share. The funds arrive as ETH, so the address can spend them.",
+    none: "No gas share. The address needs ETH from elsewhere before it can spend.",
+    inEth: "{amount}, in the ETH above",
+    eth: "{amount} ETH",
+  },
+  fee: "Withdrawal fee",
+  screening: {
+    checking: "Checking address…",
+    blocked: "This address can't receive withdrawals.",
+    error: "Couldn't verify this address. Check your internet connection or try another address.",
+  },
+  review: "Review",
+  confirm: "Withdraw privately",
+  connecting: "Connecting…",
+} as const

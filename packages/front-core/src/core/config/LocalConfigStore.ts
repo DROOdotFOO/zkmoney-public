@@ -4,7 +4,7 @@ import {
   type LocalConfig,
 } from "@obsidion/core/constants"
 import type { IStorageAdapter } from "../storages/adapter"
-import { logger } from "src/utils/logger"
+import { logger } from "../../utils/logger"
 
 const CONFIG_KEYS = Object.keys(LOCAL_CONFIG_DEFAULTS) as (keyof LocalConfig)[]
 

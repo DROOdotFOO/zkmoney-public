@@ -1,4 +1,5 @@
 import { withFeePayer, type IStorageAdapter } from "@obsidion/front-core"
+import type { AccountKey } from "@obsidion/passkey-web"
 import type { FeePayerEntry, RecoveryMetadata } from "@obsidion/sdk"
 import { PASSKEY_IDENTITY_MAP_KEY as STORAGE_KEY, WEB_STORAGE_PREFIX } from "../storage/storageKeys"
 import { readFromOtherDatabases, walletStorage } from "../storage/walletStorage"
@@ -25,6 +26,8 @@ type StoredEntry = StoredRecoveryMetadata & {
   createdAt: number
   usertag?: string
   answered?: PasskeyAnswer
+  /** When a session last committed with this passkey here. */
+  usedAt?: number
 }
 type StoredMap = { version: number; entries: Record<string, StoredEntry> }
 
@@ -105,7 +108,7 @@ export function userHandleFor(rpId: string, credentialId: string): string | unde
 /** What this browser recorded of the authenticator holding the passkey for a pubkey. */
 export type AuthenticatorRecord = Pick<
   StoredEntry,
-  "prfAaguid" | "authenticatorType" | "securityKey" | "transports" | "inferredTransports"
+  "prfAaguid" | "authenticatorType" | "securityKey" | "transports" | "inferredTransports" | "usedAt"
 >
 
 /** The authenticator this browser recorded for the passkey holding `pubkeyHex`, if it ever held one. */
@@ -126,6 +129,52 @@ export type RememberedAccount = {
   /** The row's passkey opens the wallet through its envelope, so the screen can label it. */
   backup: boolean
 }
+
+/**
+ * A key of a wallet's set, with this browser's record that opens the wallet with it, when it holds
+ * one, as a sign-in names the key.
+ */
+export type WalletKey = { pubkeyHex: string; record?: AccountKey }
+
+/**
+ * The keys of the set `credentialId`'s record names, in its order. Undefined unless that record
+ * opens a wallet under `rpId`. Sync, for the screens that offer a choice among them.
+ */
+export function walletKeysFor(rpId: string, credentialId: string): WalletKey[] | undefined {
+  const map = readMap()?.entries ?? {}
+  const own = map[credentialId]
+  if (!wellFormedUnder(own, rpId) || !opensWallet(own)) return undefined
+  const address = own.l2Address.toLowerCase()
+  const opening = Object.values(map).filter(
+    (e): e is WellFormedEntry =>
+      wellFormedUnder(e, rpId) && opensWallet(e) && e.l2Address.toLowerCase() === address,
+  )
+  const set = [...new Set((own.passkeySet ?? [own.pubkey]).map(normalKey))]
+  return set.map((pubkeyHex) => {
+    const e =
+      normalKey(own.pubkey) === pubkeyHex
+        ? own
+        : opening.find((r) => normalKey(r.pubkey) === pubkeyHex)
+    return e ? { pubkeyHex, record: accountKeyOf(e) } : { pubkeyHex }
+  })
+}
+
+/** An entry with the fields a sign-in reads: its credential, its signing key and its address. */
+type WellFormedEntry = StoredEntry & { credentialId: string; pubkey: string; l2Address: string }
+
+const wellFormedUnder = (e: StoredEntry | undefined, rpId: string): e is WellFormedEntry =>
+  e?.rpId === rpId &&
+  typeof e.credentialId === "string" &&
+  typeof e.pubkey === "string" &&
+  typeof e.l2Address === "string" &&
+  Boolean(e.l2Address)
+
+const accountKeyOf = (e: WellFormedEntry): AccountKey => ({
+  credentialId: e.credentialId,
+  backup: e.backup !== undefined,
+  ...(e.prfAaguid ? { aaguid: e.prfAaguid } : {}),
+  ...(typeof e.usedAt === "number" ? { usedAt: e.usedAt } : {}),
+})
 
 /**
  * Every record under `rpId` that opens a wallet and carries a claimed tag, newest first: the
@@ -176,15 +225,11 @@ function candidatesIn(
 ): RememberedAccount[] {
   return Object.values(map?.entries ?? {})
     .filter(
-      (e): e is StoredEntry & { usertag: string; l2Address: string } =>
-        e?.rpId === rpId &&
+      (e): e is WellFormedEntry & { usertag: string } =>
+        wellFormedUnder(e, rpId) &&
         admits(e) &&
-        typeof e.credentialId === "string" &&
         typeof e.usertag === "string" &&
-        Boolean(e.usertag) &&
-        typeof e.l2Address === "string" &&
-        Boolean(e.l2Address) &&
-        typeof e.pubkey === "string",
+        Boolean(e.usertag),
     )
     .sort((a, b) => createdAt(b) - createdAt(a))
     .map((e) => ({
@@ -323,6 +368,17 @@ export class WebPasskeyIdentityMap {
       if (entry?.rpId !== this.rpId) return
       if (entry.answered === where) return
       map.entries[credentialId] = { ...entry, answered: where }
+      await this.storage.setItem(STORAGE_KEY, JSON.stringify(map))
+    })
+  }
+
+  /** Stamp the passkey as the one a session just committed with, on an entry that exists for this RP. */
+  async setUsed(credentialId: string): Promise<void> {
+    await withMapLock(async () => {
+      const map = await this.load()
+      const entry = map.entries[credentialId]
+      if (entry?.rpId !== this.rpId) return
+      map.entries[credentialId] = { ...entry, usedAt: Date.now() }
       await this.storage.setItem(STORAGE_KEY, JSON.stringify(map))
     })
   }

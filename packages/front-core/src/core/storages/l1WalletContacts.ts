@@ -1,7 +1,7 @@
 import { isAddress, type Address } from "viem"
 
-import { logger } from "src/utils/logger"
-import { isZeroAddress } from "src/utils/validate"
+import { logger } from "../../utils/logger"
+import { isZeroAddress } from "../../utils/validate"
 
 import { ContactStorage, L1_PLACEHOLDER_NAME, isUserLabel, type Contact } from "./ContactStorage.js"
 import { lookupEnsName, type GetEnsClient } from "../services/ens"

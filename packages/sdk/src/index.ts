@@ -2,30 +2,31 @@
 export * from "@obsidion/contracts"
 
 // SDK-specific exports
-export * from "./oxide/publishDaLogs.js"
-export * from "./oxide/burnWithdrawals.js"
-export * from "./oxide/withdrawalFinalization.js"
-export * from "./oxide/portalIdentity.js"
-export * from "./oxide/withdrawFinalizationCall.js"
-export * from "./oxide/withdrawalExecutor.js"
-export * from "./oxide/swapOnWithdrawSimulator.js"
-export * from "./oxide/swapOnWithdraw.js"
-export * from "./oxide/skySavings.js"
-export * from "./oxide/swapEscrowReader.js"
-export * from "./oxide/portalCapacity.js"
-export * from "./oxide/tokenRegistration.js"
-export * from "./oxide/portalCapError.js"
-export * from "./oxide/sipaPortalTerms.js"
-export * from "./oxide/deploymentTable.js"
-export * from "./oxide/proverTipQuote.js"
-export * from "./oxide/tipQuote.js"
+export * from "./oxide/token/publishDaLogs.js"
+export * from "./oxide/withdrawal/burnWithdrawals.js"
+export * from "./oxide/withdrawal/withdrawalFinalization.js"
+export * from "./oxide/portal/portalIdentity.js"
+export * from "./oxide/withdrawal/withdrawFinalizationCall.js"
+export * from "./oxide/withdrawal/withdrawalExecutor.js"
+export * from "./oxide/escrow/swapOnWithdrawSimulator.js"
+export * from "./oxide/escrow/swapOnWithdraw.js"
+export * from "./oxide/escrow/skySavings.js"
+export * from "./oxide/escrow/swapEscrowReader.js"
+export * from "./oxide/portal/portalCapacity.js"
+export * from "./oxide/portal/portalFreeze.js"
+export * from "./oxide/token/tokenRegistration.js"
+export * from "./oxide/portal/portalCapError.js"
+export * from "./oxide/portal/sipaPortalTerms.js"
+export * from "./oxide/portal/deploymentTable.js"
+export * from "./oxide/tip/proverTipQuote.js"
+export * from "./oxide/tip/tipQuote.js"
 export {
   assertBackupSweepProfitable,
   quoteBackupSweep,
   UnprofitableSweepError,
   type BackupSweepQuote,
-} from "./oxide/l1OperationQuote.js"
-export type { PlainWithdrawalContext } from "./oxide/plainWithdrawal.js"
+} from "./oxide/tip/l1OperationQuote.js"
+export type { PlainWithdrawalContext } from "./oxide/withdrawal/plainWithdrawal.js"
 export { readPlainWithdrawalFee } from "@oxide/oxide-client/executors/plain_withdrawal_executor.js"
 export * from "./email/index.js"
 export * from "./feePaymentMethod/index.js"
@@ -39,4 +40,4 @@ export * from "./node/createNode.js"
 // registration-by-deposit mirror) and services/sipaIntents (oxide's intent type). Both carry the
 // identity record plus the routing; oxide's is canonical, so re-export it explicitly to resolve
 // the star-export ambiguity.
-export type { RegistrationIntent, K1PointArg } from "./services/sipaIntents.js"
+export type { RegistrationIntent, K1PointArg } from "./services/sipa/sipaIntents.js"

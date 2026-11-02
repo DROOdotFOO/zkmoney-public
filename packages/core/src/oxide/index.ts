@@ -13,6 +13,7 @@
 
 import { MAINNET_ENS_DOMAIN, MAINNET_ENTRY_POINT, Network } from "../constants/index.js"
 import type {
+  FetchFunction,
   OxideEnvProfile,
   OxideEnvTuple,
   OxideFeature,
@@ -647,7 +648,7 @@ export interface LoadOxideManifestOpts {
   /** Deployment provenance; a different manifest gitSha does not block a read. */
   expectedGitSha?: string
   /** Injectable fetch implementation; defaults to global fetch. */
-  fetchImpl?: typeof fetch
+  fetchImpl?: FetchFunction
   /** `no-cache` makes a deployment read revalidate with the host, so a host `max-age` cannot delay a change. */
   cache?: "no-cache"
 }

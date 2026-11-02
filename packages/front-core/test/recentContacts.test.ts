@@ -3,7 +3,7 @@ import { PaylinkActionEnum, QueueStatus } from "@obsidion/core/constants"
 import { recentContacts, type ContactActivitySources } from "../src/utils/recentContacts"
 import type { ContactRow } from "../src/hooks/useContactsDirectory"
 import type { PaylinkTransaction, TokenTransaction } from "../src/types/transactions"
-import type { PaymentRequest } from "../src/core/storages/RequestStorage"
+import type { PaymentRequest } from "../src/engine/requests"
 import type { WithdrawalRecord } from "../src/core/services/bridge/types"
 
 const row = (tag: string, overrides: Partial<ContactRow> = {}): ContactRow => ({

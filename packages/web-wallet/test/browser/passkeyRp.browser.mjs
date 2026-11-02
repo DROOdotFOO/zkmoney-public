@@ -54,7 +54,7 @@ const server = createServer({ key: readFileSync(keyFile), cert }, (req, res) => 
     res.end(`<script type="importmap">{"imports":{"@obsidion/core/constants":"/core.js"}}</script>
       <script type="module">
         import { BrowserPasskeyCeremony } from "/passkey/ceremony/passkeyCeremony.js"
-        import { selectWebPasskeyRpId } from "/passkey/policy/relyingParty.js"
+        import { selectWebPasskeyRpId } from "/passkey/rules/relyingParty.js"
         window.ceremony = new BrowserPasskeyCeremony({focusWaitMs: 0})
         window.rp = (environment) => selectWebPasskeyRpId({ VITE_PASSKEY_ENVIRONMENT: environment })
       </script>`)

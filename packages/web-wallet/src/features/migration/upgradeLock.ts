@@ -19,7 +19,11 @@ export type UpgradeLock =
 
 const lockKey = (account: string) => `webwallet.upgradeLock/${account.toLowerCase()}`
 const versionKey = (account: string) => `webwallet.version/${account.toLowerCase()}`
+const createdKey = (account: string) => `webwallet.createdOn/${account.toLowerCase()}`
 const pinned = () => getConfig().oxideProfile.portal.toLowerCase()
+// v2: a read settled before registration commitments were scanned is read again.
+const sourceReadKey = (account: string, source: string) =>
+  `webwallet.retiredSourceRead.v2/${pinned()}/${source.toLowerCase()}/${account.toLowerCase()}`
 const changes = createExternalState(0)
 const changed = () => changes.set(changes.get() + 1)
 // Accounts whose saved runs were read this page, so the lock can be trusted.
@@ -112,6 +116,64 @@ export function markCreatedHere(account: string): void {
   if (upgradeLock(account).state !== "pending") return
   walletStorage.setItem(versionKey(account), pinned())
   changed()
+}
+
+/** A new identity made here, on this version: unlike a passkey rotation's account, it holds nothing on another rollup. */
+export function markNewAccountHere(account: string): void {
+  if (upgradeLock(account).state !== "pending") return
+  walletStorage.setItem(createdKey(account), pinned())
+  markCreatedHere(account)
+}
+
+const SETTLED = "settled"
+
+/**
+ * Whether the account has nothing left to read on `source`, a deployment on another rollup: it is a
+ * new account made here, or it is current here and `source` settled.
+ */
+export function retiredSourceSettled(account: string, source: string): boolean {
+  if (walletStorage.getItem(createdKey(account)) === pinned()) return true
+  return (
+    upgradeLock(account).state === "released" &&
+    walletStorage.getItem(sourceReadKey(account, source)) === SETTLED
+  )
+}
+
+/** An L1 block, by number and hash. */
+export interface L1Tip {
+  number: bigint
+  hash: string
+}
+
+/** The L1 tip that closed the account's latest empty read of `source`, while it has not settled. */
+export function retiredSourceCandidate(account: string, source: string): L1Tip | undefined {
+  const raw = walletStorage.getItem(sourceReadKey(account, source))
+  if (raw === null || raw === SETTLED) return undefined
+  const { number, hash } = JSON.parse(raw) as { number: string; hash: string }
+  return { number: BigInt(number), hash }
+}
+
+/**
+ * A complete read of `source`, frozen on another rollup. `empty`: nothing left there and its history
+ * in, read up to L1 block `tip`. Once the account is current here, an empty read settles the source
+ * when `priorFinal`: the block that closed the previous empty read is final and still on chain, so
+ * every refund that read saw is final. Otherwise it waits on `tip`; a read that finds funds starts over.
+ */
+export function recordRetiredSourceRead(
+  account: string,
+  source: string,
+  read: { empty: false } | { empty: true; tip: L1Tip; priorFinal: boolean },
+): void {
+  const key = sourceReadKey(account, source)
+  if (!read.empty) return walletStorage.removeItem(key)
+  if (upgradeLock(account).state !== "released") return
+  const held = walletStorage.getItem(key)
+  if (held === SETTLED) return
+  if (held !== null && read.priorFinal) return walletStorage.setItem(key, SETTLED)
+  walletStorage.setItem(
+    key,
+    JSON.stringify({ number: read.tip.number.toString(), hash: read.tip.hash }),
+  )
 }
 
 /**

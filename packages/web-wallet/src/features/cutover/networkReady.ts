@@ -3,8 +3,9 @@
  * withdrawal wait ("Waiting for network"); the own-wallet route does not. Final once seen.
  */
 import { useEffect, useSyncExternalStore } from "react"
-import { useAztecContext } from "@obsidion/front-core"
+import { useResource } from "@obsidion/front-core"
 import { createExternalState } from "../../lib/externalState"
+import { useSession } from "../../platform/session"
 
 const POLL_MS = 30_000
 
@@ -31,7 +32,7 @@ function poll(node: ProvenReader) {
 
 /** True once the network has proven a checkpoint. */
 export function useNetworkReady(): boolean {
-  const node = useAztecContext().obsidionWallet?.node as ProvenReader | undefined
+  const node = useResource(useSession().wallet)?.node as ProvenReader | undefined
   useEffect(() => {
     if (node) poll(node)
   }, [node])

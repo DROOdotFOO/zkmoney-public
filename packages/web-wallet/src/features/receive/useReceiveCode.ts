@@ -1,19 +1,22 @@
 import {
-  RequestStorage,
   SIPADepositStore,
-  TransactionStorage,
+  loadRecords,
+  receivesForRequest,
   isUnfundedSipaDeposit,
   payerAddedToContacts,
   randomCodeRequestId,
   payerForPaidLink,
-  useAssetContext,
-  useAztecContext,
   useContactsDirectory,
   useContractServiceContext,
+  type Activity,
+  type ContactRow,
+  type Requests,
+  useResource,
 } from "@obsidion/front-core"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { isDemoMode } from "../../dev/demoFlag"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { useSession } from "../../platform/session"
 import { getSipaDepositGateway } from "../deposit/sipaGateway"
 import { useDepositWatch } from "../onboarding/useDepositWatch"
 import { loadWalletIdentity } from "../identity/walletIdentity"
@@ -40,11 +43,14 @@ export interface CodePayment {
   via: "private" | "ethereum"
   /** Who paid; an Ethereum payment names nobody. */
   payer?: string
-  /** The payer is now a full contact. */
+  /** The payer is a full contact. */
   added?: boolean
   /** The paid code held an address, so the next one holds a new one. */
   hadAddress: boolean
 }
+
+/** A payment as saved: `added` is read from the payer's contact as it changes. */
+type PaidCode = Omit<CodePayment, "added"> & { payerId?: string }
 
 /** What a claimed deposit to the code's address credited; the request's own amount without one. */
 async function sweptAmount(code: ReceiveCode, requested: number): Promise<number> {
@@ -56,21 +62,86 @@ async function sweptAmount(code: ReceiveCode, requested: number): Promise<number
 }
 
 /**
+ * Calls `onPaid` once, when the code's request reads paid: by a receive carrying its id, else by a
+ * deposit to its address. A failed read leaves it to the next update. Returns the stop.
+ */
+export function watchRequestPayment(
+  code: ReceiveCode,
+  deps: {
+    requests: Pick<Requests, "view">
+    activity: Pick<Activity, "query">
+    contacts: () => readonly ContactRow[]
+    onPaid: (found: Omit<PaidCode, "hadAddress">) => void
+  },
+): () => void {
+  const { requests, activity } = deps
+  let done = false
+  // One read at a time; a failed one lets the next update try again.
+  let reading = false
+  const check = async () => {
+    const row = requests.view.get().find((r) => r.id === code.requestId)
+    if (done || reading || row?.status !== "fulfilled") return
+    reading = true
+    try {
+      const hash = row.fulfillmentTxHash?.toLowerCase()
+      const paying = await loadRecords(activity.query("request", code.requestId.toLowerCase()))
+      const receives = receivesForRequest(paying, code.requestId)
+      const tx = receives.find((r) => r.txHash?.toLowerCase() === hash)
+      if (!tx) {
+        const amount = await sweptAmount(code, row.amount)
+        if (done) return
+        done = true
+        return deps.onPaid({ via: "ethereum", amount })
+      }
+      if (done) return
+      done = true
+      const payer = payerForPaidLink(row, receives, deps.contacts())
+      deps.onPaid({
+        via: "private",
+        amount: tx.token.amount * (tx.token.price || 1),
+        payer: payer?.displayName,
+        payerId: payer?.contact?.id,
+      })
+    } finally {
+      reading = false
+    }
+  }
+  const onChange = () =>
+    void check().catch((err) => console.warn("[receive] payment read failed:", err))
+  onChange()
+  const unsubscribe = requests.view.subscribe(onChange)
+  return () => {
+    done = true
+    unsubscribe()
+  }
+}
+
+/**
  * Receive's code and what paid it. Watches the address on Ethereum and the request id on private
  * transfers; a payment moves the code to the next ready address.
  */
 export function useReceiveCode(enabled: boolean) {
   const identity = loadWalletIdentity()
   const tag = identity?.handle
-  const { rollupAddress, obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
+  const rollupAddress = obsidionWallet?.networkId
   const { contractService } = useContractServiceContext()
-  const { tokenService } = useAssetContext()
+  const tokenService = useResource(useSession().token)
+  const { activity, requests } = useSession()
   const [code, setCode] = useState<ReceiveCode>()
-  const [payment, setPayment] = useState<CodePayment>()
+  const [paidWith, setPayment] = useState<PaidCode>()
   const [failed, setFailed] = useState(false)
   const contacts = useContactsDirectory()
   const directory = useRef(contacts)
   directory.current = contacts
+
+  // Approval can land after the receipt shows, so `added` follows the contacts.
+  const payerContact = contacts.contacts.find((c) => c.id === paidWith?.payerId)
+  const payment = useMemo((): CodePayment | undefined => {
+    if (!paidWith) return undefined
+    const { payerId: _, ...shown } = paidWith
+    return { ...shown, added: payerAddedToContacts(payerContact) }
+  }, [paidWith, payerContact])
 
   const walletDeps = useMemo((): CodeDeps | null => {
     if (!enabled || !tag || !rollupAddress || !obsidionWallet || !contractService || !tokenService)
@@ -99,13 +170,13 @@ export function useReceiveCode(enabled: boolean) {
             baseUrl: requestLinkOrigin(),
             ...args,
           },
-          RequestStorage.get(),
+          requests,
         )
       },
-      cancel: (requestId) => RequestStorage.get().applyStatus(requestId, "cancelled"),
+      cancel: (requestId) => requests.cancel(requestId),
       paid: async (code) => {
-        const row = await RequestStorage.get().findById(code.requestId)
-        if (row?.status === "fulfilled") return true
+        const saved = (await requests.all()).find((r) => r.id === code.requestId)
+        if (saved?.status === "fulfilled") return true
         if (!code.address) return false
         const store = SIPADepositStore.get(webStorage)
         await store.load()
@@ -121,6 +192,7 @@ export function useReceiveCode(enabled: boolean) {
     contractService,
     tokenService,
     identity?.address,
+    requests,
   ])
   // Dev demo has no wallet; a production build drops this body and the import with it.
   const [demoDeps, setDemoDeps] = useState<CodeDeps>()
@@ -170,7 +242,7 @@ export function useReceiveCode(enabled: boolean) {
   const retry = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(retry.current), [])
   const paid = useCallback(
-    (paidCode: ReceiveCode, found: Omit<CodePayment, "hadAddress">) => {
+    (paidCode: ReceiveCode, found: Omit<PaidCode, "hadAddress">) => {
       if (!deps) return
       setPayment({ ...found, hadAddress: !!paidCode.address })
       setCode(undefined)
@@ -204,38 +276,16 @@ export function useReceiveCode(enabled: boolean) {
     return () => clearInterval(timer)
   }, [code, payment, demo, refresh])
 
-  // Private: the fulfillment reconciler marks the code's request paid.
+  // Private: a receive carrying the code's request id pays it.
   useEffect(() => {
     if (!code || payment) return
-    const store = RequestStorage.get()
-    let done = false
-    const check = async () => {
-      const row = await store.findById(code.requestId)
-      if (done || row?.status !== "fulfilled") return
-      done = true
-      const hash = row.fulfillmentTxHash?.toLowerCase()
-      const receives = await TransactionStorage.get(webStorage).findReceivesByRequestId(
-        code.requestId,
-      )
-      const tx = receives.find((r) => r.txHash?.toLowerCase() === hash)
-      if (!tx) return paid(code, { via: "ethereum", amount: await sweptAmount(code, row.amount) })
-      const payer = payerForPaidLink(row, receives, directory.current)
-      paid(code, {
-        via: "private",
-        amount: tx.token.amount * (tx.token.price || 1),
-        payer: payer?.displayName,
-        added: payerAddedToContacts(payer),
-      })
-    }
-    const onChange = () =>
-      void check().catch((err) => console.warn("[receive] payment read failed:", err))
-    onChange()
-    const unsubscribe = store.subscribe(onChange)
-    return () => {
-      done = true
-      unsubscribe()
-    }
-  }, [code, payment, paid])
+    return watchRequestPayment(code, {
+      requests,
+      activity,
+      contacts: () => directory.current.contacts,
+      onPaid: (found) => paid(code, found),
+    })
+  }, [code, payment, paid, activity, requests])
 
   const setAmount = useCallback(
     async (form: CodeForm) => {

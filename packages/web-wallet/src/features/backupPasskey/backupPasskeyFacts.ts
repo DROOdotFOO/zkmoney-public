@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from "react"
 import {
   fundingFits,
+  isOpenCreatorLink,
   planMove,
   unreadDeposits,
+  useStore,
   WITHDRAWAL_TERMINAL_PHASES,
   type ChunkFit,
+  type PaylinkTransaction,
   type WithdrawalRecord,
+  useResource,
 } from "@obsidion/front-core"
 import {
-  ContractService,
+  type ContractService,
   fundingAmount,
   readBridgeDestination,
   readSpendShape,
@@ -21,10 +25,12 @@ import type { Address } from "viem"
 import { getConfig } from "../../config/env"
 import { getWebOxideToken } from "../../config/classArtifacts"
 import { getFeeTokenBridgeTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import { useSession } from "../../platform/session"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { useOldVersionHoldings } from "../migration/oldVersionBalance"
 import { useUpgradeLock } from "../migration/upgradeLock"
 import { unlockedSessionKeys } from "../onboarding/registrationResume"
+import { rescanPaylinks, usePaylinksRescanned } from "../paylink/paylinkRescanState"
 import { currentTxAmountCap } from "../token/oxideToken"
 import { useWithdrawals } from "../withdraw/useWithdrawals"
 
@@ -96,19 +102,38 @@ export async function readChainFacts(
   return chainFacts({ funding, shape, cap })
 }
 
+/**
+ * Whether `account` holds an open paylink, kept current with the stored rows. Undefined until this
+ * page's rescan has rebuilt every link the account made; `unreadable` while the latest pass failed
+ * or deferred a link.
+ */
+function useOpenLink(account: string | undefined): boolean | "unreadable" | undefined {
+  const rescanned = usePaylinksRescanned(account)
+  const network = useResource(useSession().wallet)?.networkId
+  // The links still in escrow, once loaded: a link not yet read is not "none".
+  const rows = useStore(useSession().reads.open)
+  const open =
+    !!account &&
+    rows.records.some((row) => isOpenCreatorLink(row as PaylinkTransaction, account, network))
+  if (rescanned === false || rows.failed) return "unreadable"
+  return rescanned && rows.loaded ? open : undefined
+}
+
 /** Whether a withdrawal of this wallet's is still on its way. */
 export const withdrawalInFlight = (records: readonly Pick<WithdrawalRecord, "phase">[]) =>
   records.some((record) => !WITHDRAWAL_TERMINAL_PHASES.has(record.phase))
 
 export type EntryFacts = ChainFacts & {
   withdrawalInFlight: boolean
+  openLink: boolean
   /** Money on an old version still to move, or an upgrade not yet finished here. */
   historicBalance: boolean
 }
 
 /**
- * The entry's facts for the signed-in account, read once per mount and again on `refresh`:
- * `checking` while they are read, `unreadable` when a read failed.
+ * The entry's facts for the signed-in account: the chain's read once per mount and again on
+ * `refresh`, the rest kept current. `checking` while they are read, `unreadable` when a read failed;
+ * `refresh` also starts a paylink rescan.
  */
 export function useBackupEntryFacts(
   wallet: ObsidionWallet | undefined,
@@ -119,7 +144,9 @@ export function useBackupEntryFacts(
   const [run, setRun] = useState(0)
   const withdrawals = useWithdrawals()
   const holdings = useOldVersionHoldings()
-  const upgrade = useUpgradeLock(loadWalletIdentity()?.address).state
+  const identity = loadWalletIdentity()?.address
+  const upgrade = useUpgradeLock(identity).state
+  const openLink = useOpenLink(identity)
   useEffect(() => {
     if (!active || !wallet || !contractService) return
     let stale = false
@@ -137,12 +164,19 @@ export function useBackupEntryFacts(
       stale = true
     }
   }, [active, wallet, contractService, run])
-  const refresh = useCallback(() => setRun((n) => n + 1), [])
+  const refresh = useCallback(() => {
+    setRun((n) => n + 1)
+    rescanPaylinks()
+  }, [])
   if (typeof chain === "string") return { facts: chain, refresh }
-  if (!withdrawals.hydrated || holdings.pending) return { facts: "checking", refresh }
+  if (openLink === "unreadable") return { facts: "unreadable", refresh }
+  if (!withdrawals.hydrated || holdings.pending || openLink === undefined) {
+    return { facts: "checking", refresh }
+  }
   return {
     facts: {
       ...chain,
+      openLink,
       withdrawalInFlight: withdrawalInFlight(withdrawals.records),
       historicBalance: holdings.total > 0n || upgrade === "held",
     },

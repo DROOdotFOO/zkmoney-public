@@ -12,15 +12,18 @@
 import { formatUnits, type Hash, type Hex } from "viem"
 import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
 import type { ScannedWithdrawEvent, WithdrawEventSource } from "@obsidion/sdk"
-import { globalEventEmitter } from "../GlobalEventEmitter"
-import { newWithdrawalLocalId, type WithdrawalStorage } from "./WithdrawalStorage"
+import { syncCatchUp } from "../../../engine/catchUp"
+import { newWithdrawalLocalId, type Withdrawals } from "../../../engine/withdrawals"
+import type { OnNetwork } from "../../../types/networkStamp"
 import type { WithdrawalDeployment, WithdrawalRecord } from "./types"
 
 export interface WithdrawalRescanDeps {
   source: WithdrawEventSource
-  store: Pick<WithdrawalStorage, "load" | "getByL2TxHash" | "create" | "migrateExecutors">
+  store: Pick<Withdrawals, "ready" | "byHash" | "adopt" | "migrateExecutors">
   tokenSymbol: string
   tokenDecimals: number
+  /** The network the events were read on. */
+  networkId: string
   /** The events' deployment, stamped on each rebuilt record with its burn's executor. */
   deployment?: Omit<WithdrawalDeployment, "executor">
   /** First block to scan. Default 1, the lowest PXE accepts. */
@@ -44,7 +47,7 @@ export interface WithdrawalRescanSummary {
 
 /** The records created, oldest burn first. */
 export async function rebuildWithdrawals(deps: WithdrawalRescanDeps): Promise<WithdrawalRecord[]> {
-  await deps.store.load()
+  await deps.store.ready
   const head = await deps.source.headBlock()
   const events = await deps.source.listWithdrawals(deps.fromBlock ?? 1, head + 1)
   const byTxHash = new Map(events.map((event) => [event.txHash.toLowerCase(), event]))
@@ -54,22 +57,22 @@ export async function rebuildWithdrawals(deps: WithdrawalRescanDeps): Promise<Wi
       ? { executor: event.executor as Hex, withdrawalFee: event.withdrawalFee }
       : undefined
   })
+  const held = await Promise.all(events.map((event) => deps.store.byHash(event.txHash)))
   const missing = events
-    .filter((event) => !deps.store.getByL2TxHash(event.txHash))
+    .filter((_, i) => !held[i])
     .sort((a, b) => a.blockNumber - b.blockNumber)
   // Rebuilt rows join an in-progress chain catch-up so they land behind the activity skeleton.
   const end =
-    missing.length && globalEventEmitter.isSyncCatchingUp()
-      ? globalEventEmitter.beginSyncCatchUp()
-      : undefined
+    missing.length && syncCatchUp.status.get() ? syncCatchUp.begin() : undefined
   const created: WithdrawalRecord[] = []
   try {
     for (const event of missing) {
       const blockTime = await deps.source.blockTimestampMs(event.blockNumber)
       const startTime = blockTime ?? (deps.now ?? Date.now)()
-      created.push(
-        await deps.store.create(rebuiltRecord(event, startTime, deps, blockTime === undefined)),
-      )
+      const rebuilt = rebuiltRecord(event, startTime, deps, blockTime === undefined)
+      // A record the flow saved meanwhile holds the hash and wins.
+      const { record, adopted } = await deps.store.adopt(rebuilt)
+      if (adopted) created.push(record)
     }
   } finally {
     end?.()
@@ -89,10 +92,11 @@ function rebuiltRecord(
   startTime: number,
   deps: WithdrawalRescanDeps,
   startTimeEstimated: boolean,
-): WithdrawalRecord {
+): OnNetwork<WithdrawalRecord> {
   const { swap, sky } = event
   return {
     localId: newWithdrawalLocalId(),
+    networkId: deps.networkId,
     l2TxHash: event.txHash as Hash,
     blockNumber: event.blockNumber,
     recipient: swap?.recipient ?? event.l1Recipient,

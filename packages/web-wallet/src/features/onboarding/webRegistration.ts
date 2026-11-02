@@ -17,14 +17,17 @@ import {
   isRegistrationEscalated,
   isTerminalRegistrationPhase,
   deploymentSipaRoute,
+  legacyStore,
   registrationUiState,
   resumeOxideRegistration,
   type NameClaimRecord,
   type OxideResumeDeps,
   type OxideResumeOutcome,
   type PendingRegistrationRecord,
+  type ReadonlyStore,
   type RegistrationScheduleAnswer,
   type ResumeOptions,
+  type Sourced,
 } from "@obsidion/front-core"
 import { OxideSipaIntent, readNameClaimLog } from "@obsidion/sdk"
 import { loadRegistrationTerms, scheduleSource, signedSchedule } from "./registrationTerms"
@@ -121,13 +124,30 @@ export function forgetReplacedRegistration(sipaAddress: string): void {
   walletStorage.setItem(REPLACED_KEY, JSON.stringify(kept))
 }
 
-function replacedRegistrations(): PendingRegistrationRecord[] {
+function decodeReplaced(raw: string | null): PendingRegistrationRecord[] {
   try {
-    const raw = walletStorage.getItem(REPLACED_KEY)
     return raw ? (JSON.parse(raw) as PendingRegistrationRecord[]) : []
   } catch {
     return []
   }
+}
+
+export function replacedRegistrations(): PendingRegistrationRecord[] {
+  return decodeReplaced(walletStorage.getItem(REPLACED_KEY))
+}
+
+/** The replaced registrations, read again on every write. */
+export function replacedRegistrationRecords(): ReadonlyStore<Sourced<PendingRegistrationRecord[]>> {
+  return legacyStore(
+    {
+      read: replacedRegistrations,
+      subscribe: (onChange) =>
+        walletStorage.onCommit((ops) => {
+          if (ops.some(([key]) => key === REPLACED_KEY)) onChange()
+        }),
+    },
+    [],
+  )
 }
 
 /**

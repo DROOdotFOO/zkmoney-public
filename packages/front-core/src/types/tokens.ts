@@ -1,4 +1,4 @@
-import { FaucetAction } from "./transactions"
+import type { FaucetAction } from "./transactions"
 
 export type Token = {
   address: string
@@ -6,22 +6,6 @@ export type Token = {
   symbol: string
   decimals: number
   logo?: string
-}
-
-export type Asset = {
-  name: string
-  symbol: string
-  address: string
-  decimals: number
-  balance: number
-  // Exact base-unit balance; `balance` is a lossy Number for display only.
-  balanceAtomic: bigint
-  publicBalance: number
-  privateBalance: number
-  price: number
-  change: number
-  changeAmount: number
-  logo: string
 }
 
 export type TokenInTxService = {

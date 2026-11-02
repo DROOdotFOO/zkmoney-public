@@ -9,8 +9,9 @@ import type {
   SavingsPrice,
   SavingsSource,
 } from "../../src/core/services/savings/types"
+import { createBalances, type Balances } from "../../src/engine/balances"
+import { memoryStore } from "../../src/engine/store"
 import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
-import { resetSingleton } from "../__test-helpers__/resetSingleton"
 
 const ONE = 10n ** 18n
 const BALANCE = { scope: "sandbox:0xcomplete", tokenAddress: "0xsav" }
@@ -44,17 +45,33 @@ function fakeSource(initial: SavingsMoveRecord[] = []) {
   return { source, write }
 }
 
+let storage: BalanceStorage
+let balances: Balances
+
 const holdShares = (shares: bigint, anchor = 1) =>
-  act(() => BalanceStorage.get().updateBalance(BALANCE.scope, BALANCE.tokenAddress, shares, anchor))
+  act(() => storage.updateBalance(BALANCE.scope, BALANCE.tokenAddress, shares, anchor))
 
 const wrap =
   (source: SavingsSource | null) =>
   ({ children }: { children: ReactNode }) =>
-    <SavingsProvider source={source}>{children}</SavingsProvider>
+    (
+      <SavingsProvider source={source} balances={balances.records}>
+        {children}
+      </SavingsProvider>
+    )
 
 beforeEach(() => {
-  resetSingleton(BalanceStorage as unknown as { instance: BalanceStorage | null })
-  BalanceStorage.get(new InMemoryStorageAdapter())
+  storage = new BalanceStorage(new InMemoryStorageAdapter())
+  balances = createBalances(
+    storage,
+    {
+      network: null,
+      account: memoryStore({ value: undefined, loaded: true }),
+      tokens: memoryStore({ value: [], loaded: true }),
+      activeToken: memoryStore(null),
+    },
+    memoryStore({ syncing: false, progress: null }).readonly,
+  )
 })
 
 describe("useSavings", () => {
@@ -76,7 +93,7 @@ describe("useSavings", () => {
     await waitFor(() => expect(result.current.hydrated).toBe(true))
     expect(result.current.available).toBe(true)
     expect(result.current.position).toMatchObject({ shares: 3n * ONE, value: 3n * ONE, apy: 0.05 })
-    expect(result.current.position?.sharesReadAt).toBe(BalanceStorage.get().list()[0]!.updatedAt)
+    expect(result.current.position?.sharesReadAt).toBe(storage.list()[0]!.updatedAt)
     expect(result.current.moves).toEqual([pending])
   })
 
@@ -117,7 +134,11 @@ describe("useSavings", () => {
     )
     let current: SavingsSource = old
     const { result, rerender } = renderHook(() => useSavings(), {
-      wrapper: ({ children }) => <SavingsProvider source={current}>{children}</SavingsProvider>,
+      wrapper: ({ children }) => (
+        <SavingsProvider source={current} balances={balances.records}>
+          {children}
+        </SavingsProvider>
+      ),
     })
     current = next
     rerender()

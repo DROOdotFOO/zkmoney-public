@@ -5,11 +5,11 @@
  * fake and Playwright exercises the real one.
  */
 
-import { RelatedOriginPasskeyError, markPasskeyWritten } from "../policy/passkeyErrors.js"
-import type { PasskeyExtension } from "../policy/passkeyTelemetryVocabulary.js"
+import { RelatedOriginPasskeyError, markPasskeyWritten } from "../refusals/passkeyErrors.js"
+import type { PasskeyExtension } from "../telemetry/passkeyTelemetryVocabulary.js"
 import { type UserHandleProvenance, encodeUserHandle } from "./userHandle.js"
-import { isRpDomainSuffix } from "../policy/relyingParty.js"
-import { iosBelowFloor, parseUserAgent } from "../policy/userAgentInfo.js"
+import { isRpDomainSuffix } from "../rules/relyingParty.js"
+import { iosBelowFloor, parseUserAgent } from "../browser/userAgentInfo.js"
 import { authDataFromAttestation, p256FromAuthData, p256FromSpki } from "./attestation.js"
 import {
   type AuthenticatorDataFlags,

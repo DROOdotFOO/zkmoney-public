@@ -1,5 +1,6 @@
 import { ActivityListRow, type StatusLabel } from "@obsidion/web-ds"
 import {
+  isStrandedSavingsMove,
   savingsMoveBasis,
   savingsMoveLabel,
   savingsValue,
@@ -8,7 +9,6 @@ import {
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { rowTimestamp, shortL1Addr, usdAtomicFloor } from "../../ui/format"
-import type { ActivityEntry } from "../../ui/screens/useActivityEntries"
 import type { SavingsAccount } from "./AccountSwitcher"
 import { savingsEtaCopy } from "./savingsMoveTiming"
 
@@ -17,20 +17,9 @@ const LABEL: Record<SavingsAccount, Record<SavingsMoveRecord["direction"], strin
   savings: { in: "From Main Account", out: "To Main Account" },
 }
 
-/** A move an old version's record shows unfinished when that version closed. It can't finish here. */
-export const isStrandedSavingsMove = (move: SavingsMoveRecord, burn?: WithdrawalRecord) =>
-  !!move.retired && burn?.phase !== "failed" && !move.recovered && !move.deposit?.claimed
-
 /** The account a move's deposit lands in. */
 export const savingsMoveDestination = (move: SavingsMoveRecord): SavingsAccount =>
   move.direction === "in" ? "savings" : "main"
-
-/** Whether the move has its outcome: claimed, recovered, a burn that failed, or stranded on an old version. */
-export const isSavingsMoveSettled = (move: SavingsMoveRecord, burn?: WithdrawalRecord) =>
-  !!move.deposit?.claimed ||
-  !!move.recovered ||
-  burn?.phase === "failed" ||
-  isStrandedSavingsMove(move, burn)
 
 /**
  * One state from submit until the destination claims the deposit, like a deposit's row; nothing
@@ -122,34 +111,4 @@ export function SavingsMoveRow({
       ariaLabel="Open move details"
     />
   )
-}
-
-/** The Savings feed: one row per move, as Savings sees it. */
-export function savingsMoveEntries(
-  moves: SavingsMoveRecord[],
-  burns: Map<string, WithdrawalRecord>,
-  onOpen: (withdrawalLocalId: string) => void,
-  sharePrice?: bigint,
-  etaFor?: (move: SavingsMoveRecord, burn?: WithdrawalRecord) => SavingsMoveEta | undefined,
-): ActivityEntry[] {
-  return moves.map((move) => {
-    const burn = burns.get(move.withdrawalLocalId)
-    return {
-      id: move.withdrawalLocalId,
-      ts: move.startTime,
-      direction: move.direction,
-      pending: !isSavingsMoveSettled(move, burn),
-      node: (
-        <SavingsMoveRow
-          key={move.withdrawalLocalId}
-          move={move}
-          burn={burn}
-          perspective="savings"
-          sharePrice={sharePrice}
-          eta={etaFor?.(move, burn)}
-          onOpen={() => onOpen(move.withdrawalLocalId)}
-        />
-      ),
-    }
-  })
 }

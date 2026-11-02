@@ -8,6 +8,8 @@ import path from "node:path"
 import { startCaptureServer, walletDir } from "../../scripts/ui-capture/server.mjs"
 import { loadChromium, localBaseUrl, installCaptureGuard, verificationErrors } from "../../scripts/ui-capture/capture-support.mjs"
 import { FIXTURE_TIME, settle } from "../../scripts/ui-capture/plan.mjs"
+// The contacts demo seeds this tag at the length limit, still on a retired rollup.
+const LONG_STALE_TAG = "mslongtag".padEnd(32, "x")
 
 // Boot the real App and its CSS imports; a static shell.css subset misses flow-layout.css.
 let server, browser, base
@@ -19,7 +21,7 @@ const source = {
   status: execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" }).trim(),
   hashes: {},
 }
-for (const file of ["src/ui/shell.css", "src/ui/flow-layout.css", "src/features/contacts/ContactsScreen.tsx", "test/browser/contactsGeometry.browser.mjs"]) {
+for (const file of ["src/ui/shell.css", "src/ui/flow-layout.css", "src/features/contacts/ContactsScreen/ContactsScreen.tsx", "test/browser/contactsGeometry.browser.mjs"]) {
   source.hashes[file] = hash(await readFile(path.join(walletDir, file)))
 }
 before(async () => {
@@ -80,10 +82,21 @@ for (const { width, height, insets } of cases) {
       await page.locator(".ww-shell").waitFor({ state: "visible" })
       await page.goto(`${base.origin}/contacts`, { waitUntil: "domcontentloaded" })
       await page.locator(".ww-contacts").waitFor({ state: "visible" })
+      const longRow = page.locator(".zkm-contact-row", { hasText: LONG_STALE_TAG }).first()
+      await longRow.locator(".ww-contacts__trailing").waitFor({ state: "visible" })
       await settle(page)
       const screenshot = `${name}.png`
       const pixels = await page.screenshot({ path: path.join(output, screenshot), animations: "disabled" })
       report.screenshot = { file: screenshot, sha256: hash(pixels) }
+      report.longTag = await longRow.evaluate((row) => {
+        const title = row.querySelector(".zkm-contact-row__text > .zkm-gradient-text")
+        const r = title.getBoundingClientRect()
+        return {
+          right: r.right,
+          badgeLeft: row.querySelector(".ww-contacts__trailing").getBoundingClientRect().left,
+          height: r.height,
+        }
+      })
       report.geometry = await page.evaluate(() => {
         const rect = (selector) => {
           const e = document.querySelector(selector)
@@ -118,6 +131,9 @@ for (const { width, height, insets } of cases) {
       assert.equal(g.hasFlowHeaderRule, true, "the full imported flow stylesheet must be loaded")
       assert.equal(g.searchCount, 1)
       assert.ok(g.scrollWidth <= width)
+      const t = report.longTag
+      assert.ok(t.right <= t.badgeLeft, `long tag ends at ${t.right}, badge starts at ${t.badgeLeft}`)
+      assert.ok(t.height < 30, `long tag stays on one line: ${t.height}px`)
       if (width <= 640) {
         const top = insets?.top ?? 0, left = insets?.left ?? 0, right = insets?.right ?? 0
         assert.equal(g.head.padding, "0px")

@@ -12,6 +12,8 @@ export interface EntryConditions {
   /** The account holds the sponsored-transaction subscription. */
   registered: boolean
   withdrawalInFlight: boolean
+  /** A paylink the account made still holds escrow only the account can take back. */
+  openLink: boolean
   historicBalance: boolean
   balance: bigint
   fundingAmount: bigint
@@ -34,6 +36,11 @@ export function entryBlock(
   if (!c.routeLive) return { line: "Not available on this network yet" }
   if (!c.registered) return { line: "Sponsored transactions are not set up", action: "sponsorship" }
   if (c.withdrawalInFlight) return { line: "Finish your withdrawal first", action: "activity" }
+  if (c.openLink)
+    return {
+      line: "Finish your open paylinks first. Once a backup is added, links you made before can't be cancelled or reclaimed.",
+      action: "activity",
+    }
   if (c.historicBalance) return { line: "Finish your migration first", action: "migration" }
   if (c.balance < c.fundingAmount)
     return { line: `You need at least ${amount(c.fundingAmount)} to add a backup` }

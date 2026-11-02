@@ -5,7 +5,7 @@ import {
   getHardcodedArtifact,
   getBroadcasterArtifact,
 } from "@obsidion/contracts"
-import { getClaimFPCArtifact } from "../utils/claimFpcFixture.js"
+import { getClaimFPCArtifact } from "../utils/claimFpc/claimFpcFixture.js"
 import { getTokenArtifact, setupTest } from "../utils/helper.js"
 
 /**

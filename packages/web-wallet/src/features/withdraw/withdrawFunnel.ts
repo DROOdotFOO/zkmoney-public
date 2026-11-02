@@ -62,7 +62,7 @@ function finalizedProps(r: WithdrawalRecord): AnalyticsProps {
  * once — the record's timestamps carry the durations regardless of when we look.
  */
 export function withdrawTransitions(
-  records: WithdrawalRecord[],
+  records: readonly WithdrawalRecord[],
   reported: ReportedPhases,
 ): { events: FunnelEvent[]; next: ReportedPhases } {
   const events: FunnelEvent[] = []
@@ -97,7 +97,10 @@ async function readReported(storage: IStorageAdapter): Promise<ReportedPhases> {
 }
 
 /** Diff the records against the persisted reported map, emit what's owed, persist the new map. */
-export function reportWithdrawFunnel(records: WithdrawalRecord[], storage: IStorageAdapter): void {
+export function reportWithdrawFunnel(
+  records: readonly WithdrawalRecord[],
+  storage: IStorageAdapter,
+): void {
   try {
     void navigator.locks
       .request(REPORT_LOCK, async () => {

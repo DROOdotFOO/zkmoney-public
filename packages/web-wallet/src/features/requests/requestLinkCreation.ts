@@ -7,7 +7,7 @@ import {
   SIPADepositStore,
   type MintedRequestLink,
   type MintRequestLinkArgs,
-  type PaymentRequest,
+  type StoredRequest,
   type SipaOrigin,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
@@ -19,7 +19,7 @@ export function requestLinkOrigin(): string {
 }
 
 export interface RequestLinkStore {
-  add(row: PaymentRequest): Promise<void>
+  add(row: StoredRequest): Promise<void>
 }
 
 /** What this wallet recorded when it derived `sipa`. */

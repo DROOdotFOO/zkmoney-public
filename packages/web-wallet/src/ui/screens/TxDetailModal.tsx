@@ -24,6 +24,7 @@ import {
   refundInFlightVersion,
   truncateMiddle,
   type PaylinkRowStatusLabel,
+  useResource,
 } from "@obsidion/front-core"
 import {
   ConfirmationSheetDetailRow,
@@ -39,21 +40,19 @@ import { usePhoneLayout } from "../usePhoneLayout"
 import { Modal } from "../Modal"
 import { usdFigure } from "../format"
 import { useL2TxUrl } from "../useL2TxUrl"
-import {
-  creatorLinkAction,
-  isOtherRollupLink,
-  type CreatorLinkAction,
-} from "../../features/paylink/creatorLinkActions"
+import { useBalanceMovingPause } from "../../features/backupPasskey/balanceMovingPause"
+import { creatorLinkAction, isOtherRollupLink, type CreatorLinkAction } from "@obsidion/front-core"
 import { paylinkRowShareUrl } from "../../features/shortLinks"
 import { LinkRecoverModal } from "../../features/paylink/LinkRecoverModal"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
-import { recheckPaylinkClaim } from "../../features/notifications/PaylinkClaimMount"
+import { recheckPaylinkClaim } from "../../features/notifications/PaylinkClaimMount/PaylinkClaimMount"
 import { usePaylinkDeps } from "../../features/paylink/usePaylinkDeps"
 import { useTabLine } from "../../features/operations/operations"
 import { HashRow } from "../detailRows"
 import { useCopy } from "../hooks"
 import { linkFragmentOf, type ActivityRowView } from "./activityView"
 import { StatusWithReason } from "./DepositStatusValue"
+import { useSession } from "../../platform/session"
 
 // Styles match the feed row's STATUS_STYLE for the same labels, so one state never wears two colors.
 const PAYLINK_BADGE_STYLE: Record<PaylinkRowStatusLabel, StatusBadgeStyle> = {
@@ -96,7 +95,9 @@ export function TxDetailModal({
   const navigate = useNavigate()
   const pathname = useLocation().pathname
   const deps = usePaylinkDeps()
+  const networkId = useResource(useSession().wallet)?.networkId
   const linkTabLine = useTabLine(row.paylinkRow?.operationId)
+  const pauseForMove = useBalanceMovingPause()
 
   const fragment = row.paylink ? linkFragmentOf(row.paylink) : null
   const [linkStatus, setLinkStatus] = useState(row.paylinkStatus)
@@ -152,7 +153,7 @@ export function TxDetailModal({
             : null,
         refundStatus: row.refundStatus,
         refundStarting: isRefundInFlight(row.paylinkRow.payToEmailSecret ?? ""),
-        retired: isOtherRollupLink(row.paylinkRow),
+        retired: isOtherRollupLink(row.paylinkRow, networkId),
         nowSec: chainNow ?? Math.floor(Date.now() / 1000),
       })
     : undefined
@@ -355,16 +356,20 @@ export function TxDetailModal({
               title={recovery === "reclaim" ? "Reclaim funds" : "Cancel link"}
               buttonStyle="danger"
               isDisabled={checking}
-              onClick={() => {
-                const token = row.paylinkRow?.token
-                setRecovering({
-                  action: recovery,
-                  fragment,
-                  paylinkRow: row.paylinkRow!,
-                  amount: token ? usdFigure(String(token.amount)) : row.amount.replace(/^[+-]/, ""),
-                  createdMs: row.timestampMs,
+              onClick={() =>
+                pauseForMove(() => {
+                  const token = row.paylinkRow?.token
+                  setRecovering({
+                    action: recovery,
+                    fragment,
+                    paylinkRow: row.paylinkRow!,
+                    amount: token
+                      ? usdFigure(String(token.amount))
+                      : row.amount.replace(/^[+-]/, ""),
+                    createdMs: row.timestampMs,
+                  })
                 })
-              }}
+              }
             />
           )}
         </>

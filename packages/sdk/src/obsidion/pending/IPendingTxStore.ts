@@ -19,9 +19,6 @@ import type { PendingTxRecord } from "./types.js"
  * Listener fired on every successful write to the store (`create`, `patch`,
  * `remove`, `removeExpired`). The argument is the txHash that changed; the
  * subscriber re-reads via `get(txHash)` if it needs the current record.
- *
- * `TxLifecycleService` subscribes to this to drive its unified 1Hz
- * polling loop on fresh records (no inter-tick lag for new sends).
  */
 export type PendingTxStoreListener = (txHash: string) => void
 
@@ -46,10 +43,10 @@ export interface IPendingTxStore {
   /** Read a single record by tx hash; returns `undefined` if absent OR expired. */
   get(txHash: string): Promise<PendingTxRecord | undefined>
 
-  /** List all non-expired records. Used by `TxLifecycleService.resumeAll`. */
+  /** List all non-expired records. */
   list(): Promise<readonly PendingTxRecord[]>
 
-  /** List records past `expiresAtMs`. Used by the `expireAndTerminalize` sweep. */
+  /** List records past `expiresAtMs`. */
   listExpired(): Promise<readonly PendingTxRecord[]>
 
   /** Patch a subset of fields on an existing record. Returns true if patched. */
@@ -58,11 +55,7 @@ export interface IPendingTxStore {
     fields: Partial<Omit<PendingTxRecord, "txHash">>,
   ): Promise<boolean>
 
-  /**
-   * Remove a record on terminal evidence. **Single-writer scope** —
-   * `TxLifecycleService` is the only post-submit caller (the wallet's
-   * `sendTx` catch-path undo is the documented exception).
-   */
+  /** Remove a record on terminal evidence, or undo one the wallet's `sendTx` catch path wrote. */
   remove(txHash: string): Promise<void>
 
   /**

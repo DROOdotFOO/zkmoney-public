@@ -14,8 +14,7 @@
  * record" rather than "crash the app" (see `EncryptedStorageAdapter.getItem`).
  *
  * Listeners registered via `onKeyChanged` fire when the underlying key
- * material changes. Subscribers (e.g. `PendingTxStore`) can use this to
- * invalidate caches and re-load.
+ * material changes. Subscribers can use this to invalidate caches and re-load.
  */
 export interface CryptoProvider {
   /** Encrypt arbitrary string plaintext. Returns a self-contained ciphertext envelope. */

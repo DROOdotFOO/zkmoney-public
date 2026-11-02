@@ -10,10 +10,10 @@
  * The fixtures are written to test/oidcKeyRegistry/debug-malformed-jwt-*.json
  *
  * Usage (from packages/sdk): npm run generate:malformed-jwt
- * Or: npx tsx scripts/generate-malformed-jwt-fixtures.mjs
+ * Or: npx tsx scripts/jwt/generate-malformed-jwt-fixtures.mjs
  */
 
-import { generateAllMalformedJwtFixtures } from "../test/utils/malformedJwtGenerator.ts"
+import { generateAllMalformedJwtFixtures } from "../../test/utils/jwt/malformedJwtGenerator.ts"
 
 console.log("Generating malformed JWT test fixtures...")
 console.log("=" .repeat(60))

@@ -7,14 +7,15 @@ import {
   StoredAddressMismatchError,
   composeWireNameHash,
   normalizeTag,
-  useAccountContext,
-  useAztecContext,
   useContractServiceContext,
+  useResource,
+  WalletError,
 } from "@obsidion/front-core"
 import type { ObsidionAccount } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
 import { getOxideTuple } from "../../config/oxideTuple"
-import { failureCode, fireEvent } from "../../lib/analytics"
+import { failureCode, fireEvent, fireOnboardingEvent, reportLanding } from "../../lib/analytics"
+import { firstInTab } from "../../lib/trafficSource"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
 import {
   NoWalletForPasskeyError,
@@ -30,6 +31,7 @@ import {
   type PasskeyClassification,
 } from "@obsidion/passkey-web"
 import { peekAuthService } from "../../platform/auth/useAuthenticator"
+import { handOffAccount, servesAnotherAccount, useSession } from "../../platform/session"
 import { getActiveStorageId } from "../../platform/storage/activeStorage"
 import { EndpointsModal } from "../../ui/EndpointsModal"
 import { useHoldEndpoints } from "../../ui/endpointsHold"
@@ -65,9 +67,11 @@ import {
 } from "../../platform/auth/WebAlphaAuthService"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import {
+  hasOpeningBreadcrumb,
   listRetiredUsertagCandidates,
   listUsertagCandidates,
   usertagFor,
+  walletKeysFor,
   type RememberedAccount,
 } from "../../platform/auth/WebPasskeyIdentityMap"
 import { resolveSignInTag } from "../contacts/registryResolution"
@@ -96,7 +100,6 @@ import {
   reservedTagMatch,
   type EnteredClaim,
   type EnterResult,
-  type SignInHints,
 } from "./oxideOnboarding"
 import { boundNameGrantOwner, reservedNameHashes } from "./recoveryProbes"
 import { confirmRegistrationTag } from "./openRegistration"
@@ -105,16 +108,18 @@ import { probeNameAvailability } from "./nameAvailability"
 import { saveRegistrationTerms } from "./registrationTerms"
 import { InvitationChrome } from "./InvitationChrome"
 import { OnboardingSpinnerBody } from "./OnboardingCard"
+import { type AccountFound, type Found, keyOptions, oneRowPerWallet, useRowKeys } from "./rowKeys"
 import { ConfirmTagModal, type ByTagNotice } from "./steps/ConfirmTagModal"
 import { CreateWalletStep } from "./steps/CreateWalletStep"
 
-/** What a tap pins the sign-in to: the tag's account and keys as L1 lists them, or a remembered credential. */
-type Found = {
-  tag: string
-  l2Address: string
-  hints: SignInHints
-  /** The L1 read found keys beyond the first; unset on a remembered account, which had no read. */
-  moreKeys?: boolean
+// How the passkey was picked: the browser's list, or pinned to a typed tag or a remembered account.
+const LOGIN_METHODS = { "enter": "chooser", "enter:by-tag": "pinned" } as const
+type LoginMethod = (typeof LOGIN_METHODS)[Entry["action"]]
+
+/** A failed login: `action_failed` for a consenting browser, and an identifier-free funnel count. */
+function failEntry(props: { action: Entry["action"]; code: string }) {
+  fireEvent("action_failed", props)
+  fireOnboardingEvent("login_failed", { method: LOGIN_METHODS[props.action], code: props.code })
 }
 
 type Unclaimed = Extract<EnterResult, { reason: "unclaimed" }>
@@ -304,11 +309,14 @@ function walletPath(raw: string | undefined): string | undefined {
  */
 export function EnterAppScreen() {
   const navigate = useNavigate()
+  useEffect(() => {
+    reportLanding("login")
+    if (firstInTab("login_opened")) fireOnboardingEvent("login_opened")
+  }, [])
   const [params] = useSearchParams()
   const config = getConfig()
-  const { obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
   const { contractService } = useContractServiceContext()
-  const { setObsidionAccount } = useAccountContext()
   // Router state normally, and the URL when this screen replaced its own document. Only a path
   // inside the wallet counts: as a URL the destination is anyone's to write.
   const next = walletPath(useNextRoute() ?? params.get("next") ?? undefined)
@@ -322,6 +330,9 @@ export function EnterAppScreen() {
   // leads the screen; `avoid` names a credential whose row the screen hides (it just failed).
   const chooser = params.get("choose") === "1"
   const avoid = params.get("avoid") ?? undefined
+  // `pick` names a remembered row whose keys the screen opens with: the unlock pane's way to a key
+  // this browser holds no record of.
+  const pick = params.get("pick") ?? undefined
   // Dev-only `/enter?mock=confirm`: opens the confirm-tag modal with no passkey prompt.
   const mock = import.meta.env.DEV && params.get("mock") === "confirm"
   const [confirming, setConfirming] = useState(mock)
@@ -338,10 +349,29 @@ export function EnterAppScreen() {
   const [prepared, setPrepared] = useState<"pending" | "ready" | "failed">("pending")
   const [typed, setTyped] = useState("")
   const [found, setFound] = useState<Found>()
+  const rows = useRowKeys(config.rpId)
   const [notice, setNotice] = useState<ByTagNotice>()
   const [resolving, setResolving] = useState(false)
   const [endpointsOpen, setEndpointsOpen] = useState(false)
-  const { busy, run } = useAsyncAction()
+  const { busy, run: runAction } = useAsyncAction()
+  /** `useAsyncAction`, also counting a rethrown login failure, which `action_failed` reports only
+   *  with consent. */
+  const run = (fn: () => Promise<void>, action: Entry["action"], context?: string) =>
+    runAction(
+      async () => {
+        try {
+          await fn()
+        } catch (e) {
+          fireOnboardingEvent("login_failed", {
+            method: LOGIN_METHODS[action],
+            code: failureCode(e),
+          })
+          throw e
+        }
+      },
+      action,
+      context,
+    )
   // The screen's own buttons are the tap before the first prompt; only the second prompt holds.
   const {
     gate,
@@ -384,16 +414,31 @@ export function EnterAppScreen() {
       cancelled = true
     }
   }, [config.rpId, start])
+  // This rollup's remembered rows, one per wallet; `avoid` hides the failed key's record first.
+  const ownRows = () =>
+    oneRowPerWallet(
+      listUsertagCandidates(config.rpId).filter((c) => c.credentialId !== avoid),
+      (c) => walletKeysFor(config.rpId, c.credentialId)?.length ?? 1,
+    )
   // The accounts this browser remembers, re-read whenever the screen shows.
   const candidates = useMemo(
     () => {
       const seen = new Set<string>()
-      return [...listUsertagCandidates(config.rpId), ...retired].filter(
+      return [...ownRows(), ...retired].filter(
         (c) => c.credentialId !== avoid && !seen.has(c.credentialId) && !!seen.add(c.credentialId),
       )
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [config.rpId, avoid, start, retired],
+  )
+  const keyed = useMemo(
+    () =>
+      new Set(
+        candidates
+          .filter((c) => (walletKeysFor(config.rpId, c.credentialId)?.length ?? 0) > 1)
+          .map((c) => c.credentialId),
+      ),
+    [config.rpId, candidates],
   )
 
   // The running action. Starting another aborts it; so do the user's cancel and unmount. Every
@@ -435,7 +480,7 @@ export function EnterAppScreen() {
 
   // A refusal is not an error to report, but it is a failed entry for the funnel.
   const refuse = (e: Error, action: Entry["action"] = "enter", extra?: Partial<Refusal>) => {
-    fireEvent("action_failed", { action, code: failureCode(e) })
+    failEntry({ action, code: failureCode(e) })
     setRefusal({
       name: e.name,
       message: e.message,
@@ -444,7 +489,7 @@ export function EnterAppScreen() {
     })
   }
   const failByTag = (outcome: keyof typeof BY_TAG_FAILURE_CODES) =>
-    fireEvent("action_failed", { action: "enter:by-tag", code: BY_TAG_FAILURE_CODES[outcome] })
+    failEntry({ action: "enter:by-tag", code: BY_TAG_FAILURE_CODES[outcome] })
 
   const claimRoute = (search: string, boundGrantOwner?: string) =>
     navigate(`/claim${search}`, {
@@ -459,22 +504,25 @@ export function EnterAppScreen() {
 
   // The account active when this screen opened.
   const previousStorageId = useRef(getActiveStorageId())
-  // The account changed while this screen was open, or a commit on this page (possibly before it
-  // opened, e.g. a signed-out page entering an account this browser holds) left the stores stale.
+  // The account changed while this screen was open, the page served another account before it, or
+  // a commit on this page (e.g. a signed-out page entering an account this browser holds) left the
+  // stores stale.
   const storesStale = () =>
     peekAuthService()?.recordsStale() === true ||
+    servesAnotherAccount() ||
     (previousStorageId.current !== null && previousStorageId.current !== getActiveStorageId())
 
   /**
    * This screen again, for the account recovery just committed. The selected tag and the
-   * destination come along, and `strict=1` when only that tag may name the claim; the chooser flag
-   * does not, so the reloaded document opens from the cached key instead of asking for another
-   * passkey.
+   * destination come along, and `strict=1` when only that tag may name the claim; the chooser and
+   * `pick` flags do not, so the reloaded document opens from the cached key instead of asking for
+   * another passkey.
    */
   const enterAgain = (entry: { tag: string; strict: boolean; named?: string }) => {
     const carried = new URLSearchParams(params)
     carried.delete("choose")
     carried.delete("avoid")
+    carried.delete("pick")
     carried.delete("next")
     if (entry.tag) carried.set("handle", entry.tag)
     else carried.delete("handle")
@@ -507,11 +555,13 @@ export function EnterAppScreen() {
     account: ObsidionAccount,
     entered: { handle: string; address: string },
     live: () => boolean,
+    method: LoginMethod = "chooser",
   ) => {
     if (!live()) return
-    setObsidionAccount(account)
+    handOffAccount(account)
     await saveWalletIdentity({ ...entered, claimedAt: Date.now() }, live)
     if (!live()) return
+    fireOnboardingEvent("login_succeeded", { method })
     // Replace: onboarding panes must never be back targets once in the wallet (useBack pops history).
     // A stashed inbound paylink claims on Home (ClaimLinkModal), not back on /link's split layout.
     navigate(peekClaimStash() ? "/" : next ?? "/", { replace: true })
@@ -540,10 +590,11 @@ export function EnterAppScreen() {
       if (!live()) return
       const keys = await collectOnboardingKeys(result.account)
       if (!live()) return
-      outcome = await claimTag(tag, keys, config, obsidionWallet!)
+      if (!obsidionWallet) throw new WalletError("wallet.notReady")
+      outcome = await claimTag(tag, keys, config, obsidionWallet)
     } catch (e) {
       if (!live()) return
-      fireEvent("action_failed", { action: entry.action, code: failureCode(e) })
+      failEntry({ action: entry.action, code: failureCode(e) })
       setRefusal(reservedCard(tag))
       return
     }
@@ -551,7 +602,7 @@ export function EnterAppScreen() {
     // replayed again by the next sign-in; nothing of it is kept here.
     if (!live()) return
     if (outcome.kind === "custody") {
-      await finish(result.account, { handle: tag, address }, live)
+      await finish(result.account, { handle: tag, address }, live, LOGIN_METHODS[entry.action])
       return
     }
     saveRegistrationTerms(
@@ -564,9 +615,10 @@ export function EnterAppScreen() {
     const record = getPendingStore().get(outcome.oxideAccount)
     if (record) confirmRegistrationTag(record)
     if (!live()) return
-    setObsidionAccount(result.account)
+    handOffAccount(result.account)
     await saveWalletIdentity({ handle: tag, address, claimedAt: Date.now(), pending: true }, live)
     if (!live()) return
+    fireOnboardingEvent("login_succeeded", { method: LOGIN_METHODS[entry.action] })
     navigate(peekClaimStash() ? "/" : next ?? "/", { replace: true })
   }
 
@@ -674,7 +726,7 @@ export function EnterAppScreen() {
     if (!live() || !diagnosis) return false
     const card = missDiagnosisCard(diagnosis, tag)
     if (!card) return false
-    fireEvent("action_failed", { action: entry.action, code: BY_TAG_FAILURE_CODES[diagnosis] })
+    failEntry({ action: entry.action, code: BY_TAG_FAILURE_CODES[diagnosis] })
     setRefusal(
       diagnosis === "NOT_REPRODUCED_HERE" ? { ...card, ...macHelpFor(result.observed) } : card,
     )
@@ -713,12 +765,13 @@ export function EnterAppScreen() {
         if (read.kind !== "notFound") setResolving(false)
         if (read.kind === "resolved") {
           setNotice(undefined)
-          setFound({
+          const resolved: AccountFound = {
             tag,
             l2Address: read.l2Address,
             hints: { account: read.account, l2Address: read.l2Address, keys: read.keys },
             moreKeys: read.moreKeys,
-          })
+          }
+          setFound({ ...resolved, keys: keyOptions(resolved) })
           return
         }
         setFound(undefined)
@@ -769,6 +822,8 @@ export function EnterAppScreen() {
     setFound(undefined)
     setNotice(undefined)
     dropResolve()
+    // Typing a tag leaves the selected row: one account's keys show at a time.
+    rows.close()
     const tag = normalizeTag(value)
     if (!tag) return
     debounceRef.current = setTimeout(() => {
@@ -825,7 +880,12 @@ export function EnterAppScreen() {
     // wallet are still the attempt's, and stop at its cancel or when its session was replaced.
     if (result.entered) {
       const { account, handle, address } = result
-      await finish(account, { handle, address }, () => live() && result.held())
+      await finish(
+        account,
+        { handle, address },
+        () => live() && result.held(),
+        LOGIN_METHODS[entry.action],
+      )
       return
     }
     if (!live()) return
@@ -879,7 +939,7 @@ export function EnterAppScreen() {
       if (diagnosed || !live()) return
       // An incomplete catalog proves no account absent: a retry, never "no wallet".
       if (result.catalogIncomplete) {
-        fireEvent("action_failed", { action: entry.action, code: "unknown" })
+        failEntry({ action: entry.action, code: "unknown" })
         setRefusal({ name: "error", message: NETWORK_MESSAGE })
         return
       }
@@ -903,7 +963,7 @@ export function EnterAppScreen() {
             result,
             entry: { tag: entry.tag, action: entry.action },
           }
-          fireEvent("action_failed", { action: entry.action, code: failureCode(e) })
+          failEntry({ action: entry.action, code: failureCode(e) })
           setRefusal({ name: "error", message: NETWORK_MESSAGE })
           return
         }
@@ -957,7 +1017,7 @@ export function EnterAppScreen() {
         if (reloadIfSwitched({ tag: handle, action: "enter" })) return
         if (op.signal.aborted || isGateCancelled(e)) return
         if (e instanceof StoredAddressMismatchError) {
-          fireEvent("action_failed", { action: "enter", code: failureCode(e) })
+          failEntry({ action: "enter", code: failureCode(e) })
           setRefusal(mismatchRefusal(e))
           return
         }
@@ -969,7 +1029,7 @@ export function EnterAppScreen() {
           setRefusal({ name: "error", message: NETWORK_MESSAGE, probeCommitted: true })
           throw e
         }
-        fireEvent("action_failed", { action: "enter", code: failureCode(e) })
+        failEntry({ action: "enter", code: failureCode(e) })
         activateStart(true)
         return
       }
@@ -1019,7 +1079,7 @@ export function EnterAppScreen() {
         if (op.signal.aborted || isGateCancelled(e)) return
         const unusable = inAppBrowserRefusal(e)
         if (isPasskeyNotOffered(e)) {
-          fireEvent("action_failed", { action: "enter", code: "passkey_prompt_closed" })
+          failEntry({ action: "enter", code: "passkey_prompt_closed" })
           setRefusal(
             unusable
               ? { ...unusable, cause: e }
@@ -1033,7 +1093,7 @@ export function EnterAppScreen() {
         // A record we hold no longer reproduces from this passkey: the wallet's own card, its copy
         // chosen by the verdict.
         if (e instanceof StoredAddressMismatchError) {
-          fireEvent("action_failed", { action: "enter", code: failureCode(e) })
+          failEntry({ action: "enter", code: failureCode(e) })
           setRefusal(mismatchRefusal(e))
           return
         }
@@ -1054,7 +1114,7 @@ export function EnterAppScreen() {
           throw e
         }
         if (unusable) {
-          fireEvent("action_failed", { action: "enter", code: failureCode(e) })
+          failEntry({ action: "enter", code: failureCode(e) })
           setRefusal({ ...unusable, cause: e })
           return
         }
@@ -1133,7 +1193,7 @@ export function EnterAppScreen() {
             throw e
           }
           if (unusable) {
-            fireEvent("action_failed", { action: "enter:by-tag", code: failureCode(e) })
+            failEntry({ action: "enter:by-tag", code: failureCode(e) })
             setRefusal({ ...unusable, cause: e })
             return
           }
@@ -1195,17 +1255,46 @@ export function EnterAppScreen() {
   }
   const chooseAccount = (account: RememberedAccount) => {
     dropResolve()
+    const keys = walletKeysFor(config.rpId, account.credentialId)
+    if (keys && keys.length > 1) {
+      if (rows.selected?.credentialId === account.credentialId) {
+        rows.close()
+        return
+      }
+      // The selected row's keys take Login's place, so the tag field steps aside.
+      setTyped("")
+      setFound(undefined)
+      setNotice(undefined)
+      rows.open(account, keys)
+      return
+    }
+    rows.close()
     pinned({
       tag: account.usertag,
       l2Address: account.l2Address,
       hints: { credentialId: account.credentialId },
     })
   }
+  const chooseRowKey = (credentialId: string) => {
+    const option = rows.optionFor(credentialId)
+    if (!option) return
+    dropResolve()
+    pinned(option.target)
+  }
   const login = () => {
-    if (!submitReady || !found) return
+    if (!submitReady || !found || found.keys) return
     dropResolve()
     fireEvent("passkey_by_tag_lookup_resolved", { more_keys: found.moreKeys ?? false })
     pinned(found)
+  }
+  const chooseTagKey = (credentialId: string) => {
+    const option = submitReady
+      ? found?.keys?.find((o) => o.credentialId === credentialId)
+      : undefined
+    if (!option) return
+    dropResolve()
+    fireEvent("passkey_by_tag_lookup_resolved", { more_keys: found?.moreKeys ?? false })
+    pinned(option.target)
   }
 
   // Once the wallet is ready. Restartable: StrictMode replays this effect, and only the replayed
@@ -1213,8 +1302,17 @@ export function EnterAppScreen() {
   const walletReady = !!obsidionWallet && !!contractService
   useEffect(() => {
     if (!walletReady || mock) return
-    if (chooser) {
+    if (chooser || pick) {
       activateStart(true)
+      // The picked record's wallet, as the row the screen shows for it.
+      const picked = pick
+        ? listUsertagCandidates(config.rpId).find((c) => c.credentialId === pick)
+        : undefined
+      const row = picked
+        ? ownRows().find((c) => c.l2Address.toLowerCase() === picked.l2Address.toLowerCase())
+        : undefined
+      const keys = row ? walletKeysFor(config.rpId, row.credentialId) : undefined
+      if (row && keys && keys.length > 1) rows.open(row, keys)
       // The unmount drops the seed's read, so the replay seeds again.
       return () => {
         seeded.current = false
@@ -1284,6 +1382,7 @@ export function EnterAppScreen() {
     abortOp()
     cancelGate()
     dropResolve()
+    rows.close()
     setNotice(undefined)
     setFound(undefined)
     setTyped("")
@@ -1391,7 +1490,13 @@ export function EnterAppScreen() {
 
   // The landing card the visitor came from stays behind the sign-in modals.
   const backdrop = (
-    <CreateWalletStep busy={false} onCreate={() => {}} onLogIn={() => {}} onCancel={() => {}} />
+    <CreateWalletStep
+      busy={false}
+      returning={hasOpeningBreadcrumb(config.rpId)}
+      onCreate={() => {}}
+      onLogIn={() => {}}
+      onCancel={() => {}}
+    />
   )
   if (gateState.kind === "awaiting-action" && !confirming) {
     return (
@@ -1429,6 +1534,12 @@ export function EnterAppScreen() {
             start={{
               candidates,
               onCandidate: chooseAccount,
+              keyed,
+              rowKeys: rows.rowKeys,
+              onRowKey: chooseRowKey,
+              onRowKeysAgain: rows.again,
+              tagKeys: found?.keys,
+              onTagKey: chooseTagKey,
               value: typed,
               onTagChange,
               onTagBlur,

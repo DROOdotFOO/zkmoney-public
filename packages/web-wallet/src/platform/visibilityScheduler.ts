@@ -1,13 +1,7 @@
 /**
- * The one place the wallet decides what a background tab costs.
- *
- * Every repeating read the wallet makes is a poll nobody is reading while the tab is hidden, and
- * the node bills for it either way. Rather than teach each loop about `document`, loops take an
- * interval scheduler; these are the two the browser front supplies. Front-core services accept the
- * same shape, so a service stays platform-neutral.
- *
- * Every policy runs a catch-up tick the moment the page is shown, so what a returning user reads is
- * current before they read it rather than up to one interval stale.
+ * What a background tab costs the screen's own loops. A poll nobody reads while the tab is hidden
+ * still bills the node, so a screen's loop takes an interval scheduler that stops while hidden.
+ * Showing the page runs a catch-up tick at once, so what a returning user reads is current.
  */
 
 /** The interval surface front-core services and the wallet's own loops take. */
@@ -19,8 +13,6 @@ export interface IntervalScheduler {
 interface Entry {
   callback: () => void
   ms: number
-  /** Multiplier applied while hidden; `Infinity` stops the timer instead. */
-  hiddenFactor: number
   handle: ReturnType<typeof setInterval> | null
 }
 
@@ -34,9 +26,8 @@ function reschedule(entry: Entry): void {
     clearInterval(entry.handle)
     entry.handle = null
   }
-  const hidden = isHidden()
-  if (hidden && entry.hiddenFactor === Infinity) return
-  entry.handle = setInterval(entry.callback, hidden ? entry.ms * entry.hiddenFactor : entry.ms)
+  if (isHidden()) return
+  entry.handle = setInterval(entry.callback, entry.ms)
 }
 
 function onVisibilityChange(): void {
@@ -53,36 +44,24 @@ function listen(): void {
   listening = true
 }
 
-function scheduler(hiddenFactor: number): IntervalScheduler {
-  return {
-    setInterval(callback, ms) {
-      listen()
-      const entry: Entry = { callback, ms, hiddenFactor, handle: null }
-      entries.add(entry)
-      reschedule(entry)
-      return entry
-    },
-    clearInterval(handle) {
-      const entry = handle as Entry | null
-      if (!entry || !entries.delete(entry)) return
-      if (entry.handle !== null) clearInterval(entry.handle)
-      entry.handle = null
-    },
-  }
-}
-
 /**
  * Stops while the page is hidden. For work whose only consumer is the screen — a clock behind a
  * label, a check whose result is a notification the user reads on return.
  */
-export const pauseWhenHidden: IntervalScheduler = scheduler(Infinity)
-
-/**
- * Keeps running at `ms * factor` while hidden. For work that must keep advancing with nobody
- * watching, such as money already in flight, where stopping would strand it until the user returns.
- */
-export function slowWhenHidden(factor: number): IntervalScheduler {
-  return scheduler(factor)
+export const pauseWhenHidden: IntervalScheduler = {
+  setInterval(callback, ms) {
+    listen()
+    const entry: Entry = { callback, ms, handle: null }
+    entries.add(entry)
+    reschedule(entry)
+    return entry
+  },
+  clearInterval(handle) {
+    const entry = handle as Entry | null
+    if (!entry || !entries.delete(entry)) return
+    if (entry.handle !== null) clearInterval(entry.handle)
+    entry.handle = null
+  },
 }
 
 /**

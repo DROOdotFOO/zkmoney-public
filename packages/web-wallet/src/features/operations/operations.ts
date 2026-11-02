@@ -3,7 +3,12 @@
  * {@link runOperation}, and everything that says whether the tab may close reads the store.
  */
 import { useCallback, useSyncExternalStore } from "react"
-import { OperationStore, TxInFlightError, type OperationRecord } from "@obsidion/front-core"
+import {
+  OperationStore,
+  TxInFlightError,
+  type OperationRecord,
+  type ReadonlyStore,
+} from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { getActiveStorageId, onActiveStorageIdChange } from "../../platform/storage/activeStorage"
@@ -159,10 +164,10 @@ async function operate<T>(
 
 /** This scope's operations that have not ended, newest first. */
 const inProgress = createExternalState<OperationRecord[]>([])
-/** This scope's ended operations the notifications panel still lists, newest first. */
-const endedShown = createExternalState<OperationRecord[]>([])
+/** This scope's ended operations, dismissed ones included, newest first. */
+const endedRecords = createExternalState<OperationRecord[]>([])
 /** The store has been read, so an empty list means none. */
-const operationsLoaded = createExternalState(false)
+const loadedState = createExternalState(false)
 /** The operations flows in this page run, in any scope. */
 const tabBound = createExternalState<OperationRecord | undefined>(undefined)
 let watching = false
@@ -179,8 +184,8 @@ function watchOperations(): void {
     // Background operations are the wallet's own bookkeeping: no notification lists them.
     const scoped = store.list().filter((r) => r.scope === scope && !r.background)
     const next = scoped.filter((r) => r.state === "local" || r.state === "sent")
-    const ended = scoped.filter((r) => r.endedAt !== undefined && r.dismissedAt === undefined)
-    if (JSON.stringify(ended) !== JSON.stringify(endedShown.get())) endedShown.set(ended)
+    const ended = scoped.filter((r) => r.endedAt !== undefined)
+    if (JSON.stringify(ended) !== JSON.stringify(endedRecords.get())) endedRecords.set(ended)
     const current = inProgress.get()
     const live = next.map((r) => store.isLive(r.operationId)).join()
     const same =
@@ -197,7 +202,7 @@ function watchOperations(): void {
   onActiveStorageIdChange(refresh)
   void store.load().then(() => {
     refresh()
-    operationsLoaded.set(true)
+    loadedState.set(true)
   })
   refresh()
 }
@@ -212,13 +217,25 @@ export function useOperationsInProgress(): OperationRecord[] {
   return useSyncExternalStore(inProgress.subscribe, inProgress.get)
 }
 
-/** This scope's ended operations, not cleared from the notifications panel. */
-export function useEndedOperations(): { ended: OperationRecord[]; loaded: boolean } {
-  watchOperations()
-  const ended = useSyncExternalStore(endedShown.subscribe, endedShown.get)
-  const loaded = useSyncExternalStore(operationsLoaded.subscribe, operationsLoaded.get)
-  return { ended, loaded }
-}
+const watched = <T>(state: { get(): T; subscribe(listener: () => void): () => void }) => ({
+  get(): T {
+    watchOperations()
+    return state.get()
+  },
+  subscribe: state.subscribe,
+})
+
+/** This scope's unfinished operations, newest first. */
+export const runningOperations: ReadonlyStore<OperationRecord[]> = watched(inProgress)
+
+/**
+ * This scope's ended operations, dismissed ones included: an entry one covers stays hidden after the
+ * user clears it.
+ */
+export const endedOperations: ReadonlyStore<OperationRecord[]> = watched(endedRecords)
+
+/** The store has been read, so an empty list means none. */
+export const operationsLoaded: ReadonlyStore<boolean> = watched(loadedState)
 
 /**
  * A `local` operation this page is running: closing, reloading or logging out would lose it. A

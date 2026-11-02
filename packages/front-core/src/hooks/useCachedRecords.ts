@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 
 /**
  * The read surface every `RecordStorage`-backed domain store already exposes
- * (`SIPADepositStore`, `WithdrawalStorage`, ...). `load()` must be memoized by
+ * (`SIPADepositStore`, `SavingsMoveStorage`, ...). `load()` must be memoized by
  * the store so repeat calls are free.
  */
 export interface CachedRecordSource<T> {

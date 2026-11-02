@@ -505,9 +505,10 @@ export async function assertRegistrationUnfunded(
 export async function prepareRegistrationRefund(
   record: PendingRegistrationRecord,
   config: WebWalletConfig,
+  networkId: string,
 ): Promise<SIPADepositRecord> {
   assertCurrent(record, config)
-  await healRegistrationDeposits(config)
+  await healRegistrationDeposits(config, networkId)
   const store = SIPADepositStore.get(webStorage)
   await store.load()
   const deposit = store.get(record.sipaAddress as Address)

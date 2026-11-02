@@ -18,7 +18,7 @@
  */
 
 import type { IStorageAdapter } from "../../storages/adapter"
-import { logger } from "src/utils/logger"
+import { logger } from "../../../utils/logger"
 
 export interface RecordStorageOptions<TRecord> {
   storage: IStorageAdapter

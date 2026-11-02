@@ -1,22 +1,22 @@
 import { EventEmitter } from "eventemitter3"
-import { ContractService, ContractName } from "@obsidion/contracts"
-import { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { ContractService, type ContractName } from "@obsidion/contracts"
+import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
-  BatchCall,
+  type BatchCall,
   Contract,
-  ContractBase,
+  type ContractBase,
   ContractFunctionInteraction,
-  DeployInstantiationOptions,
-  DeployMethod,
-  DeployOptions,
+  type DeployInstantiationOptions,
+  type DeployMethod,
+  type DeployOptions,
   type OffchainOutput,
-  SendInteractionOptions,
-  SimulateInteractionOptions,
+  type SendInteractionOptions,
+  type SimulateInteractionOptions,
   NO_WAIT,
 } from "@aztec-labs/aztec.js/contracts"
-import { Account } from "@aztec-labs/aztec.js/account"
-import { TxReceipt, TxHash, TxProfileResult } from "@aztec-labs/stdlib/tx"
+import type { Account } from "@aztec-labs/aztec.js/account"
+import { type TxReceipt, TxHash, type TxProfileResult } from "@aztec-labs/stdlib/tx"
 import { waitForTx } from "@aztec-labs/aztec.js/node"
 import { TESTNET_TIMEOUT } from "../utils/constants.js"
 import { QueueStatus, TransactionProgress } from "@obsidion/core/constants"
@@ -24,79 +24,30 @@ import { createAsyncTransaction } from "../utils/helper.js"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import type { OriginalFlowKind } from "@obsidion/proving-progress"
 import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
-import { type BuildTeeOperationSendOpts, dedupeByAddressString } from "./teeOperation.js"
+import { type BuildTeeOperationSendOpts, dedupeByAddressString } from "./tee/teeOperation.js"
 
-/**
- * Base options for all service methods that interact with contracts
- */
 export interface BaseServiceMethodOptions {
-  /** Options for the send transaction */
   sendOptions?: SendInteractionOptions
-  /** If true, profile the transaction before sending (logs gate counts) */
+  /** Log gate counts before sending. */
   profile?: boolean
-  /**
-   * Caller-supplied operation id. When
-   * the React-side `usePaymentFlow` mints a fresh op id at Confirm tap, it
-   * threads the id through here so `wallet.sendTx` sees it on the merged
-   * send options. The wallet's `withProvingScope` then registers the
-   * provided id instead of generating one — keeping the synth row's op id
-   * in sync with proving-progress events.
-   */
+  /** Proving-scope op id, so the UI row and proving events share one id. */
   operationId?: string
-  /**
-   * Original-flow kind. Threaded through
-   * `wallet.sendTx`'s `opts.kind` so withdraw / paylink-create flows route
-   * their proving-progress events and persisted record with the right
-   * discriminator. Defaults to `"send"` at the wallet boundary when omitted.
-   */
+  /** Proving-progress flow kind. The wallet defaults it to `"send"`. */
   kind?: OriginalFlowKind
-  /**
-   * When true, `sendAndWait` suppresses ALL of its own progress/status
-   * emissions for this call: the service status events
-   * (`emitProveAndSend`/`emitMining`/`emitSuccess`/`emitFailed`), the
-   * wait-phase `provingProgress.emitStageComplete(Mining)`, and the
-   * catch-block `provingProgress.emitReset()`. Used by `paylink-create`,
-   * which historically dispatched via a bespoke direct `wallet.sendTx(...
-   * NO_WAIT)` that emitted none of these — keeping it `silent` makes routing
-   * through `sendAndWait` behavior-neutral (no service-emitted status row
-   * feeding the tracked-tx queue, no proving-UI reset). The wallet-boundary
-   * proving emissions and proving-scope registration inside `wallet.sendTx`
-   * (driven by `kind` / `operationId`) are unaffected — they already fired
-   * on the direct path, so `silent` only gates this class's own emits.
-   * Defaults to false — no change for existing callers.
-   */
+  /** Skip this class's status and proving-progress emits. `wallet.sendTx` still emits its own. */
   silent?: boolean
-  /**
-   * Lazy-start simulation gate, forwarded verbatim to `wallet.sendTx`'s
-   * `confirmGate` via `sendAndWait`'s merged send options. The UI starts the
-   * service call at confirmation-modal mount and resolves this on confirm /
-   * rejects (AbortError) on dismiss or TTL. Undefined for every non-lazy
-   * caller. See {@link ObsidionWallet.sendTx}.
-   */
+  /** Holds `wallet.sendTx` until the user confirms. Rejects on dismiss. */
   confirmGate?: Promise<unknown>
 }
 
-/**
- * Generic method options type that combines base options with method-specific options
- */
 export type MethodOptions<T extends object = object> = BaseServiceMethodOptions & T
 
 export class ServiceBase extends EventEmitter {
   protected wallet: ObsidionWallet
   protected _lastProfileSteps: { method: string; gateCount: number }[] | undefined = undefined
-  /** Delegate whose profile steps are used as fallback when this service has none. */
+  /** Fallback source for `lastProfileSteps`. */
   protected _profileDelegate: ServiceBase | undefined = undefined
-  /**
-   * Optional TEE signer for services that drive oxide's submit-style flows
-   * (TokenService for transfer/withdraw, PaylinkService for claim/refund).
-   * Services that don't dispatch TEE-signed batches (ClientFee,
-   * OidcKeyRegistry, ...) leave it undefined; calling
-   * {@link getTeeSigner} on a service without a wired signer throws.
-   *
-   * Lives on ServiceBase (not ServiceContractBase) so PaylinkService — which
-   * extends ServiceBase directly but still dispatches via `buildTeeOperation`
-   * — can hold its own signer without brokering through TokenService.
-   */
+  /** Signer for oxide TEE flows. Here, not on ServiceContractBase, because PaylinkService needs it. */
   private _teeSigner?: RegisteredTeeSigner
 
   constructor(wallet: ObsidionWallet, teeSigner?: RegisteredTeeSigner) {
@@ -105,28 +56,11 @@ export class ServiceBase extends EventEmitter {
     this._teeSigner = teeSigner
   }
 
-  /**
-   * Inject, replace, or clear the TEE signer post-construction. Mirrors the
-   * relayer `BridgeService.setTeeSigner` pattern — useful when the bridge
-   * context (l1Portal / l2Bridge addresses) is only known after the L2
-   * bridge has been deployed and the signer needs to be reified with it.
-   *
-   * Passing `undefined` clears the wired signer; subsequent `getTeeSigner()`
-   * calls will throw the standard "TEE signer not wired" error. The clear
-   * path supports React-hook fan-out where the same service instance can
-   * see a config change (network switch, account change) that invalidates
-   * the previously-fanned-in signer.
-   */
+  /** `undefined` clears the signer, e.g. after a network or account switch. */
   public setTeeSigner(teeSigner?: RegisteredTeeSigner): void {
     this._teeSigner = teeSigner
   }
 
-  /**
-   * Returns the wired TEE signer, throwing a clear error if none was passed
-   * at construction or via {@link setTeeSigner}. Service methods that route
-   * through `buildTeeOperation` call this; methods that don't need a signer
-   * never touch it.
-   */
   protected getTeeSigner(): RegisteredTeeSigner {
     if (!this._teeSigner) {
       throw new Error(
@@ -159,12 +93,6 @@ export class ServiceBase extends EventEmitter {
     this.emit("status", QueueStatus.FAILED, TransactionProgress.FAILED, txHash)
   }
 
-  /**
-   * Get send options, using provided options or falling back to wallet defaults.
-   * @param from - The sender address for default options
-   * @param options - Optional method options that may contain sendOptions
-   * @returns SendInteractionOptions to use for the transaction
-   */
   protected async getSendOptions(
     from: AztecAddress,
     options?: BaseServiceMethodOptions,
@@ -172,11 +100,6 @@ export class ServiceBase extends EventEmitter {
     return options?.sendOptions ?? (await this.wallet.getDefaultSendOptions(from))
   }
 
-  /**
-   * Internal helper to log profile results as a formatted table.
-   * @param executionSteps - The execution steps from the profile result
-   * @param label - Label to display in the header (string or array of strings)
-   */
   private logProfileResult(
     executionSteps: { functionName: string; gateCount?: number }[],
     label: string | string[],
@@ -193,17 +116,14 @@ export class ServiceBase extends EventEmitter {
       totalGateCount += step.gateCount ?? 0
     }
 
-    // Create table header
     console.log("\n" + "=".repeat(80))
     console.log("EXECUTION PROFILE: ", label)
     console.log("=".repeat(80))
 
-    // Table header
     console.log("┌─────┬──────────────────────────────────────┬─────────────┐")
     console.log("│ ID  │ Method                               │ Gate Count  │")
     console.log("├─────┼──────────────────────────────────────┼─────────────┤")
 
-    // Table rows
     for (const step of steps) {
       const id = step.id.toString().padStart(3)
       const method = step.method.padEnd(36)
@@ -211,7 +131,6 @@ export class ServiceBase extends EventEmitter {
       console.log(`│ ${id} │ ${method} │ ${gateCount} │`)
     }
 
-    // Table footer with total
     console.log("├─────┼──────────────────────────────────────┼─────────────┤")
     const totalStr = totalGateCount.toString().padStart(11)
     console.log(`│     │ TOTAL                                │ ${totalStr} │`)
@@ -219,12 +138,7 @@ export class ServiceBase extends EventEmitter {
     console.log("=".repeat(80) + "\n")
   }
 
-  /**
-   * Profile a contract interaction and log gate counts.
-   * This profiles the transaction without actually sending it.
-   * @param interaction The contract function interaction or deploy method to profile
-   * @param options Simulation options including the 'from' address
-   */
+  /** Logs gate counts without sending. */
   protected async profileInteraction(
     interaction: ContractFunctionInteraction | DeployMethod,
     options: SimulateInteractionOptions,
@@ -247,27 +161,8 @@ export class ServiceBase extends EventEmitter {
   }
 
   /**
-   * Helper to send a transaction and wait for completion with standardized emit lifecycle.
-   * Supports optional profiling before sending the transaction.
-   *
-   * `init.interaction` accepts either a `ContractFunctionInteraction` (the
-   * legacy single-call path used by every non-TEE caller) or a `BatchCall`
-   * (the path U4/U6 lands when token/paylink TEE flows route through
-   * {@link buildTeeOperation}). Both expose
-   * `.send({ wait: NO_WAIT })` and return `{ txHash, offchainMessages, offchainEffects }`.
-   *
-   * `BatchCall` has no `.with()` method, so the profile branch is guarded
-   * by an `instanceof ContractFunctionInteraction` check (see inline comment).
-   *
-   * Op-id parity with `ObsidionWallet.sendTx` (which emits
-   * `ProvingStage.Mining` start) is achieved by threading
-   * `options.operationId` / `options.kind` into the merged `sendOptions`
-   * — NOT by emitting a second Mining stage-start here, which would
-   * double-fire to subscribers (TxLifecycleService, UI proving feeds).
-   *
-   * @param initFn Function that returns the interaction and any extra data { interaction, ...extra }
-   * @param buildResult Function that transforms the result after tx is mined (can be async)
-   * @param options Optional options including sendOptions and profile flag
+   * Sends a tx, waits for it, and emits status events. `wallet.sendTx` emits the Mining stage
+   * start, so this method must not.
    */
   protected sendAndWait<
     TInit extends {
@@ -287,7 +182,7 @@ export class ServiceBase extends EventEmitter {
   ): {
     txPromise: Promise<TResult>
     txHash: Promise<string>
-    // adding this for the offchin effects, little bit of duplication with the txhash
+    /** Carries the offchain output. */
     sentTx: Promise<TInit & { txHash: string } & OffchainOutput>
   } {
     return createAsyncTransaction(
@@ -296,11 +191,7 @@ export class ServiceBase extends EventEmitter {
           if (!options?.silent) this.emitProveAndSend()
           const init = await initFn()
 
-          // Profile if requested (capsules from sendOptions must also be available during simulation).
-          // Profiling uses `.with({ capsules })`, which exists on `ContractFunctionInteraction` but
-          // NOT on `BatchCall` — when `init.interaction` is a `BatchCall` (TEE token/paylink flows
-          // landing under U4/U6), the profile branch is silently skipped. Accepted regression:
-          // paylink benchmark tests that pass `profile: true` lose profile data for TEE flows.
+          // ponytail: BatchCall has no `.with()`, so TEE flows skip profiling.
           if (
             options?.profile &&
             options.sendOptions?.from &&
@@ -316,47 +207,24 @@ export class ServiceBase extends EventEmitter {
             })
           }
 
-          // Send the transaction (sendOptions must be provided by the service method)
           if (!options?.sendOptions) {
             throw new Error("sendOptions must be provided to sendAndWait")
           }
 
-          // Merge caller-supplied `sendOptions` with any `sendOpts` returned by
-          // `buildTeeOperation`. Semantics:
-          //   - `additionalScopes`: UNION of both arrays, deduped by
-          //     `AztecAddress.toString()` (object-identity dedupe would miss
-          //     two address instances built from the same hex).
-          //   - `fee`: shallow-merge. The {@link buildTeeOperation} contract
-          //     guarantees `sendOpts.fee` carries `paymentMethod` only — never
-          //     `gasSettings` — so the caller's `gasSettings` survives by
-          //     construction. If a future revision adds `gasSettings` to
-          //     `sendOpts.fee`, switch to explicit per-sub-key deep merge.
-          //   - `operationId` / `kind`: propagated from `options` so
-          //     `wallet.sendTx` picks them up for Mining-stage emits and
-          //     proving-scope registration.
-          //   - `finalize`: the staged-execution finalizer minted by
-          //     `buildTeeOperation`. `wallet.sendTx` invokes it with its
-          //     single pre-simulation's result and proves the payload it
-          //     returns — see `obsidion/stagedExecution.ts`. Undefined for
-          //     every non-TEE caller (no `init.sendOpts`).
-          //   - Other keys: shallow-merged from `options.sendOptions`.
           const mergedSendOptions = {
             ...options.sendOptions,
             additionalScopes: dedupeByAddressString([
               ...(options.sendOptions?.additionalScopes ?? []),
               ...(init.sendOpts?.additionalScopes ?? []),
             ]),
+            // ponytail: shallow merge. Safe while `sendOpts.fee` never sets `gasSettings`.
             fee: { ...options.sendOptions?.fee, ...init.sendOpts?.fee },
             operationId: options.operationId,
             kind: options.kind,
             finalize: init.sendOpts?.finalize,
-            // Lazy-start: forward the confirm gate to wallet.sendTx so it blocks
-            // signing/prove/submit until the user confirms. (`silent` is NOT put
-            // here — it is consumed by sendAndWait itself, above, not by sendTx.)
             confirmGate: options.confirmGate,
           }
 
-          // Send with NO_WAIT to get txHash immediately
           const { txHash, offchainMessages, offchainEffects } = await init.interaction.send({
             ...mergedSendOptions,
             wait: NO_WAIT,
@@ -379,7 +247,6 @@ export class ServiceBase extends EventEmitter {
       async (init) => {
         try {
           if (!options?.silent) this.emitMining()
-          // Use waitForTx to wait for the transaction to be mined
           const receipt = await waitForTx(this.wallet.node, TxHash.fromString(init.txHash), {
             ...this.wallet.defaultWaitOpts,
             timeout: TESTNET_TIMEOUT,
@@ -537,7 +404,6 @@ export abstract class ServiceContractBase extends ServiceBase {
         ? options
         : await this.wallet.getDefaultSendOptions(this.getDeployer())
 
-      // Update internal address and store in ContractService
       const deployed = await Contract.deploy(
         this.wallet,
         artifact,

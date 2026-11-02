@@ -4,6 +4,9 @@ import type { MintMyCodeDeps } from "../features/contacts/myCode"
 import { demoScenario } from "./demoFlag"
 import { demoContacts } from "./demoFixtures"
 
+/** A tag at the length limit, still on a retired rollup. */
+export const LONG_STALE_TAG = "mslongtag".padEnd(MAX_TAG_LENGTH, "x")
+
 let retryVerification = 0
 let mintAttempts = 0
 const wait = (milliseconds: number) =>
@@ -17,6 +20,7 @@ export function longDemoContacts(): Contact[] {
       address: `0x${"19".repeat(32)}`,
       tag: "alexandria".padEnd(MAX_TAG_LENGTH, "a"),
     },
+    { name: LONG_STALE_TAG, address: `0x${"1a".repeat(32)}`, tag: LONG_STALE_TAG },
     {
       name: "Savings wallet shared with the household for long-term expenses",
       address: `0x${"19".repeat(20)}`,
@@ -42,7 +46,7 @@ export async function demoContactResolution(
   await wait(tag === "slowfriend" ? 2200 : fresh ? 900 : 450)
   if (fresh && tag === "retryfriend" && retryVerification++ === 0)
     throw new Error("Demo verification unavailable")
-  if (tag === "dmitri") return { status: "staleRollup" }
+  if (tag === "dmitri" || tag === LONG_STALE_TAG) return { status: "staleRollup" }
   if (!["newfriend", "slowfriend", "retryfriend", "mismatchfriend"].includes(tag))
     return { status: "notFound" }
   return {

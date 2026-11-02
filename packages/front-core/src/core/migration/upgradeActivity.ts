@@ -6,7 +6,7 @@ import {
   isSettledSipaPhase,
   type SIPADepositRecord,
 } from "../services/deposits/SIPADepositStore"
-import { logger } from "src/utils/logger"
+import { logger } from "../../utils/logger"
 
 /** One refund batch of an upgrade, as activity shows it. */
 export interface UpgradeBatchItem {

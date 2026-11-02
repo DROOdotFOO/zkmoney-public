@@ -6,6 +6,7 @@ import {
 } from "@obsidion/front-core"
 import {
   bytesToBase64Url,
+  isPasskeyCancelled,
   type CeremonyObserver,
   type PasskeyCeremony,
 } from "@obsidion/passkey-web"
@@ -48,6 +49,16 @@ export class LeftoverPasskeyError extends Error {
   constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause), { cause })
     this.name = "LeftoverPasskeyError"
+  }
+}
+
+/** Whether the user closed the passkey prompt or let it time out. */
+export function passkeyDeclined(error: unknown): boolean {
+  try {
+    return isPasskeyCancelled(error)
+  } catch {
+    // An error whose fields throw when read is still a failure.
+    return false
   }
 }
 

@@ -2,7 +2,7 @@ import { EventEmitter } from "eventemitter3"
 
 import type { TxKind } from "./race.js"
 
-export { type OriginalFlowKind, type TxKind } from "./race.js"
+export type { OriginalFlowKind, TxKind } from "./race.js"
 
 // ─── Stages (existing) ────────────────────────────────────────────────────────
 
@@ -22,10 +22,9 @@ export interface ProvingProgressEvent {
   operationId?: string
   /**
    * Real on-chain `txHash`, populated only on `Mining` (the wallet computes
-   * it from the proven tx before `aztecNode.sendTx` runs). The
-   * `TxLifecycleService` bridge patches it onto the synth row synchronously,
-   * so the row is keyed by its real hash while the receipt is still pending
-   * rather than only after the whole `sendToken` pipeline resolves.
+   * it from the proven tx before `aztecNode.sendTx` runs). `trackSubmission`
+   * stamps it onto the flow's row at once, so the row holds its real hash
+   * while the receipt is still pending.
    */
   txHash?: string
 }

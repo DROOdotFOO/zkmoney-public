@@ -1,15 +1,15 @@
 import { useEffect } from "react"
 import {
   SponsoredAllowanceStore,
-  useAccountContext,
   useAllowanceSnapshot,
-  useAztecContext,
   useContractServiceContext,
   type AllowanceSnapshot,
+  useResource,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { readSponsoredAllowance } from "./readAllowance"
 import { readAllowanceUsage } from "./readAllowanceUsage"
+import { useSession } from "../../platform/session"
 
 const store = new SponsoredAllowanceStore()
 
@@ -31,8 +31,8 @@ export function useSponsoredAllowance(active = true): {
   snapshot: AllowanceSnapshot
   refresh: () => void
 } {
-  const { obsidionWallet } = useAztecContext()
-  const { obsidionAccount } = useAccountContext()
+  const obsidionWallet = useResource(useSession().wallet)
+  const obsidionAccount = useResource(useSession().account)
   const { contractService } = useContractServiceContext()
   const key = scopeKey(obsidionAccount?.getAddress().toString())
 

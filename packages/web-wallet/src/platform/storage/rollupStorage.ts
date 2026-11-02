@@ -16,7 +16,6 @@ export const DEVICE_KEYS: ReadonlySet<string> = new Set([
   "zkm_rid",
   "webwallet.hide-balances",
   "webwallet.hide-deposit-privacy-disclaimer",
-  "webwallet.hide-one-time-address-warning",
   "webwallet.hide-paylink-info",
   "webwallet.hide-withdraw-privacy-disclaimer",
   "webwallet.local-passkey-hint-shown",
@@ -29,6 +28,10 @@ export const DEVICE_KEYS: ReadonlySet<string> = new Set([
   "webwallet.unresolved-payments",
   // Read before the profile names a rollup, and a user's node choice outlives a roll.
   "webwallet.endpoints",
+  // The signup analytics' channel and source, kept an hour.
+  "webwallet.attribution",
+  // An invite link's code, until the signup it brought names its inviter.
+  "webwallet.inbound-invite",
 ])
 
 /** Families older builds kept wallet state under, at the top level and in partitions. */

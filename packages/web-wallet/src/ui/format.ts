@@ -54,6 +54,17 @@ export function floorToCents(atomic: bigint, decimals: number): string {
   return formatUnits(atomic - (atomic % step), decimals)
 }
 
+/** `1234.57`: a balance rounded half up to cents, ungrouped; `0.00` for none. */
+export function fixedCents(balance: { atomic: bigint; decimals: number } | null): string {
+  if (!balance) return "0.00"
+  const shift = balance.decimals - 2
+  const cents =
+    shift >= 0
+      ? (balance.atomic + 10n ** BigInt(shift) / 2n) / 10n ** BigInt(shift)
+      : balance.atomic * 10n ** BigInt(-shift)
+  return `${cents / 100n}.${String(cents % 100n).padStart(2, "0")}`
+}
+
 /** `$12.34` — two-decimal dollars for a whole-token (USD-pegged) display amount. */
 export function usd(amount: number): string {
   return `$${amount.toFixed(2)}`

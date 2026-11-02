@@ -1,7 +1,7 @@
 import { QueueStatus } from "@obsidion/core/constants"
 import type { ContactRow } from "../hooks/useContactsDirectory"
 import type { Transaction } from "../types/transactions"
-import type { PaymentRequest } from "../core/storages/RequestStorage"
+import type { PaymentRequest } from "../engine/requests"
 import { l1WalletProvidersMatch } from "../core/storages/ContactStorage"
 import {
   isUnfundedSipaDeposit,

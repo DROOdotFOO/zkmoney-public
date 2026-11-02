@@ -5,9 +5,9 @@
  *
  * Usage:
  * 1. First generate the malformed JWTs:
- *    node -e "require('./test/utils/malformedJwtGenerator.ts').generateAllMalformedJwtFixtures()"
+ *    node -e "require('./test/utils/jwt/malformedJwtGenerator.ts').generateAllMalformedJwtFixtures()"
  * 2. Then run this script:
- *    node scripts/sync-malformed-jwt-to-noir.mjs
+ *    node scripts/jwt/sync-malformed-jwt-to-noir.mjs
  */
 
 import fs from "fs"

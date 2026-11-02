@@ -9,11 +9,12 @@ import { configDefaults, defineConfig } from "vitest/config"
 // Coverage measured here spans only the sandbox-free tests, so the number understates the sdk's real
 // coverage. No threshold is enforced for that reason.
 export default defineConfig({
+  resolve: { conditions: ["source"] },
   test: {
     globals: true,
     environment: "node",
     reporters: ["verbose"],
-    include: ["src/**/*.test.ts", "test/**/*.test.ts", "scripts/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "test/**/*.test.ts"],
     exclude: [
       ...configDefaults.exclude,
       "**/*.sandbox.test.ts",
@@ -21,13 +22,6 @@ export default defineConfig({
       "**/*.relayer.test.ts",
       "test/testnet/**",
       // Quarantined: each fails for a reason unrelated to any environment. Fix or retire, then remove.
-      "scripts/advanceBlocks.test.ts", // imports the root of @aztec-labs/aztec.js, which has no root export
-      "scripts/getFirstBlock.test.ts", // same
-      "scripts/getNodeInfo.test.ts", // same
-      "scripts/computeBridgeAddress.test.ts", // reads an artifact file that no longer exists
-      "scripts/getArtifactHashByArtifact.test.ts", // same
-      "scripts/getContractClass.test.ts", // "Contract not found"
-      "test/utils/customizableFetchInterceptorExample.test.ts", // log-capture assertion fails
     ],
     setupFiles: ["test/setup/noNetwork.ts"],
     hookTimeout: 10_000,

@@ -3,6 +3,7 @@ import { TxHash } from "@aztec-labs/stdlib/tx"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import {
   AccountStorage,
+  deriveBootstrapKey,
   deriveStealthKey,
   observeSipas,
   planMove,
@@ -10,6 +11,7 @@ import {
   signAccountUserOp,
   unreadDeposits,
   type BackupRotationRecord,
+  type OutcomeNode,
   type RotationFlowDeps,
   type SignInput,
 } from "@obsidion/front-core"
@@ -42,7 +44,12 @@ import {
   type PersistedRotation,
   type RotationIntent,
 } from "@obsidion/sdk"
-import { CANONICAL_ENTRY_POINT_V08, getUserOpHash, userOpOfIntent } from "@oxide/l1-contracts"
+import {
+  CANONICAL_ENTRY_POINT_V08,
+  getUserOpHash,
+  predictAccountAddressLocally,
+  userOpOfIntent,
+} from "@oxide/l1-contracts"
 import { bytesToHex, formatUnits, type Address, type Hex, type PublicClient } from "viem"
 import { getConfig } from "../../config/env"
 import { getWebOxideToken } from "../../config/classArtifacts"
@@ -58,10 +65,13 @@ import { oxideAccountPasskey } from "../../platform/auth/oxideAccountPasskey"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { SessionChangedError } from "../../platform/auth/sessionErrors"
 import { getActiveCredentialId } from "../../platform/storage/activeStorage"
+import { DepositReadError, EmptyDepositError } from "../deposit/depositReadErrors"
+import { readStrandedToken, type StrandedToken } from "../deposit/sipaRecovery"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
 import { loadWalletIdentity, saveWalletIdentity } from "../identity/walletIdentity"
 import { markCreatedHere } from "../migration/upgradeLock"
 import { claimSponsorContext } from "../onboarding/claimSponsorship"
+import { generationFactories, loadOxideGenerations } from "../onboarding/oxideGenerations"
 import { RAIL_REGISTERED } from "../onboarding/rails"
 import { unlockedSessionKeys } from "../onboarding/registrationResume"
 import { runOperation } from "../operations/operations"
@@ -69,15 +79,19 @@ import { l2TokenService } from "../token/l2TokenService"
 import { currentTxAmountCap, teeSignerOfToken } from "../token/oxideToken"
 import {
   currentDeployment,
-  getWithdrawalStore,
   noteSponsoredMine,
   runBurn,
   withdrawalOptions,
 } from "../withdraw/withdrawGateway"
-import type { BackupAddDeps } from "./backupPasskeyAdd"
+import { passkeyDeclined, type BackupAddDeps } from "./backupPasskeyAdd"
 import { getBackupRotationStore } from "./backupRotationStore"
 import { rerootToPasskeySet } from "./rerootToPasskeySet"
-import { publishRotationAddress, republishRotationAddress } from "./rotationPublish"
+import {
+  publishRotationAddress,
+  republishRotationAddress,
+  seedRotationDeposit,
+} from "./rotationPublish"
+import { session as openedStores } from "../../platform/session"
 
 /** One id per load of the page: the life of the wallet its sends are seeded under. */
 const WALLET_LIFE = crypto.randomUUID()
@@ -90,6 +104,12 @@ export function backupUserName(handle: string | undefined, owner: Address): stri
   return handle || `${owner.slice(0, 6)}…${owner.slice(-4)}`
 }
 
+/** What the deposit address holds once a withdrawal of `withdrawn` is released, after its charges. */
+export function depositedAmount(live: FundingAmount, withdrawn: bigint): bigint {
+  const b = live.breakdown
+  return withdrawn - b.withdrawalFee - b.proverTip - b.relayerTip
+}
+
 /**
  * What the deposit address holds once the funding is released: the withdrawal of `saved` (the live
  * amount before a plan is saved) less the withdrawal's current charges. Undefined once that no longer
@@ -97,13 +117,12 @@ export function backupUserName(handle: string | undefined, owner: Address): stri
  */
 export function sweepFunding(live: FundingAmount, saved: string | undefined): bigint | undefined {
   const b = live.breakdown
-  const withdrawn = saved === undefined ? live.amount : BigInt(saved)
-  const held = withdrawn - b.withdrawalFee - b.proverTip - b.relayerTip
+  const held = depositedAmount(live, saved === undefined ? live.amount : BigInt(saved))
   return held >= b.sweepTip + b.beneficiaryFee + b.minCredited ? held : undefined
 }
 
 /** The token's service for `account` with the co-signer its sponsored sends go through. */
-async function sponsoredTokenService(
+export async function sponsoredTokenService(
   wallet: ObsidionWallet,
   account: ObsidionAccount,
   token: string,
@@ -114,6 +133,26 @@ async function sponsoredTokenService(
   ])
   service.setTeeSigner(signer)
   return service
+}
+
+/** The wallet's node as `txOutcome` reads it. */
+export function walletOutcomeNode(wallet: ObsidionWallet): OutcomeNode {
+  return {
+    getTxReceipt: async (txHash) => {
+      const receipt = await wallet.node.getTxReceipt(TxHash.fromString(txHash))
+      return {
+        status: receipt.status,
+        blockNumber: receipt.blockNumber,
+        blockHash: receipt.blockHash?.toString(),
+        executionResult: receipt.executionResult,
+      }
+    },
+    finalizedTimestampMs: async () => {
+      const block = await wallet.node.getBlockData("finalized")
+      if (!block) throw new Error("no finalized block")
+      return Number(block.header.globalVariables.timestamp) * 1000
+    },
+  }
 }
 
 /** The session's root key as the flows name it: 64 bytes x‖y, hex, no prefix. */
@@ -151,10 +190,15 @@ export async function buildBackupAddDeps(input: {
   }
 }
 
-/** The flow's dependencies plus the one read the panel runs before signing. */
+/** The flow's dependencies plus the reads the panel runs before signing and before a recovery. */
 export interface BackupFlowDeps extends RotationFlowDeps {
   /** The change for the record's backup, priced and planned over the chain now. */
   prepare(record: BackupRotationRecord): Promise<SignInput>
+  /**
+   * Writes the recovery origin on the deposit address's rail record if it lacks one, then reads the
+   * fee token held there, for the Settings recovery sheet.
+   */
+  strandedDeposit(record: BackupRotationRecord): Promise<StrandedToken>
 }
 
 type SessionRootKey = Awaited<ReturnType<typeof sessionRootKey>>
@@ -238,11 +282,18 @@ export async function buildBackupFlowDeps(input: {
   const finalizedBlock = () => client.getBlock({ blockTag: "finalized" })
   /** The one-key account under the root passkey alone: the move spends from it after the re-root. */
   let oneKey: Promise<ObsidionAccount> | undefined
+  /** The signal of the send in flight: the account is built once, so its key reads it per request. */
+  let sending: AbortSignal | undefined
   const oneKeyAccount = async (source: string) => {
     oneKey ??= wallet
       .createObsidionAccount(
         keys.secretKey,
-        auth.providerFor({ credentialId, pubkeyHex: rootPubkeyHex, passkeys: [rootPubkeyHex] }),
+        auth.providerFor({
+          credentialId,
+          pubkeyHex: rootPubkeyHex,
+          passkeys: [rootPubkeyHex],
+          signal: () => sending,
+        }),
       )
       .catch((err: unknown) => {
         oneKey = undefined
@@ -264,6 +315,51 @@ export async function buildBackupFlowDeps(input: {
     }
     return { ...change, destination }
   }
+  /** The deposit address's sweeps and recoveries since `fromBlock`. */
+  const observeDeposit = async (sipa: Address, fromBlock: number) => {
+    const commitment = (await store.get(owner))?.rotation?.intent.recipientCommitment
+    if (!commitment) throw new Error("no signed rotation to read the deposit address for")
+    const head = await client.getBlockNumber()
+    const { observed } = await observeSipas(client, {
+      portals: [tuple.portal],
+      tokens: [tuple.token],
+      subjects: [{ address: sipa, commitment, fromBlock: BigInt(fromBlock), inflows: false }],
+      head,
+    })
+    // A subject the observation could not read is left out of `observed`: that is no answer.
+    const seen = observed.get(sipa.toLowerCase())
+    if (!seen) throw new Error("the deposit address read did not complete")
+    return seen
+  }
+  /**
+   * The account factory the origin names. `recoverDeposit` refuses unless it predicts `owner` from
+   * this session's bootstrap key, and the tuple's factory does not predict an account an earlier
+   * generation's factory made.
+   */
+  const resolveOwnerFactory = async (): Promise<Address> => {
+    const bootstrap = deriveBootstrapKey(keys.secretKey).address
+    const predicts = (factory: Address) =>
+      sameHex(predictAccountAddressLocally(factory, bootstrap), owner)
+    if (predicts(env.env.factory)) return env.env.factory
+    const generations = await loadOxideGenerations(wallet, contractService, config)
+    const found = generationFactories(generations).find(predicts)
+    if (!found) throw new Error("no account factory predicts the account from this wallet's keys")
+    return found
+  }
+  let factory: Promise<Address> | undefined
+  const ownerFactory = () =>
+    (factory ??= resolveOwnerFactory().catch((err: unknown) => {
+      factory = undefined
+      throw err
+    }))
+  const depositInput = async (record: BackupRotationRecord) => ({
+    record,
+    l1ChainId: config.l1ChainId,
+    networkId: wallet.networkId,
+    token: tuple.token,
+    sipaFactory: tuple.factory,
+    accountFactory: await ownerFactory(),
+  })
   /** Reads pinned to the finalized block, for the portal's release check. */
   const finalizedClient = {
     ...client,
@@ -286,7 +382,6 @@ export async function buildBackupFlowDeps(input: {
             set.map((key) => `${key.qx.slice(2)}${key.qy.slice(2)}`),
           ),
         publicKey: deriveStealthKey(keys.secretKey).publicKey,
-        resolverOperator: env.resolver.owner as Address,
       }),
     fundability: async (rotation) =>
       readRotationFundability(client, {
@@ -343,20 +438,8 @@ export async function buildBackupFlowDeps(input: {
         return at.hash === blockHash && finalized.number >= BigInt(blockNumber)
       },
       sipaBalance: (sipa, at = "finalized") => readTokenBalanceAt(client, tuple.token, sipa, at),
-      // A subject the observation could not read is left out of `observed`: that is no answer.
       sweep: async (sipa, fromBlock) => {
-        const commitment = (await store.get(owner))?.rotation?.intent.recipientCommitment
-        if (!commitment) throw new Error("no signed rotation to read the sweep for")
-        const head = await client.getBlockNumber()
-        const { observed } = await observeSipas(client, {
-          portals: [tuple.portal],
-          tokens: [tuple.token],
-          subjects: [{ address: sipa, commitment, fromBlock: BigInt(fromBlock), inflows: false }],
-          head,
-        })
-        const seen = observed.get(sipa.toLowerCase())
-        if (!seen) throw new Error("the sweep read did not complete")
-        const sweep = seen.sweeps[0]
+        const sweep = (await observeDeposit(sipa, fromBlock)).sweeps[0]
         if (!sweep) return undefined
         return {
           index: sweep.index.toString(),
@@ -365,30 +448,17 @@ export async function buildBackupFlowDeps(input: {
           credited: sweep.amount,
         }
       },
+      recovery: async (sipa, fromBlock) =>
+        (await observeDeposit(sipa, fromBlock)).recoveries.at(-1)?.txHash,
       releaseFinal: (withdrawalId) =>
         isWithdrawalSpent(finalizedClient, tuple.portal, withdrawalId as Hex),
     },
-    node: {
-      getTxReceipt: async (txHash) => {
-        const receipt = await wallet.node.getTxReceipt(TxHash.fromString(txHash))
-        return {
-          status: receipt.status,
-          blockNumber: receipt.blockNumber,
-          blockHash: receipt.blockHash?.toString(),
-          executionResult: receipt.executionResult,
-        }
-      },
-      finalizedTimestampMs: async () => {
-        const block = await wallet.node.getBlockData("finalized")
-        if (!block) throw new Error("no finalized block")
-        return Number(block.header.globalVariables.timestamp) * 1000
-      },
-    },
+    node: walletOutcomeNode(wallet),
     tracker: {
       row: async (localId) => {
-        const rows = getWithdrawalStore()
-        await rows.load()
-        const row = rows.get(localId)
+        const rows = openedStores().withdrawals
+        await rows.ready
+        const row = await rows.get(localId)
         return row
           ? {
               phase: row.phase,
@@ -400,13 +470,13 @@ export async function buildBackupFlowDeps(input: {
           : undefined
       },
       stamp: async (localId, txHash) => {
-        const rows = getWithdrawalStore()
-        await rows.load()
-        await rows.patch(
-          localId,
-          { phase: "submitting", l2TxHash: txHash as Hex },
-          { strict: true },
-        )
+        const rows = openedStores().withdrawals
+        await rows.ready
+        if (!(await rows.get(localId))) throw new Error(`no withdrawal record ${localId} to stamp`)
+        await rows.apply(localId, {
+          type: "patch",
+          fields: { phase: "submitting", l2TxHash: txHash as Hex },
+        })
       },
     },
 
@@ -456,6 +526,7 @@ export async function buildBackupFlowDeps(input: {
         plan: {
           address: recipient.toString(),
           fundingAmount: funding.amount.toString(),
+          deposited: depositedAmount(funding, funding.amount).toString(),
           credited: funding.credited.toString(),
           approvals: 1,
           moves: planMove(shape, cap, unreadDeposits(shape)).m,
@@ -481,14 +552,15 @@ export async function buildBackupFlowDeps(input: {
         },
       )
     },
-    publish: (record, rotation) =>
-      publishRotationAddress({
-        owner,
-        record,
-        rotation,
-        l1ChainId: config.l1ChainId,
-        token: tuple.token,
-      }),
+    publish: async (record, rotation) =>
+      publishRotationAddress({ ...(await depositInput(record)), owner, rotation }),
+    strandedDeposit: async (record) => {
+      const { sipaAddress } = await seedRotationDeposit(await depositInput(record))
+      return readStrandedToken(sipaAddress, tuple.token, wallet.networkId).catch((err: unknown) => {
+        if (err instanceof EmptyDepositError) throw err
+        throw new DepositReadError(err instanceof Error ? err.message : String(err))
+      })
+    },
     republish: async (record) => {
       await republishRotationAddress(owner, record, async () =>
         Number(await wallet.node.getBlockNumber()),
@@ -602,24 +674,30 @@ export async function buildBackupFlowDeps(input: {
       cap,
       // The sponsor refuses a send past the allowance; nothing is read ahead.
       usesLeft: async () => true,
-      send: async (token, amount, onTxHash) => {
-        const { source, destination } = await signedChange()
-        const acting = await oneKeyAccount(source)
-        const [tokenService, sponsor] = await Promise.all([
-          sponsoredTokenService(wallet, acting, token),
-          claimSponsorContext({ wallet, account: acting, contractService }, RAIL_REGISTERED),
-        ])
-        await tokenService.sendTokenSponsored(destination, amount.toString(), sponsor, {
-          userAccount: acting,
-          useRawAmount: true,
-          onTxHash,
-        })
-        maybeRefuelFpc({
-          wallet,
-          contractService,
-          fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact },
-        })
+      send: async (token, amount, onTxHash, signal) => {
+        sending = signal
+        try {
+          const { source, destination } = await signedChange()
+          const acting = await oneKeyAccount(source)
+          const [tokenService, sponsor] = await Promise.all([
+            sponsoredTokenService(wallet, acting, token),
+            claimSponsorContext({ wallet, account: acting, contractService }, RAIL_REGISTERED),
+          ])
+          await tokenService.sendTokenSponsored(destination, amount.toString(), sponsor, {
+            userAccount: acting,
+            useRawAmount: true,
+            onTxHash,
+          })
+          maybeRefuelFpc({
+            wallet,
+            contractService,
+            fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact },
+          })
+        } finally {
+          sending = undefined
+        }
       },
+      declined: passkeyDeclined,
     },
   }
 }

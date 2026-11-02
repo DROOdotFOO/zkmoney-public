@@ -53,10 +53,7 @@ export interface MigrationFundingBatch {
   /** The deposit address the refund pays. On a `direct` batch, its `recipientCommitment`. */
   recipient: string
   amount: string
-  /**
-   * What the source withholds before the recipient: on a live batch, the relayer tip plus any
-   * source funding cut. It is 0 on a frozen batch, which pays no tip and no fee.
-   */
+  /** What the source withholds before the recipient: 0, since a frozen batch pays no tip and no fee. */
   exitFee: string
   /** What its deposit pays on the destination, so activity can show what lands. */
   depositFee?: string
@@ -64,10 +61,7 @@ export interface MigrationFundingBatch {
   /** When it was planned, and when its carrier was sent: activity orders by them. */
   createdAt?: number
   sentAt?: number
-  burnTx?: string
   broadcastTx?: string
-  day?: number
-  nonce?: number
   received?: boolean
   /** Its approval was given; a rebuild uses the saved one. */
   approved?: boolean
@@ -87,10 +81,7 @@ export interface MigrationFundingBatch {
    * sees the same operation id, never a second operation for the same refund.
    */
   operation?: MigrationSavedOperation
-  /**
-   * The migration executor deposit of a frozen source's batch: every frozen batch has one, and no
-   * SIPA and no top-level `day`/`nonce`. Absent on a live source's batch.
-   */
+  /** The migration executor deposit that carries the batch, with no SIPA. Absent on records saved by older builds. */
   direct?: MigrationDirectDeposit
 }
 

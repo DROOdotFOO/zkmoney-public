@@ -368,4 +368,28 @@ describe("observeSipas", () => {
     for (const call of h.readTokenTransfers.mock.calls) expect(call[3]).not.toContain(SIPA_A)
     expect(h.readSipaBalancesMany.mock.calls[0]![1]).toEqual([SIPA_B])
   })
+
+  it("gives a direct record only the deposits to its commitment that no tracked SIPA sent", async () => {
+    h.readPortalDeposits.mockResolvedValue([
+      deposit(COMMIT_A, 7n, "0x01"),
+      deposit(COMMIT_A, 8n, "0x02"),
+    ])
+    h.readTokenTransfers.mockImplementation(async (_c: unknown, _t: unknown, side: string) =>
+      side === "from" ? [transfer(SIPA_A, RELAYER, "0x01")] : [],
+    )
+
+    const { observed, strays } = await observeSipas({} as never, {
+      portals: [PORTAL],
+      tokens: [DAI],
+      head: HEAD,
+      subjects: [
+        { address: SIPA_A, commitment: COMMIT_A, fromBlock: 800n, inflows: false },
+        { address: SIPA_C, commitment: COMMIT_A, fromBlock: 800n, inflows: false, direct: true },
+      ],
+    })
+
+    expect(observed.get(SIPA_A)!.sweeps.map((s) => s.index)).toEqual([7n])
+    expect(observed.get(SIPA_C)!.sweeps.map((s) => s.index)).toEqual([8n])
+    expect(strays).toEqual([])
+  })
 })

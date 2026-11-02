@@ -3,7 +3,14 @@ import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import path from "path"
 import react from "@vitejs/plugin-react"
-import { defineConfig, loadEnv, type Connect, type Plugin, type ProxyOptions } from "vite"
+import {
+  defaultClientConditions,
+  defineConfig,
+  loadEnv,
+  type Connect,
+  type Plugin,
+  type ProxyOptions,
+} from "vite"
 import { nodePolyfills } from "vite-plugin-node-polyfills"
 import { BASIC_AUTH_CHALLENGE, gateBasicAuth, isPublicPath } from "./basicAuth.js"
 import { bakedConfigProfile } from "./bakedConfigProfile.js"
@@ -180,7 +187,7 @@ function gateServer(server: { middlewares: Connect.Server }) {
 // Reads process.env, not import.meta.env: this is the config that BAKES the latter.
 const buildTarget = process.env.VITE_PROFILER === "true" ? "chrome54" : undefined
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_")
   // Unprefixed keys (ACCOUNT_SERVICE_TARGET, ENCLAVE_TARGET, …) live in `.env.local` for local
   // sandbox; `process.env` still wins so a shell export can override.
@@ -231,6 +238,9 @@ export default defineConfig(({ mode }) => {
     },
     preview: { headers: crossOriginIsolation, proxy: backendProxies(local) },
     resolve: {
+      // The dev server reads workspace packages from their source. A build reads their dist, so the
+      // shipped bundle does not depend on this.
+      ...(command === "serve" ? { conditions: ["source", ...defaultClientConditions] } : {}),
       alias: {
         // Design system consumed from SOURCE (not dist): instant HMR while iterating on UI,
         // and no build-ordering between the packages. Styles are imported in walletBoot.tsx.

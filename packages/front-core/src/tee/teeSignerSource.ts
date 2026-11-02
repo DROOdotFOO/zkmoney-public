@@ -1,13 +1,12 @@
 import { createPublicClient, fallback, http, type Chain, type Hex } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { ContractService, loadTeeSigner, type RegisteredTeeSigner } from "@obsidion/sdk"
-import { logger } from "src/utils/logger"
+import { logger } from "../utils/logger"
 
 /**
- * A resolvable source of a `RegisteredTeeSigner`, injected into `useAsset` so the hook
- * stays environment-agnostic. The hook calls `load()`, fans the result into
- * `TokenService`/`PaylinkService`, and re-runs `load()` whenever `subscribe`
- * fires. Which concrete source is wired (attested oxide enclave vs. sandbox
+ * A resolvable source of a `RegisteredTeeSigner`, injected into the `teeSigner` resource so it
+ * stays environment-agnostic. The resource calls `load()`, the token takes the result, and
+ * `load()` runs again whenever `subscribe` fires. Which concrete source is wired (attested oxide enclave vs. sandbox
  * dev relayer) is decided by the environment-aware app layer.
  */
 export interface TeeSignerSource {

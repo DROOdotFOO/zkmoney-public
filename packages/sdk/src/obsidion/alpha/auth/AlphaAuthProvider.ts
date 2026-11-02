@@ -1,6 +1,6 @@
-import { AuthWitnessProvider } from "@aztec-labs/entrypoints/interfaces"
-import { Fr } from "@aztec-labs/aztec.js/fields"
-import { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
+import type { AuthWitnessProvider } from "@aztec-labs/entrypoints/interfaces"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
+import type { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
 import type { AlphaPasskeySet } from "../account/alphaPasskeySet.js"
 
 /**
@@ -18,5 +18,6 @@ export interface AlphaAuthProvider extends AuthWitnessProvider {
   getPubkeys(): Promise<[Buffer, Buffer]>
   /** The set this provider signs for; rejects when its own key is not a member. */
   getPasskeySet(): Promise<AlphaPasskeySet>
-  createAuthWit(messageHash: Fr): Promise<AuthWitness>
+  /** `signal` ends the signature's ceremony, including any wait before its prompt opens. */
+  createAuthWit(messageHash: Fr, opts?: { signal?: AbortSignal }): Promise<AuthWitness>
 }

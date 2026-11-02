@@ -2,6 +2,7 @@ import { type PasskeyReportEnv, isWedgedTabError, passkeyReportEnvFor } from "@o
 import { passkeyTelemetry } from "../lib/passkeyTelemetry"
 import { sponsorshipErrorCopy } from "../features/allowance/sponsorshipError"
 import { reloadPage } from "../platform/storage/walletStorage"
+import { errorCopy } from "./catalog"
 
 /**
  * Module-level emitter for the global error/info modal, callable from any
@@ -94,7 +95,7 @@ export function showReportableError(
   const error = raw instanceof Error ? raw : new Error(nonErrorMessage(raw))
   showErrorModal({
     title: options.title ?? "Unexpected error",
-    message: options.message ?? error.message,
+    message: options.message ?? errorCopy(raw) ?? error.message,
     detail: error.stack,
     showReport: true,
     context,

@@ -110,7 +110,7 @@ injected wallet, and the record flips to `recovered` live.
 
 To add a scenario: add its name to `DEMO_SCENARIOS` in `demoFlag.ts`, its fixtures to
 `demoFixtures.ts` (typed as the real record types), and a branch to `seedDemo`. Cover it in
-`test/demoMode.test.ts` — the suite asserts each scenario through the same reads the screens make.
+`test/dev/demoMode.test.ts` — the suite asserts each scenario through the same reads the screens make.
 
 ### Profiling a flow
 

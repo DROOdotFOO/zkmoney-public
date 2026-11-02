@@ -6,7 +6,8 @@ import { holdSigningFlow } from "../lib/passkeyTelemetry"
 
 /**
  * History-aware back for ScreenNavBar arrows: pop the browser history when this isn't the first
- * in-app entry, else go to the screen's structural parent (deep link / refresh / new tab).
+ * in-app entry, else replace it with the screen's structural parent (deep link / refresh / new tab),
+ * so browser back cannot return to the screen just left.
  * react-router's BrowserRouter stamps `idx` (entry depth) into history.state.
  */
 export function useBack(fallback: string): () => void {
@@ -14,7 +15,7 @@ export function useBack(fallback: string): () => void {
   return useCallback(() => {
     const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0
     if (idx > 0) navigate(-1)
-    else navigate(fallback)
+    else navigate(fallback, { replace: true })
   }, [navigate, fallback])
 }
 

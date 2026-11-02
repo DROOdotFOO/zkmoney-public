@@ -6,7 +6,6 @@
 
 import { useEffect, useRef, useState } from "react"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
-import { PAYLINK_CANCEL_MARGIN_SECONDS } from "@obsidion/core/constants"
 import { isPaylinkWindowNotOpenRevert, isPaylinkWindowRevert } from "@obsidion/front-core"
 import type { LinkStatus, PaymentLink } from "./types"
 
@@ -82,14 +81,6 @@ export function claimWaitSeconds(
 ): number | undefined {
   if (claimableFrom == null || chainNow == null) return undefined
   return Math.max(0, claimableFrom + PAYLINK_CLAIM_MARGIN_SECONDS - chainNow)
-}
-
-/**
- * True while a creator's cancel can still land before `refundable_until`. The refund tx expires
- * there, and proof + inclusion must finish first, so the offer closes a margin early.
- */
-export function canCancelAt(refundableUntil: number, chainNow: number): boolean {
-  return chainNow + Number(PAYLINK_CANCEL_MARGIN_SECONDS) < refundableUntil
 }
 
 /** Remaining seconds as `m:ss`, or `h:mm:ss` once an hour has elapsed. */

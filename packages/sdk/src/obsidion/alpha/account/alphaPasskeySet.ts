@@ -1,4 +1,4 @@
-import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import {
   computePasskeyHash,
   computePasskeySetImmutablesHash,

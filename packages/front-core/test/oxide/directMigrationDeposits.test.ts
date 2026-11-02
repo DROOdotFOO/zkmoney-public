@@ -109,6 +109,7 @@ function makeDeps(
       destinationPortal: (batch: { run: string }) => batch.run.split("/")[1] as Address,
       recipient: RECIPIENT,
       l1ChainId: 1,
+      networkId: "0x00000000000000000000000000000000000000e1",
       secret,
     },
   }

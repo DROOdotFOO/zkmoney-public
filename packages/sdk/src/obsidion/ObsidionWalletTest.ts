@@ -5,41 +5,52 @@ import {
 } from "@aztec-labs/accounts/schnorr"
 import { EcdsaKAccountContract, EcdsaRAccountContract } from "@aztec-labs/accounts/ecdsa"
 import { ObsidionAccount } from "./alpha/account/ObsidionAccount.js"
-import { AccountManager, SendOptions } from "@aztec-labs/aztec.js/wallet"
-import { Account, type AccountContract, type Salt } from "@aztec-labs/aztec.js/account"
-import { Fr, Fq } from "@aztec-labs/aztec.js/fields"
+import { AccountManager, type SendOptions } from "@aztec-labs/aztec.js/wallet"
+import type { Account, AccountContract, Salt } from "@aztec-labs/aztec.js/account"
+import type { Fr, Fq } from "@aztec-labs/aztec.js/fields"
 import { deriveMasterIncomingViewingSecretKey } from "@aztec-labs/stdlib/keys"
 import {
-  ExecutionPayload,
-  OffchainEffect,
-  ProvingStats,
+  type ExecutionPayload,
+  type OffchainEffect,
+  type ProvingStats,
   Tx,
-  TxHash,
-  TxReceipt,
+  type TxHash,
+  type TxReceipt,
 } from "@aztec-labs/stdlib/tx"
 // import { NoteDao, NotesFilter } from "@aztec-labs/stdlib/note"
 import {
   type AlphaAccountType,
-  FeePaymentOptions,
+  type FeePaymentOptions,
   ObsidionWallet,
+  readNetworkId,
+  type CreateWalletOptions,
   type ObsidionWalletOptions,
 } from "./ObsidionWallet.js"
 import { proveTxWithProgress } from "./proving-progress-helpers.js"
-import { AztecNode, waitForTx } from "@aztec-labs/aztec.js/node"
-import { NO_WAIT, NoWait, SendInteractionOptions, WaitOpts } from "@aztec-labs/aztec.js/contracts"
+import { type AztecNode, waitForTx } from "@aztec-labs/aztec.js/node"
+import {
+  NO_WAIT,
+  type NoWait,
+  type SendInteractionOptions,
+  type WaitOpts,
+} from "@aztec-labs/aztec.js/contracts"
 import { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
-import { createPXE, getPXEConfig, PXE, PXEConfig, PXECreationOptions } from "@aztec-labs/pxe/server"
+import {
+  getPXEConfig,
+  type PXE,
+  type PXEConfig,
+  type PXECreationOptions,
+} from "@aztec-labs/pxe/server"
 // import { PXE, PXECreationOptions, PXEConfig, getPXEConfig } from "@aztec-labs/pxe/client/lazy"
 import { getSponsoredFeePaymentMethod } from "../feePaymentMethod/sponsored_fpc.js"
 import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { AccountFeePaymentMethodOptions } from "@aztec-labs/entrypoints/account"
 import type { CompleteFeeOptionsConfig, FeeOptions } from "@aztec-labs/wallet-sdk/base-wallet"
-import type { FieldsOf } from "@aztec-labs/foundation/types"
 import { inspect } from "util"
 import { SimulationError } from "@aztec-labs/stdlib/errors"
-import { ContractArtifact } from "@aztec-labs/stdlib/abi"
-import { ContractService, DEFAULT_CONTRACTS, ContractName } from "@obsidion/contracts"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import { ContractService, DEFAULT_CONTRACTS, type ContractName } from "@obsidion/contracts"
 
 type SchnorrTestAccountType = "schnorr" | "schnorr_initializerless"
 
@@ -59,8 +70,8 @@ export class ObsidionWalletTest extends ObsidionWallet {
   // for CHECKPOINTED keeps test L1 writes out of the publisher's in-flight window.
   public override readonly defaultWaitOpts: WaitOpts = {}
 
-  constructor(pxe: PXE, node: AztecNode, walletOpts?: ObsidionWalletOptions) {
-    super(pxe, node, walletOpts)
+  constructor(pxe: PXE, node: AztecNode, networkId: string, walletOpts?: ObsidionWalletOptions) {
+    super(pxe, node, networkId, walletOpts)
   }
 
   protected override async getAccountArtifact(): Promise<ContractArtifact> {
@@ -89,20 +100,18 @@ export class ObsidionWalletTest extends ObsidionWallet {
     node: AztecNode,
     overridePXEConfig?: Partial<PXEConfig>,
     options: PXECreationOptions = { loggers: {} },
-    walletOpts?: ObsidionWalletOptions,
+    walletOpts?: CreateWalletOptions,
   ): Promise<ObsidionWalletTest> {
+    const networkId = await readNetworkId(node, walletOpts)
     const pxeConfig = Object.assign(getPXEConfig(), {
       proverEnabled: overridePXEConfig?.proverEnabled ?? false,
       autoSync: overridePXEConfig?.autoSync ?? false,
       ...overridePXEConfig,
     })
-    // TODO: change this, this is a 200ms roundtrip to the node
-    const l1Contracts = await node.getL1ContractAddresses()
-    const rollupAddress = l1Contracts.rollupAddress
-    pxeConfig.dataDirectory = pxeConfig.dataDirectory ?? `pxe-${rollupAddress}`
+    pxeConfig.dataDirectory = pxeConfig.dataDirectory ?? `pxe-${networkId}`
 
     const pxe = await (await import("@aztec-labs/pxe/server")).createPXE(node, pxeConfig, options)
-    return new ObsidionWalletTest(pxe, node, walletOpts)
+    return new ObsidionWalletTest(pxe, node, networkId, walletOpts)
   }
 
   // -- Account Creation (TEST ONLY) --

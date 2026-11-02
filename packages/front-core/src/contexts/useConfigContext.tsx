@@ -1,6 +1,6 @@
-import { createContext, useContext, ReactNode } from "react"
+import { createContext, useContext, type ReactNode } from "react"
 import { assert } from "ts-essentials"
-import type { LocalConfigStore } from "src/core"
+import type { LocalConfigStore } from "../core"
 
 const ConfigContext = createContext<LocalConfigStore | undefined>(undefined)
 

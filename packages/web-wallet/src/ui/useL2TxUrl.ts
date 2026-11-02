@@ -1,6 +1,7 @@
-import { getActiveNetworkId, l2ExplorerTxEffectsBase } from "@obsidion/front-core"
+import { l2ExplorerTxEffectsBase, useResource } from "@obsidion/front-core"
 import { useEffect, useState } from "react"
 import { getConfig } from "../config/env"
+import { useSession } from "../platform/session"
 import { retiredRollupMajor } from "../platform/sourceGeneration"
 
 /**
@@ -10,7 +11,8 @@ import { retiredRollupMajor } from "../platform/sourceGeneration"
  */
 export function useL2TxUrl(networkId: string | undefined): ((txHash: string) => string) | null {
   const { network, nodeUrl } = getConfig()
-  const current = !networkId || networkId.toLowerCase() === getActiveNetworkId()?.toLowerCase()
+  const active = useResource(useSession().wallet)?.networkId
+  const current = !networkId || networkId.toLowerCase() === active?.toLowerCase()
   const [resolved, setResolved] = useState<{ networkId: string; major?: string }>()
   useEffect(() => {
     if (current) return

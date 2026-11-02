@@ -1,16 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { memoryBackend } from "../../../src/engine/memoryBackend"
+import { openDatabase } from "../../../src/engine/database"
+import { describe, expect, it, vi } from "vitest"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { getAddress, type Hash, type Hex } from "viem"
 import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
 import { planSwapOnWithdraw, type ScannedWithdrawEvent } from "@obsidion/sdk"
-import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAdapter"
-import { resetSingleton } from "../../__test-helpers__/resetSingleton"
-import { WithdrawalStorage } from "../../../src/core/services/bridge/WithdrawalStorage"
+import { createWithdrawals, type Withdrawals } from "../../../src/engine/withdrawals"
 import { rebuildWithdrawals } from "../../../src/core/services/bridge/withdrawalRescan"
-import { globalEventEmitter } from "../../../src/core/services/GlobalEventEmitter"
 import { swapEscrowTarget } from "../../../src/core/services/bridge/swapEscrowArgs"
 import { withdrawalRecipients } from "../../../src/core/services/bridge/withdrawalRecipients"
 import { savingsMoveOfWithdrawal } from "../../../src/oxide/savingsMoves"
+import { syncCatchUp } from "../../../src/engine/catchUp"
 
 const RECIPIENT = getAddress(`0x${"b0".repeat(20)}`)
 const ESCROW = getAddress(`0x${"e5".repeat(20)}`)
@@ -69,10 +69,9 @@ function makeSource(
   }
 }
 
-async function newStore(): Promise<WithdrawalStorage> {
-  resetSingleton(WithdrawalStorage as unknown as { instance: WithdrawalStorage | null })
-  const store = WithdrawalStorage.get(new InMemoryStorageAdapter())
-  await store.load()
+async function newStore(): Promise<Withdrawals> {
+  const store = createWithdrawals({ db: openDatabase(memoryBackend()) })
+  await store.ready
   return store
 }
 
@@ -83,32 +82,36 @@ describe("rebuildWithdrawals", () => {
     const gate = new Promise<number>((resolve) => (open = () => resolve(1_000)))
     const source = makeSource()
     source.blockTimestampMs.mockImplementation(() => gate)
-    const endScan = globalEventEmitter.beginSyncCatchUp()
-    const rebuild = rebuildWithdrawals({ source, store, tokenSymbol: "DAI", tokenDecimals: 18 })
+    const endScan = syncCatchUp.begin()
+    const rebuild = rebuildWithdrawals({
+      networkId: "0xnet",
+      source,
+      store,
+      tokenSymbol: "DAI",
+      tokenDecimals: 18,
+    })
     await vi.waitFor(() => expect(source.blockTimestampMs).toHaveBeenCalled())
     endScan()
-    expect(globalEventEmitter.isSyncCatchingUp()).toBe(true) // the rescan still holds it
+    expect(syncCatchUp.status.get()).toBe(true) // the rescan still holds it
     open()
     await rebuild
-    expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
+    expect(syncCatchUp.status.get()).toBe(false)
 
     // Without a catch-up in progress the rescan never starts one.
     await rebuildWithdrawals({
+      networkId: "0xnet",
       source: makeSource(),
       store: await newStore(),
       tokenSymbol: "DAI",
       tokenDecimals: 18,
     })
-    expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
-  })
-
-  beforeEach(() => {
-    resetSingleton(WithdrawalStorage as unknown as { instance: WithdrawalStorage | null })
+    expect(syncCatchUp.status.get()).toBe(false)
   })
 
   it("creates a mined record per unknown burn, oldest first, and leaves stored ones alone", async () => {
     const store = await newStore()
     await store.create({
+      networkId: "0xnet",
       localId: "known",
       l2TxHash: KNOWN_TX,
       recipient: RECIPIENT,
@@ -122,6 +125,7 @@ describe("rebuildWithdrawals", () => {
     const source = makeSource()
 
     const rebuilt = await rebuildWithdrawals({
+      networkId: "0xnet",
       source,
       store,
       tokenSymbol: "DAI",
@@ -132,10 +136,10 @@ describe("rebuildWithdrawals", () => {
 
     expect(source.listWithdrawals).toHaveBeenCalledWith(1, 41)
     expect(rebuilt.map((r) => r.l2TxHash)).toEqual([DIRECT_TX, ESCROW_TX])
-    expect(store.list()).toHaveLength(3)
-    expect(store.get("known")?.phase).toBe("done")
+    expect([...(await store.all())].sort((a, b) => b.startTime - a.startTime)).toHaveLength(3)
+    expect((await store.get("known"))?.phase).toBe("done")
 
-    const direct = store.getByL2TxHash(DIRECT_TX)!
+    const direct = (await store.byHash(DIRECT_TX))!
     expect(direct).toMatchObject({
       phase: "l2_mined",
       blockNumber: 10,
@@ -165,6 +169,7 @@ describe("rebuildWithdrawals", () => {
     ])
 
     await rebuildWithdrawals({
+      networkId: "0xnet",
       source,
       store,
       tokenSymbol: "DAI",
@@ -172,11 +177,11 @@ describe("rebuildWithdrawals", () => {
       deployment: DEPLOYMENT,
     })
 
-    expect(store.getByL2TxHash(DIRECT_TX)).toMatchObject({
+    expect(await store.byHash(DIRECT_TX)).toMatchObject({
       deployment: { ...DEPLOYMENT, executor: EXECUTOR },
       withdrawalFee: TIP.toString(),
     })
-    expect(store.getByL2TxHash(ESCROW_TX)).toMatchObject({
+    expect(await store.byHash(ESCROW_TX)).toMatchObject({
       deployment: { ...DEPLOYMENT, executor: SWAPPED_EXECUTOR },
       withdrawalFee: (3n * TIP).toString(),
     })
@@ -185,6 +190,7 @@ describe("rebuildWithdrawals", () => {
   it("stamps a stored record from before executor stamps with the executor its burn paid", async () => {
     const store = await newStore()
     await store.create({
+      networkId: "0xnet",
       localId: "known",
       version: 1,
       l2TxHash: KNOWN_TX,
@@ -200,10 +206,16 @@ describe("rebuildWithdrawals", () => {
     const source = makeSource([{ ...known, executor: SWAPPED_EXECUTOR, withdrawalFee: TIP }])
 
     expect(
-      await rebuildWithdrawals({ source, store, tokenSymbol: "DAI", tokenDecimals: 18 }),
+      await rebuildWithdrawals({
+        networkId: "0xnet",
+        source,
+        store,
+        tokenSymbol: "DAI",
+        tokenDecimals: 18,
+      }),
     ).toEqual([])
 
-    expect(store.get("known")).toMatchObject({
+    expect(await store.get("known")).toMatchObject({
       version: 2,
       phase: "awaiting_proven",
       deployment: { ...DEPLOYMENT, executor: SWAPPED_EXECUTOR },
@@ -240,9 +252,15 @@ describe("rebuildWithdrawals", () => {
       { ...EVENTS[0]!, txHash: SWAP_TX, l1Recipient: plan.escrow, proverTip: 0n, swap },
     ])
 
-    await rebuildWithdrawals({ source, store, tokenSymbol: "DAI", tokenDecimals: 18 })
+    await rebuildWithdrawals({
+      networkId: "0xnet",
+      source,
+      store,
+      tokenSymbol: "DAI",
+      tokenDecimals: 18,
+    })
 
-    const record = store.getByL2TxHash(SWAP_TX)!
+    const record = (await store.byHash(SWAP_TX))!
     expect(record).toMatchObject({
       phase: "l2_mined",
       recipient: RECIPIENT,
@@ -284,9 +302,16 @@ describe("rebuildWithdrawals", () => {
     ])
     const report = vi.fn()
 
-    await rebuildWithdrawals({ source, store, tokenSymbol: "sUSDS", tokenDecimals: 18, report })
+    await rebuildWithdrawals({
+      networkId: "0xnet",
+      source,
+      store,
+      tokenSymbol: "sUSDS",
+      tokenDecimals: 18,
+      report,
+    })
 
-    const record = store.getByL2TxHash(SKY_TX)!
+    const record = (await store.byHash(SKY_TX))!
     expect(record.skyMove).toEqual({
       direction: "out",
       factory: FACTORY,
@@ -309,9 +334,15 @@ describe("rebuildWithdrawals", () => {
 
   it("rebuilds an escrow burn without escrow args as a direct record naming the escrow", async () => {
     const store = await newStore()
-    await rebuildWithdrawals({ source: makeSource(), store, tokenSymbol: "DAI", tokenDecimals: 18 })
+    await rebuildWithdrawals({
+      networkId: "0xnet",
+      source: makeSource(),
+      store,
+      tokenSymbol: "DAI",
+      tokenDecimals: 18,
+    })
 
-    const record = store.getByL2TxHash(ESCROW_TX)!
+    const record = (await store.byHash(ESCROW_TX))!
     expect(record).toMatchObject({ phase: "l2_mined", recipient: ESCROW, startTime: 2_000 })
     expect(record.deployment).toBeUndefined()
     expect(record.swapOutput).toBeUndefined()
@@ -325,8 +356,14 @@ describe("rebuildWithdrawals", () => {
 
   it("rebuilds no move from a plain burn", async () => {
     const store = await newStore()
-    await rebuildWithdrawals({ source: makeSource(), store, tokenSymbol: "DAI", tokenDecimals: 18 })
-    expect(savingsMoveOfWithdrawal(store.getByL2TxHash(DIRECT_TX)!)).toBeUndefined()
+    await rebuildWithdrawals({
+      networkId: "0xnet",
+      source: makeSource(),
+      store,
+      tokenSymbol: "DAI",
+      tokenDecimals: 18,
+    })
+    expect(savingsMoveOfWithdrawal((await store.byHash(DIRECT_TX))!)).toBeUndefined()
   })
 
   it("stamps the fallback time on a burn whose block cannot be read, and creates nothing twice", async () => {
@@ -334,6 +371,7 @@ describe("rebuildWithdrawals", () => {
     const source = makeSource(EVENTS, {})
     const report = vi.fn()
     const first = await rebuildWithdrawals({
+      networkId: "0xnet",
       source,
       store,
       tokenSymbol: "DAI",
@@ -347,6 +385,7 @@ describe("rebuildWithdrawals", () => {
     )
 
     const again = await rebuildWithdrawals({
+      networkId: "0xnet",
       source,
       store,
       tokenSymbol: "DAI",
@@ -354,6 +393,6 @@ describe("rebuildWithdrawals", () => {
       now: () => 4_242,
     })
     expect(again).toEqual([])
-    expect(store.list()).toHaveLength(3)
+    expect([...(await store.all())].sort((a, b) => b.startTime - a.startTime)).toHaveLength(3)
   })
 })

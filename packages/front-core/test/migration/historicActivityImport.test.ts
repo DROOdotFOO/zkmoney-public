@@ -1,28 +1,29 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { QueueStatus } from "@obsidion/sdk"
 import {
   ACCOUNT_STORAGE_KEY,
   AccountStorage,
   HISTORIC_ACTIVITY_IMPORTED_KEY,
-  HISTORIC_UNFINISHED_ERROR,
   importHistoricActivity,
   KEY_SAVINGS_MOVES,
   KEY_SIPA_DEPOSITS,
-  KEY_WITHDRAWALS,
   retiredDatabaseOf,
   SavingsMoveStorage,
-  setActiveNetworkId,
   SIPADepositStore,
   TRANSACTIONS_STORAGE_KEY,
   TRANSFER_SCAN_CURSOR_PREFIX,
-  TransactionStorage,
   transferScanNetworkOf,
-  WithdrawalStorage,
   type RetiredDatabase,
   type SavingsMoveRecord,
   type SIPADepositRecord,
   type WithdrawalRecord,
 } from "../../src/core"
+import { createActivity } from "../../src/engine/activity"
+import { openDatabase } from "../../src/engine/database"
+import { memoryBackend } from "../../src/engine/memoryBackend"
+import { scannedRow } from "../../src/core/services/transactions/TransferEventScanner"
+import { encodeRecord } from "../../src/engine/persistentStore"
+import { createWithdrawals, KEY_WITHDRAWALS } from "../../src/engine/withdrawals"
 import type { TokenInTxService, TokenTransaction, Transaction } from "../../src/types"
 import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
 import { resetSingleton } from "../__test-helpers__/resetSingleton"
@@ -42,16 +43,18 @@ const token: TokenInTxService = {
   hasUnknownAmount: false,
 }
 
-const row = (overrides: Partial<TokenTransaction>): TokenTransaction => ({
-  action: "send",
-  token,
-  timestamp: 1_000,
-  status: "success",
-  txHash: "0xA1",
-  from: ACCOUNT,
-  to: "0xbob",
-  ...overrides,
-})
+/** A row as a retired database holds it, in the legacy format. */
+const row = (overrides: Partial<TokenTransaction> & { queueId?: string }): TokenTransaction =>
+  ({
+    action: "send",
+    token,
+    timestamp: 1_000,
+    status: "success",
+    txHash: "0xA1",
+    from: ACCOUNT,
+    to: "0xbob",
+    ...overrides,
+  } as TokenTransaction)
 
 const deposit = (overrides: Partial<SIPADepositRecord>): SIPADepositRecord =>
   ({
@@ -117,14 +120,12 @@ const readOf =
 
 function setup() {
   resetSingleton(AccountStorage as unknown as { instance: AccountStorage | null })
-  resetSingleton(TransactionStorage as unknown as { instance: TransactionStorage | null })
   resetSingleton(SIPADepositStore as unknown as { instance: SIPADepositStore | null })
-  resetSingleton(WithdrawalStorage as unknown as { instance: WithdrawalStorage | null })
   const storage = new InMemoryStorageAdapter()
   AccountStorage.get(storage)
-  const transactions = TransactionStorage.get(storage)
+  const transactions = createActivity({ db: openDatabase(memoryBackend()) })
   const sipaDeposits = SIPADepositStore.get(storage)
-  const withdrawals = WithdrawalStorage.get(storage)
+  const withdrawals = createWithdrawals({ db: openDatabase(memoryBackend()) })
   const savingsMoves = new SavingsMoveStorage(storage)
   const deps = (dbs: RetiredDatabase[], ownsStorage?: () => boolean) => ({
     storage,
@@ -137,8 +138,6 @@ function setup() {
   })
   return { storage, transactions, sipaDeposits, withdrawals, savingsMoves, deps }
 }
-
-beforeEach(() => setActiveNetworkId(ACTIVE))
 
 describe("importHistoricActivity", () => {
   it("carries rows and settled deposits and withdrawals over, stamped with the retired network", async () => {
@@ -169,7 +168,7 @@ describe("importHistoricActivity", () => {
       savingsMoves: 0,
       unstamped: 0,
     })
-    const rows = await transactions.getTransactions()
+    const rows = await transactions.all()
     expect(rows.map((r) => [r.txHash, r.networkId])).toEqual([
       ["0xA1", OLD],
       ["0xA2", OLD],
@@ -179,12 +178,17 @@ describe("importHistoricActivity", () => {
     expect(unfinished).toMatchObject({
       status: "failed",
       detailedStatus: QueueStatus.FAILED,
-      error: HISTORIC_UNFINISHED_ERROR,
+      failure: { code: "tx.failed" },
       endTime: 1_000,
     })
-    expect(unfinished.queueId).toBeUndefined()
+    expect(unfinished.operationId).toBeUndefined()
+    expect("queueId" in unfinished).toBe(false)
     expect(sipaDeposits.list().map((d) => [d.sipaAddress, d.networkId])).toEqual([["0xsipa1", OLD]])
-    expect(withdrawals.list().map((w) => [w.localId, w.networkId])).toEqual([["w1", OLD]])
+    expect(
+      [...(await withdrawals.all())]
+        .sort((a, b) => b.startTime - a.startTime)
+        .map((w) => [w.localId, w.networkId]),
+    ).toEqual([["w1", OLD]])
     expect(await storage.getItem(HISTORIC_ACTIVITY_IMPORTED_KEY)).toContain('"databases":["7"]')
   })
 
@@ -198,14 +202,19 @@ describe("importHistoricActivity", () => {
 
   it("skips a row already here, keeps a row's own stamp, and leaves existing records alone", async () => {
     const { transactions, sipaDeposits, deps } = setup()
-    await transactions.addIncomingTokenTransaction({
-      txHash: "0xa1",
-      from: "0xbob",
-      senderL2Address: "0xbob",
-      to: ACCOUNT,
-      token,
-      timestamp: 5,
-    })
+    await transactions.record(
+      scannedRow({
+        action: "receive",
+        txHash: "0xa1",
+        from: "0xbob",
+        senderL2Address: "0xbob",
+        to: ACCOUNT,
+        token,
+        amountAtomic: 5_000_000n,
+        timestamp: 5,
+        networkId: ACTIVE,
+      }),
+    )
     await sipaDeposits.create("0xsipa1", { ...deposit({ amount: "1" }), networkId: ACTIVE })
     const db = database("7", {
       scanned: [OLD],
@@ -216,7 +225,7 @@ describe("importHistoricActivity", () => {
     const result = await importHistoricActivity(deps([db]))
 
     expect(result).toMatchObject({ transactions: 1, deposits: 0 })
-    const rows = await transactions.getTransactions()
+    const rows = await transactions.all()
     expect(rows.map((r) => [r.txHash, r.networkId])).toEqual([
       ["0xa1", ACTIVE],
       ["0xA2", "0xother"],
@@ -258,7 +267,7 @@ describe("importHistoricActivity", () => {
     }
     const db = database("7", { scanned: [OLD], rows: [link, link] as unknown as Transaction[] })
     expect((await importHistoricActivity(deps([db])))?.transactions).toBe(1)
-    expect(await transactions.getTransactions()).toHaveLength(1)
+    expect(await transactions.all()).toHaveLength(1)
   })
 
   it("leaves deposits and withdrawals that name no single network, but still carries the rows", async () => {
@@ -287,13 +296,13 @@ describe("importHistoricActivity", () => {
       savingsMoves: 0,
       unstamped: 3,
     })
-    const rows = await transactions.getTransactions()
+    const rows = await transactions.all()
     expect(rows.map((r) => [r.txHash, r.networkId])).toEqual([
       ["0xA1", undefined],
       ["0xB1", undefined],
     ])
     expect(sipaDeposits.list().map((d) => d.sipaAddress)).toEqual(["0xsipa8"])
-    expect(withdrawals.list()).toEqual([])
+    expect([...(await withdrawals.all())].sort((a, b) => b.startTime - a.startTime)).toEqual([])
   })
 
   it("a failed read leaves no marker", async () => {
@@ -310,7 +319,7 @@ describe("importHistoricActivity", () => {
     const { storage, transactions, deps } = setup()
     const db = database("7", { scanned: [OLD], rows: [row({})] })
     await expect(importHistoricActivity(deps([db], () => false))).rejects.toThrow("account changed")
-    expect(await transactions.getTransactions()).toEqual([])
+    expect(await transactions.all()).toEqual([])
     expect(await storage.getItem(HISTORIC_ACTIVITY_IMPORTED_KEY)).toBeNull()
   })
 
@@ -329,7 +338,26 @@ describe("importHistoricActivity", () => {
     })
 
     expect((await importHistoricActivity(deps([unsplit, split])))?.transactions).toBe(2)
-    expect((await transactions.getTransactions()).map((r) => r.txHash)).toEqual(["0xL1", "0xS1"])
+    expect((await transactions.all()).map((r) => r.txHash)).toEqual(["0xL1", "0xS1"])
+  })
+
+  it("reads the rows a database's activity store saved, ahead of its legacy copy", async () => {
+    const { transactions, deps } = setup()
+    const saved = { ...row({ txHash: "0xN1" }), id: "0xn1", amountAtomic: 7n, networkId: OLD }
+    const db = retired("8", {
+      "acct/meta/activity": "1",
+      "acct/activity/0xn1": encodeRecord(saved),
+      [TRANSACTIONS_STORAGE_KEY]: JSON.stringify([
+        row({ txHash: "0xN1", status: "pending" }),
+        row({ txHash: "0xL2", timestamp: 2_000 }),
+      ]),
+    })
+
+    expect((await importHistoricActivity(deps([db])))?.transactions).toBe(2)
+    expect((await transactions.all()).map((r) => [r.txHash, r.status, r.amountAtomic])).toEqual([
+      ["0xN1", "success", 7n],
+      ["0xL2", "success", 5_000_000n],
+    ])
   })
 
   it("skips malformed values and rows with neither hash nor link", async () => {
@@ -357,7 +385,7 @@ describe("importHistoricActivity writes", () => {
     const db = database("7", { scanned: [OLD], rows: [row({})], deposits: [deposit({})] })
     let rowsWhenHeld = -1
     const holdSession = vi.fn(async <T>(fn: () => Promise<T>) => {
-      rowsWhenHeld = (await transactions.getTransactions()).length
+      rowsWhenHeld = (await transactions.all()).length
       return fn()
     })
 
@@ -365,7 +393,7 @@ describe("importHistoricActivity writes", () => {
 
     expect(holdSession).toHaveBeenCalledTimes(1)
     expect(rowsWhenHeld).toBe(0)
-    expect(await transactions.getTransactions()).toHaveLength(1)
+    expect(await transactions.all()).toHaveLength(1)
     expect(await storage.getItem(HISTORIC_ACTIVITY_IMPORTED_KEY)).not.toBeNull()
   })
 
@@ -385,9 +413,10 @@ describe("importHistoricActivity from a source generation", () => {
   it("files a database held as entries under its own marker, beside this browser's import", async () => {
     const { storage, transactions, withdrawals, deps } = setup()
     const burn = "0x" + "b1".repeat(32)
-    await withdrawals.create(
-      withdrawal({ localId: "here", l2TxHash: burn as never, networkId: OLD }),
-    )
+    await withdrawals.create({
+      ...withdrawal({ localId: "here", l2TxHash: burn as never }),
+      networkId: OLD,
+    })
     const db = database("7", {
       scanned: [OLD],
       rows: [row({})],
@@ -402,15 +431,86 @@ describe("importHistoricActivity from a source generation", () => {
 
     expect(result).toMatchObject({ transactions: 1, withdrawals: 1 })
     expect(
-      withdrawals
-        .list()
-        .map((w) => w.localId)
+      withdrawals.list
+        .get()
+        .records.map((w) => w.localId)
         .sort(),
     ).toEqual(["here", "other"])
-    expect((await transactions.getTransactions())[0]?.networkId).toBe(OLD)
+    expect((await transactions.all())[0]?.networkId).toBe(OLD)
     expect(await storage.getItem(key)).not.toBeNull()
     expect(await storage.getItem(HISTORIC_ACTIVITY_IMPORTED_KEY)).toBeNull()
     expect(await importHistoricActivity({ ...deps([db]), key })).toBeNull()
+  })
+
+  it("imports a short read's rows and leaves the marker for a full read", async () => {
+    const { storage, transactions, deps } = setup()
+    const db = { ...database("7", { scanned: [OLD], rows: [row({})] }), partial: true }
+    const key = `${HISTORIC_ACTIVITY_IMPORTED_KEY}/${OLD}/0xtoken`
+
+    expect(await importHistoricActivity({ ...deps([db]), key })).toMatchObject({ transactions: 1 })
+    expect(await transactions.all()).toHaveLength(1)
+    expect(await storage.getItem(key)).toBeNull()
+
+    const full = database("7", { scanned: [OLD], rows: [row({})] })
+    expect(await importHistoricActivity({ ...deps([full]), key })).toMatchObject({
+      transactions: 0,
+    })
+    expect(await storage.getItem(key)).not.toBeNull()
+  })
+
+  it("names a held row's counterparty by the tag a later read verified", async () => {
+    const { transactions, deps } = setup()
+    const sender = "0x" + "5e".repeat(32)
+    const recipient = "0x" + "7e".repeat(32)
+    const send = row({ txHash: "0xA1", to: recipient })
+    const receive = row({
+      txHash: "0xA2",
+      action: "receive",
+      from: sender,
+      senderL2Address: sender,
+      to: ACCOUNT,
+    })
+    const untagged = database("7", { scanned: [OLD], rows: [send, receive] })
+    await importHistoricActivity({ ...deps([untagged]), key: "first" })
+
+    const tagged = database("7", {
+      scanned: [OLD],
+      rows: [
+        { ...send, toTag: "bob" },
+        { ...receive, from: "alice" },
+      ],
+    })
+    const result = await importHistoricActivity({ ...deps([tagged]), key: "second" })
+
+    expect(result).toMatchObject({ transactions: 0 })
+    const rows = await transactions.all()
+    expect(rows.find((r) => r.txHash === "0xA1")).toMatchObject({ to: recipient, toTag: "bob" })
+    expect(rows.find((r) => r.txHash === "0xA2")).toMatchObject({
+      from: "alice",
+      senderL2Address: sender,
+    })
+  })
+
+  it("keeps a held row's tag over a later read's address", async () => {
+    const { transactions, deps } = setup()
+    const sender = "0x" + "5e".repeat(32)
+    const receive = row({
+      txHash: "0xA2",
+      action: "receive",
+      from: "alice",
+      senderL2Address: sender,
+      to: ACCOUNT,
+    })
+    await importHistoricActivity({
+      ...deps([database("7", { scanned: [OLD], rows: [receive] })]),
+      key: "first",
+    })
+    await importHistoricActivity({
+      ...deps([database("7", { scanned: [OLD], rows: [{ ...receive, from: sender }] })]),
+      key: "second",
+    })
+
+    expect((await transactions.all())[0]).toMatchObject({ from: "alice" })
   })
 })
 

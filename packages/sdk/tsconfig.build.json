@@ -1,0 +1,16 @@
+{
+  "extends": ["../../tsconfig.json", "@obsidion/lint-config/tsconfig.strict.json"],
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "src",
+    "outDir": "./dist",
+    "forceConsistentCasingInFileNames": true,
+    "noUncheckedIndexedAccess": true,
+    "paths": {
+      "@zkpassport/*": ["./node_modules/@zkpassport/*"]
+    }
+  },
+  "include": ["src/index.ts", "src/test.ts", "src/backend.ts"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
+}

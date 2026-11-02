@@ -1,14 +1,8 @@
-import { QueueStatus } from "@obsidion/sdk"
+import type { QueueStatus } from "@obsidion/sdk"
 import type { OriginalFlowKind } from "@obsidion/proving-progress"
-import { TokenAction, TokenInTxService, PaylinkAction } from "./tokens"
+import type { TokenAction, TokenInTxService, PaylinkAction } from "./tokens"
 import type { TxStatus } from "@aztec-labs/stdlib/tx"
-
-// TransactionType discriminates the storage shape. This alias is consumed
-// by the optional `TransactionQueueItem.type` field; it is not a persisted
-// row field, so the rename from "emailPayment" → "paylink" needs no read-time
-// projection. Stored row classification flows through `emailPaymentAction`
-// (legacy field name kept for back-compat) and the new `flavor` discriminator.
-export type TransactionType = "paylink" | "token"
+import type { Failure } from "../engine/errors"
 
 // Add a new action type for faucet transactions
 export type FaucetAction = "faucet"
@@ -23,31 +17,25 @@ export type AccountCreationAction = "create_account" | "import_account"
 
 // Base transaction type with common fields
 export type BaseTransaction = {
+  /** The record key: the operation id for a row this device started, else the tx hash. */
+  id: string
   timestamp: number
   status: TransactionStatus
   txHash: string
-  // Real-time tracking fields
-  queueId?: string
-  // caller-supplied opId threaded from React → wallet.sendTx so
-  // proving-progress stage events can be correlated to this row before/after submit. Required
-  // for the in-memory queue→storage write-through bridge in TxLifecycleService; absence means
-  // the row pre-dates async-send and the bridge skips it.
+  /** The user operation that wrote this row; proving-progress events carry the same id. */
   operationId?: string
   detailedStatus?: QueueStatus
   progress?: number
-  error?: string
+  /** Raw amount in base units; 0 when the amount is unknown. */
+  amountAtomic: bigint
+  failure?: Failure
   startTime?: number
   endTime?: number
   estimatedDuration?: number
   description?: string
-  /**
-   * Original-flow kind — the user's source flow (`"send"`, `"withdraw"`,
-   * or `"paylink-create"`).
-   * Default `"send"` on read for back-compat with legacy persisted records
-   * that pre-date the kind field.
-   */
+  /** The user's source flow (`"send"`, `"withdraw"`, `"paylink-create"`, …). */
   kind?: OriginalFlowKind
-  /** Network the row was created on (rollup L1 address). Unset only pre-boot. */
+  /** Network the row was created on: see `OnNetwork`. */
   networkId?: string
   // Reorg anchors: block inclusion data, re-writable on re-inclusion.
   blockNumber?: number
@@ -76,8 +64,6 @@ export type TokenTransaction = BaseTransaction & {
   toTag?: string
   /** Payment request this transfer fulfills (from the on-chain `Transfer.meta`). */
   requestId?: string
-  /** Verifier-attested raw amount in base units (scanned rows only). Trusted, unlike `token.amount`'s wire-decimals display. */
-  amountAtomic?: string
 }
 
 export type ContractCallTransaction = BaseTransaction & {
@@ -96,8 +82,7 @@ export type FaucetTransaction = BaseTransaction & {
 // PaylinkTransaction (formerly EmailPaymentTransaction) — represents a paylink
 // row in either flavor (direct or email). The persisted field name
 // `emailPaymentAction` is kept unchanged for back-compat with stored rows; new
-// rows write `flavor` to distinguish direct vs email-validated paylinks (legacy
-// rows are read-time projected by recipient-shape heuristic in TransactionStorage).
+// rows write `flavor` to distinguish direct vs email-validated paylinks.
 export type PaylinkTransaction = BaseTransaction & {
   action: PaylinkAction
   token?: TokenInTxService
@@ -108,11 +93,7 @@ export type PaylinkTransaction = BaseTransaction & {
    * type-level only at this layer.
    */
   emailPaymentAction: PaylinkAction
-  /**
-   * Discriminates direct paylinks (no recipient validation) from email
-   * paylinks (email-bound). Required on new writes; legacy rows missing this
-   * field get a recipient-shape heuristic projection at read time.
-   */
+  /** Discriminates direct paylinks (no recipient validation) from email paylinks (email-bound). */
   flavor: "direct" | "email" | "zk"
   from?: string
   to?: string
@@ -142,9 +123,20 @@ export type PaylinkTransaction = BaseTransaction & {
   /** Which recovery returned the escrow; unset on rows refunded before it was recorded. */
   refundKind?: "cancel" | "reclaim"
   isClaimed?: boolean
+  /**
+   * When the link was claimed: the claim's block time on a row rebuilt from chain, else when this
+   * device first saw it claimed.
+   */
+  claimedAt?: number
+  /** Who claimed it: this account (`self`) or someone the chain showed (`chain`, and unset). */
+  claimedBy?: "self" | "chain"
   // Escrow returned on L1 by an upgrade off a retired deployment. Its L2 note stays unspent there, so
   // no nullifier read ever settles this row.
   isMigrated?: boolean
+}
+
+export function isPaylinkTransaction(tx: Transaction): tx is PaylinkTransaction {
+  return (tx as PaylinkTransaction).emailPaymentAction !== undefined
 }
 
 export type AccountCreationTransaction = BaseTransaction & {

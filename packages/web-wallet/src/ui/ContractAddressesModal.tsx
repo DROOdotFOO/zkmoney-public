@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react"
 import { GradientText } from "@obsidion/web-ds"
-import { useAztecContext, useContractServiceContext } from "@obsidion/front-core"
+import { useContractServiceContext, useResource } from "@obsidion/front-core"
 import { PER_INSTANCE_CONTRACTS } from "@obsidion/config-client"
 import { DEFAULT_CONTRACTS_NAME } from "@obsidion/core/constants"
 import type { ContractName, OxideEnvTuple } from "@obsidion/core/types"
 import { Modal } from "./Modal"
 import { useCopy } from "./hooks"
+import { useSession } from "../platform/session"
 
 type Chain = "L1" | "L2"
 
@@ -122,7 +123,7 @@ function AddressRow({ row }: { row: Row }) {
 /** Deployment contracts the wallet points at: profile L2 set, oxide manifest tuple, Aztec protocol. */
 export function ContractAddressesModal({ onClose }: { onClose: () => void }) {
   const { contractService } = useContractServiceContext()
-  const { obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
   const node = obsidionWallet?.node
   const [groups, setGroups] = useState<Group[]>()
 

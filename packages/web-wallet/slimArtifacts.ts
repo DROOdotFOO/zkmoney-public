@@ -45,7 +45,7 @@ export function slimContractArtifact<T extends CompiledContract>(artifact: T): T
 /**
  * Ships every bundled contract artifact slim: about half their bytes, and less for the PXE to parse,
  * hash and store when it registers one. A simulation error then names no Noir source location. The
- * dev server keeps the full artifacts. test/slimArtifacts.test.ts holds each slimmed artifact's
+ * dev server keeps the full artifacts. test/build/slimArtifacts.test.ts holds each slimmed artifact's
  * bytecode, verification keys and class id to the original's.
  */
 export function slimArtifacts(): Plugin {

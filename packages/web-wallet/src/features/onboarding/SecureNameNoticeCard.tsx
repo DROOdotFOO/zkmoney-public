@@ -15,17 +15,20 @@ import {
   isStuckSweep,
   SIPA_PROCESSING_COPY,
   STUCK_SWEEP_MS,
-  sipaDepositInflightLabel,
+  depositPhaseCopy,
   sipaReasonShown,
+  depositDetailOffer,
   depositOwed,
   fundsIn,
+  useStore,
 } from "@obsidion/front-core"
 import { Card, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import paylinkCoins from "../../assets/home/paylink-coins.webp"
 import { DepositDetailModal } from "../../ui/screens/DepositDetailModal"
-import { depositDetailOffer } from "../../ui/screens/useActivityEntries"
-import { DepositExitModal } from "../deposit/DepositExitModal"
+import rowCopy from "../../ui/activity/ActivityRow.copy"
+import { registrationRecordForSipa } from "./webRegistration"
+import { DepositExitModal } from "../deposit/DepositExitModal/DepositExitModal"
 import { getConfig } from "../../config/env"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { loadWalletIdentity } from "../identity/walletIdentity"
@@ -39,7 +42,6 @@ import {
 } from "../paylink/runningClaims"
 import { decodeLink } from "../paylink/sponsoredPaylink"
 import { ticketActivation } from "../paylink/ticketContinuation"
-import { getWithdrawalStore } from "../withdraw/withdrawGateway"
 import { sipaProcessingObserver, useSipaProcessing } from "../deposit/sipaProcessing"
 import { useDepositAdmission } from "../identity/admission"
 import {
@@ -62,6 +64,7 @@ import { REGISTRATIONS_PAUSED_NOTICE } from "./onboardingErrorCopy"
 import { formatTokenAmount } from "./steps/DepositTermsRows"
 import { registrationRecoveryNeeded, useRegistrationRefunded } from "./registrationQuoteRecovery"
 import { reportRegistrationLapsed } from "./registrationFunnel"
+import { session } from "../../platform/session"
 
 const CLOCK_MS = 60_000
 
@@ -91,7 +94,7 @@ function railLabel(): string | null {
   if (!deposit) return null
   return shown
     ? SIPA_PROCESSING_COPY[shown.reason.kind].short
-    : sipaDepositInflightLabel(deposit) ?? null
+    : depositPhaseCopy(deposit).live ?? null
 }
 
 /** A stated reason or a stuck sweep has no known end, so the hero promises no short wait. */
@@ -146,14 +149,22 @@ function LiveDepositDetail(props: { sipaAddress: string; tag: string; onClose: (
       />
     )
   }
-  const offer = depositDetailOffer(deposit, processing)
+  const offer = depositDetailOffer(deposit, {
+    processing,
+    registration: registrationRecordForSipa(deposit.sipaAddress) ?? undefined,
+    now: Date.now(),
+  })
   return (
     <DepositDetailModal
       record={deposit}
       registrationTag={props.tag}
       exit={
         offer
-          ? { title: offer.title, sweep: offer.canSweep, onStart: () => setExit(offer) }
+          ? {
+              title: offer.action === "sweep" ? rowCopy.action.sweep : rowCopy.action.recover,
+              sweep: offer.canSweep,
+              onStart: () => setExit(offer),
+            }
           : undefined
       }
       onClose={props.onClose}
@@ -217,18 +228,24 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
     return () => clearInterval(timer)
   }, [record])
   const [detailOpen, setDetailOpen] = useState(false)
-  const lapsed = !!open && depositOwed(open.stage) && !depositAdmitted && quoteExpired(terms, nowMs)
+  const lapsed =
+    open?.stage !== undefined &&
+    depositOwed(open.stage) &&
+    !depositAdmitted &&
+    quoteExpired(terms, nowMs)
+  const burns = useStore(session().withdrawals.list)
   useEffect(() => {
     if (lapsed && record) reportRegistrationLapsed(record.account, record.phase)
   }, [lapsed, record])
 
-  if (!open || !record) return null
+  // Unknown while the withdrawals load: the card waits rather than ask for a funded deposit.
+  if (!open || !record || open.stage === undefined || !burns.hydrated) return null
   const { stage } = open
   // A paylink-funded registration is never asked for an L1 deposit: its link's claim funds and
   // publishes the SIPA. What it needs is decided before any price: progress while this page claims
   // or the burn is on its way; the claim while the bound link is on this tab; else the way back to
   // the link or the renewal.
-  const ticket = ticketActivation(record, terms, getWithdrawalStore().list(), nowMs)
+  const ticket = ticketActivation(record, terms, burns.records, nowMs)
   if (ticket) {
     const holdEnds = reservedUntil(terms, nowMs)
     const heldFor = holdEnds === undefined ? "" : ` until ${formatDateLabel(holdEnds)}`

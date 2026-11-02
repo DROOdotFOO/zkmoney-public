@@ -9,39 +9,53 @@ import {
   depositOwed,
   registrationStage,
   SIPADepositStore,
-  WithdrawalStorage,
   type FundingBurn,
   type PendingRegistrationRecord,
   type RegistrationStage,
 } from "@obsidion/front-core"
+import { session } from "../../platform/session"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { walletStorage } from "../../platform/storage/walletStorage"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { registrationRouteFor } from "./registrationFunnel"
 import { getPendingStore, registrationAddressPublished } from "./webRegistration"
 
+/**
+ * Undefined while the session's withdrawals load and the stage would read `reserved`: a funding burn
+ * may be among them. A caller passing `burns` passes loaded ones.
+ */
 export function readRegistrationStage(
   record: PendingRegistrationRecord,
-  burns: readonly FundingBurn[] = WithdrawalStorage.get(webStorage).list(),
-): RegistrationStage {
-  return registrationStage(record, {
+): RegistrationStage | undefined
+export function readRegistrationStage(
+  record: PendingRegistrationRecord,
+  burns: readonly FundingBurn[],
+): RegistrationStage
+export function readRegistrationStage(
+  record: PendingRegistrationRecord,
+  burns?: readonly FundingBurn[],
+): RegistrationStage | undefined {
+  const list = burns ? { records: burns, hydrated: true } : session().withdrawals.list.get()
+  const stage = registrationStage(record, {
     deposit: SIPADepositStore.get(webStorage).get(record.sipaAddress as Address),
-    burns,
+    burns: list.records,
   })
+  return stage === "reserved" && !list.hydrated ? undefined : stage
 }
 
 export interface OpenRegistration {
   record: PendingRegistrationRecord
-  stage: RegistrationStage
+  /** Undefined until it is known (`readRegistrationStage`). */
+  stage: RegistrationStage | undefined
 }
 
 /** The registration behind the tag the active wallet still presents as pending. */
-export function openRegistration(): OpenRegistration | null {
+export function openRegistration(burns?: readonly FundingBurn[]): OpenRegistration | null {
   const identity = loadWalletIdentity()
   const record = getPendingStore().current()
   if (!identity?.pending || !record) return null
   if (record.l2Address.toLowerCase() !== identity.address.toLowerCase()) return null
-  return { record, stage: readRegistrationStage(record) }
+  return { record, stage: burns ? readRegistrationStage(record, burns) : readRegistrationStage(record) }
 }
 
 /** Every store a stage reads. */
@@ -49,7 +63,7 @@ export function subscribeRegistrationStage(onChange: () => void): () => void {
   const offs = [
     getPendingStore().onListChanged(onChange),
     SIPADepositStore.get(webStorage).onListChanged(onChange),
-    WithdrawalStorage.get(webStorage).onListChanged(onChange),
+    session().withdrawals.list.subscribe(onChange),
   ]
   return () => offs.forEach((off) => off())
 }
@@ -72,7 +86,7 @@ function openRegistrationKey(): string | null {
 export function useRegistrationDepositOwed(): boolean {
   return useSyncExternalStore(subscribeRegistrationStage, () => {
     const open = openRegistration()
-    return open !== null && depositOwed(open.stage)
+    return open?.stage !== undefined && depositOwed(open.stage)
   })
 }
 
@@ -112,13 +126,15 @@ export function useNameClaimedOnL1(): boolean {
 }
 
 /** `readRegistrationStage` for one record, kept current. Null without a record. */
-export function useRegistrationStage(record: PendingRegistrationRecord): RegistrationStage
+export function useRegistrationStage(
+  record: PendingRegistrationRecord,
+): RegistrationStage | undefined
 export function useRegistrationStage(
   record: PendingRegistrationRecord | null,
-): RegistrationStage | null
+): RegistrationStage | undefined | null
 export function useRegistrationStage(
   record: PendingRegistrationRecord | null,
-): RegistrationStage | null {
+): RegistrationStage | undefined | null {
   return useSyncExternalStore(subscribeRegistrationStage, () =>
     record ? readRegistrationStage(record) : null,
   )
@@ -148,9 +164,13 @@ function confirmedAddresses(): string[] {
  * broadcast per L1 account, ever, so an address is broadcast only once its tag is final, and from
  * then on the tag cannot change.
  */
-export function registrationTagConfirmed(record: PendingRegistrationRecord): boolean {
+export function registrationTagConfirmed(
+  record: PendingRegistrationRecord,
+  burns?: readonly FundingBurn[],
+): boolean {
   if (registrationAddressPublished(record)) return true
-  if (!depositOwed(readRegistrationStage(record))) return true
+  const stage = burns ? readRegistrationStage(record, burns) : readRegistrationStage(record)
+  if (stage !== undefined && !depositOwed(stage)) return true
   if (confirmedAddresses().includes(record.sipaAddress.toLowerCase())) return true
   const route = registrationRouteFor(record.tag)
   // Random and paid tags wait on the user: keep or swap, and register or verify as a past user.
@@ -188,6 +208,8 @@ export function useRegistrationTagConfirmed(record: PendingRegistrationRecord | 
 export function useRegistrationTagChangeable(): boolean {
   return useSyncExternalStore(subscribeConfirmed, () => {
     const open = openRegistration()
-    return open !== null && depositOwed(open.stage) && !registrationTagConfirmed(open.record)
+    return (
+      open?.stage !== undefined && depositOwed(open.stage) && !registrationTagConfirmed(open.record)
+    )
   })
 }

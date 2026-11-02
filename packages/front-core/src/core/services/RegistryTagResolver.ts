@@ -19,7 +19,7 @@
  */
 
 import type { Address, PublicClient } from "viem"
-import { readUserByNameHash } from "@obsidion/sdk"
+import { readUserByNameHash, readUserL2AddressAt } from "@obsidion/sdk"
 import { normalizeTag } from "../../utils/normalizeTag"
 import { composeWireNameHash } from "./wireDomain"
 
@@ -102,5 +102,26 @@ export class RegistryTagResolver {
       sipaStealthPublicKey: record.sipaStealthPublicKey,
       xmtpAddress: record.bootstrapOwner,
     }
+  }
+
+  /**
+   * The L2 address the tag's account held on `rollupVersion` at L1 block `blockNumber`, for a
+   * transfer read on a rollup it has since left. Null for an invalid tag or no address there then.
+   */
+  async resolveTagAt(
+    tag: string,
+    rollupVersion: bigint,
+    blockNumber: bigint,
+  ): Promise<string | null> {
+    const normalized = normalizeTag(tag)
+    if (normalized === null) return null
+    return readUserL2AddressAt(
+      this.config.client,
+      this.config.registry,
+      this.config.accountMetadataRegistry,
+      composeWireNameHash(normalized, this.config.ensDomain),
+      rollupVersion,
+      blockNumber,
+    )
   }
 }

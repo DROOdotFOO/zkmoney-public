@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { formatUnits } from "viem"
-import { normalizeTag, useAccountContext, useAztecContext } from "@obsidion/front-core"
+import { normalizeTag, useResource } from "@obsidion/front-core"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { Modal } from "../../ui/Modal"
 import { InviteFriendActions, InviteFriendRow } from "../invite/InviteFriendRow"
@@ -16,6 +16,7 @@ import { rememberRegistrationRoute, type RegistrationRoute } from "./registratio
 import { TagAvailabilityNotes } from "./steps/TagAvailabilityNotes"
 import { setVerifyOpen, usePastUserCheck, useVerifyOpen } from "./usePastUserCheck"
 import { VerifyPastUserModal } from "./VerifyPastUserModal"
+import { useSession } from "../../platform/session"
 
 export const PAY_PRICE = usdFigure(formatUnits(askedTotal("standard"), 18))
 const VERDICTS: Partial<Record<NameAvailability, string>> = {
@@ -54,8 +55,8 @@ const REGISTRATION_ROUTES: Record<"invite" | "past-user" | "pay", RegistrationRo
 export function ChooseNameSheet({ tag, onClose }: { tag: string; onClose: () => void }) {
   const navigate = useNavigate()
   const { pathname } = useLocation()
-  const { obsidionAccount } = useAccountContext()
-  const { obsidionWallet } = useAztecContext()
+  const obsidionAccount = useResource(useSession().account)
+  const obsidionWallet = useResource(useSession().wallet)
   const [typed, setTyped] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()

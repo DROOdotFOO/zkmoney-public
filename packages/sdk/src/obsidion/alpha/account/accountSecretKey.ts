@@ -1,5 +1,5 @@
 import { sha256ToField } from "@aztec-labs/foundation/crypto/sha256"
-import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { ACCOUNT_SECRET_KEY_LABEL } from "@obsidion/core/constants"
 
 /** The account's Aztec secret key: the root PXE derives the account's key set from. */

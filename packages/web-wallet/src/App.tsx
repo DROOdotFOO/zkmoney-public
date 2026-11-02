@@ -1,24 +1,19 @@
-import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { Network, setPerfLogFlag, TokenService } from "@obsidion/sdk"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { lazy, Suspense, useEffect, useState, useSyncExternalStore, type ReactNode } from "react"
 import {
-  AccountProvider,
-  AssetProvider,
   ConfigProvider,
   LocalConfigStore,
   ContactStorage,
   IssuedConnectStorage,
   NameClaimStore,
-  RequestStorage,
   ObsidionCoreProvider,
   PendingConnectBackStorage,
   PredicateScreeningService,
   ScreeningProvider,
-  createOxideTeeSignerSource,
   passThroughScreener,
-  useAztecContext,
   useContractServiceContext,
+  useResource,
 } from "@obsidion/front-core"
 import {
   BrowserRouter,
@@ -32,13 +27,14 @@ import {
 import { ScanNavigationProvider } from "./features/scan/ScanNavigation"
 import { getConfig, type WebBootConfig } from "./config/env"
 import { proveTxPerfLogsEnabled } from "./config/features"
-import { fleetUrl } from "./config/oxideTuple"
 import { isDemoMode } from "./dev/demoFlag"
 import { ErrorModalHost } from "./errors/ErrorModalHost"
 import { bindAnalyticsConsent } from "./lib/analytics"
 import { wireTxTimingAnalytics } from "./lib/txTimingAnalytics"
 import { loadOnboardedIdentity } from "./features/identity/walletIdentity"
 import { NameRequiredScreen } from "./ui/screens/NameRequiredScreen"
+import { BalanceMovingScreen } from "./features/backupPasskey/BalanceMovingScreen"
+import { LinkWaitsScreen } from "./features/backupPasskey/LinkWaitsScreen"
 import {
   buildWebDetectionDeps,
   runBootDetection,
@@ -56,38 +52,37 @@ import { OnboardingScreen } from "./features/onboarding/OnboardingScreen"
 import { drawnOfferTag, subscribeDrawnOffer } from "./features/onboarding/nameGrant"
 import { LinkViewScreen } from "./features/paylink/LinkViewScreen"
 import { ClaimRoute } from "./features/paylink/PaylinkOnboardingScreen"
-import { NewLinkScreen } from "./features/paylink/NewLinkScreen"
+import { NewLinkScreen } from "./features/paylink/NewLinkScreen/NewLinkScreen"
 import { RequestLandingScreen } from "./features/requests/RequestLandingScreen"
 import { NonContactRequestsScreen } from "./features/requests/NonContactRequestsScreen"
-import { RequestsScreen } from "./features/requests/RequestsScreen"
+import { RequestsScreen } from "./features/requests/RequestsScreen/RequestsScreen"
 import { NON_CONTACT_REQUESTS_PATH, REQUESTS_PATH } from "./features/requests/nonContactView"
 import { DepositScreen } from "./features/deposit/DepositScreen"
 import { ReceiveScreen } from "./features/receive/ReceiveScreen"
-import { ContactsScreen } from "./features/contacts/ContactsScreen"
-import { SendScreen } from "./features/contacts/SendScreen"
-import { ContactDetailScreen } from "./features/contacts/ContactDetailScreen"
-import { ContactPayScreen } from "./features/contacts/ContactPayScreen"
+import { ContactsScreen } from "./features/contacts/ContactsScreen/ContactsScreen"
+import { SendScreen } from "./features/contacts/SendScreen/SendScreen"
+import { ContactDetailScreen } from "./features/contacts/ContactDetailScreen/ContactDetailScreen"
+import { ContactPayScreen } from "./features/contacts/ContactPayScreen/ContactPayScreen"
 import { ConnectReceiveScreen } from "./features/contacts/ConnectReceiveScreen"
 import { hasConnectStash, stashInboundConnect } from "./features/contacts/connectReceive"
 import { WithdrawScreen } from "./features/withdraw/WithdrawScreen"
-import { WithdrawEtherfiScreen } from "./features/withdraw/WithdrawEtherfiScreen"
+import { WithdrawEtherfiScreen } from "./features/withdraw/WithdrawEtherfiScreen/WithdrawEtherfiScreen"
 import { WithdrawMethodScreen } from "./features/withdraw/WithdrawMethodScreen"
 import { WithdrawFreshScreen } from "./features/withdraw/WithdrawFreshScreen"
 import { OldVersionWithdrawScreen } from "./features/withdraw/OldVersionWithdrawScreen"
-import { useAuthenticator } from "./platform/auth/useAuthenticator"
 import { retiredSession } from "./platform/auth/retiredSession"
 import { XmtpMount } from "./platform/xmtp/XmtpMount"
-import { MigrationDetectionMount } from "./features/migration/MigrationDetectionMount"
+import { MigrationDetectionMount } from "./features/migration/MigrationDetectionMount/MigrationDetectionMount"
 import { CutoverLogoutMount } from "./features/cutover/account"
-import { NotificationsMount } from "./features/notifications/NotificationsMount"
-import { PaylinkClaimMount } from "./features/notifications/PaylinkClaimMount"
-import { TransferScannerMount } from "./platform/transactions/TransferScannerMount"
-import { SipaDepositsMount } from "./features/deposit/useSipaDeposits"
-import { BrowserContractServiceStorage } from "./platform/contracts/BrowserContractServiceStorage"
-import { contactsWriteLock, requestsWriteLock } from "./platform/storage/contactsLock"
+import { PaylinkClaimMount } from "./features/notifications/PaylinkClaimMount/PaylinkClaimMount"
+import { useAssetDemand, useSession } from "./platform/session"
+import { useSipaDeposits } from "./features/deposit/useSipaDeposits"
+import { BackupRotationMount } from "./features/backupPasskey/BackupRotationMount"
+import { PreviousAccountWatchMount } from "./features/backupPasskey/PreviousAccountWatchMount"
+import { contactsWriteLock } from "./platform/storage/contactsLock"
 import { webStorage } from "./platform/storage/WebStorageAdapter"
 import { getDesktopSettingsPath } from "./platform/desktopBridge"
-import { AppShell, SidebarLayout } from "./ui/AppShell"
+import { AppShell, SidebarLayout } from "./ui/AppShell/AppShell"
 import { BakedProfileNotice, CustomProfileNotice } from "./ui/ConfigNotice"
 import { BootErrorScreen } from "./ui/BootErrorScreen"
 import { applyPreBootNavigation, PreBootRouterBridge } from "./ui/preBootTaps"
@@ -116,16 +111,15 @@ const ProfilePanel =
   import.meta.env.VITE_PROFILER === "true"
     ? lazy(() => import("./profiling/ProfilePanel").then((m) => ({ default: m.ProfilePanel })))
     : null
-import { WebSavingsProvider } from "./features/savings/SavingsProvider"
-import { ActivityScreen } from "./ui/screens/ActivityScreen"
-import { HomeScreen } from "./ui/screens/HomeScreen"
+import { WebSavingsProvider } from "./features/savings/SavingsProvider/SavingsProvider"
+import { ActivityScreen } from "./ui/screens/ActivityScreen/ActivityScreen"
+import { HomeScreen } from "./ui/screens/HomeScreen/HomeScreen"
 import { NotFoundScreen } from "./ui/screens/NotFoundScreen"
 import { SettingsScreen } from "./ui/screens/SettingsScreen"
 import { LeaveGuardMount } from "./features/operations/LeaveGuardMount"
-import { OperationsMount } from "./features/operations/OperationsMount"
 import { BroadcastsMount } from "./features/broadcasts/BroadcastsMount"
 import { setActiveTabSince } from "./platform/activeTabSince"
-import { connectFleetSigner, oxideTokenImmutablesOf } from "./features/token/oxideToken"
+import { oxideTokenImmutablesOf } from "./features/token/oxideToken"
 
 /** What the active tab hands the app once it may run the wallet. */
 export interface ActiveTabBoot {
@@ -140,7 +134,7 @@ export interface ActiveTabBoot {
  * Everything the provider tree needs, created on the App's first render (not
  * at module import) so a config error renders through the error boundary in
  * `main.tsx` instead of white-screening. References stay stable for the app's
- * lifetime — `useAsset` reconnects if the TEE signer source identity changes.
+ * lifetime.
  */
 function createAppServices(node: AztecNode) {
   const config = getConfig()
@@ -157,29 +151,14 @@ function createAppServices(node: AztecNode) {
   // Cache of the L1 NameClaim artifacts that gate ClaimFPC eligibility; recoverable from the
   // Registry's log, so it is seeded here purely so later get() calls need no adapter.
   NameClaimStore.get(storageAdapter)
-  // P2P payment requests — the receiver writes and the request UI observe the same instance.
-  RequestStorage.get(storageAdapter, requestsWriteLock)
   return {
     config,
     storageAdapter,
     configService: new LocalConfigStore(storageAdapter),
-    contractServiceStorage: new BrowserContractServiceStorage(config.network),
     // L1 address screening (withdraw recipient, deposit EOA). Unconfigured builds pass everything.
     screener: config.predicate
       ? new PredicateScreeningService(config.predicate)
       : passThroughScreener,
-    // The Main token's co-signer, following the manifest tuple; it shares every token's fleet signers.
-    assetOptions: {
-      // Without this seed TokenStorage stays empty and
-      // every loadAssets short-circuits to an empty asset list — no balance.
-      initialTokensToLoad: [WALLET_TOKEN_SYMBOL],
-      teeSignerSource: createOxideTeeSignerSource({
-        l1RpcUrl: config.l1RpcUrl,
-        l1Chain: config.l1Chain,
-        transformEnclaveUrl: (url) => fleetUrl(config, { enclaveUrl: url }),
-        connect: connectFleetSigner,
-      }),
-    },
     node,
   }
 }
@@ -194,7 +173,7 @@ function createAppServices(node: AztecNode) {
  * that never mined is re-sent in the background instead of waiting on a user gesture.
  */
 function RegistrationDetectionMount() {
-  const { obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
   useEffect(() => {
     void runBootDetection(getConfig()).catch(() => {})
   }, [])
@@ -212,19 +191,6 @@ function RegistrationDetectionMount() {
     )
   }, [obsidionWallet])
   return null
-}
-
-/**
- * AccountProvider for every surface, so onboarding, paylink and wallet screens all drive the shared
- * front-core contexts (useAccount, useAssetContext). It mounts before the PXE is up so a gate that
- * needs no PXE (WalletEntryGate) can route without waiting on boot; BootHold holds the rest.
- */
-function AccountGate() {
-  return (
-    <AccountProvider useAuthenticator={useAuthenticator}>
-      <Outlet />
-    </AccountProvider>
-  )
 }
 
 /** The PXE and the contract service are up. Demo mode never boots a PXE, so it has no service. */
@@ -246,37 +212,31 @@ export function BootHold() {
 }
 
 const DemoEmptyBalance = import.meta.env.DEV
-  ? lazy(() => import("./dev/DemoEmptyBalance"))
+  ? lazy(() => import("./dev/DemoEmptyBalance/DemoEmptyBalance"))
   : () => null
 
 /**
- * The asset layer (token service, balances, TEE-signer connect) — mounted only
- * around the wallet + paylink surfaces that consume it. Onboarding stays out of
- * it on purpose: running `useAsset`'s PXE work (token registration, balance
- * sync, TEE connect) alongside the sponsored account-setup tx starves it on the
- * single-threaded browser PXE, which hangs onboarding on slower machines. A
- * signup a payment link funds is the exception: its claim needs this layer, so
- * the link page and ClaimRoute host that wizard inside it.
+ * Starts the session's token and TEE signer under the wallet and paylink surfaces that need them.
+ * Onboarding stays out on purpose: the token's PXE work alongside the sponsored account-setup tx
+ * starves the single-threaded browser PXE, which hangs onboarding on slower machines. A signup a
+ * payment link funds is the exception: its claim needs them, so the link page and ClaimRoute start
+ * them too.
  *
- * The provider waits for the boot: the TEE signer source loads once, and before the contract
- * service exists it has no oxide client to load from. Until then only WalletEntryGate and BootHold
- * render below, and neither reads the asset layer.
+ * They wait for the boot: before the contract service exists the TEE signer source has no oxide
+ * client to load from.
  */
-function AssetGate({
-  assetOptions,
-}: {
-  assetOptions: ReturnType<typeof createAppServices>["assetOptions"]
-}) {
-  if (!useBootReady()) return <Outlet />
+function AssetGate() {
+  const ready = useBootReady()
+  useAssetDemand(ready)
   return (
-    <AssetProvider assetOptions={assetOptions}>
-      {import.meta.env.DEV && isDemoMode() && (
+    <>
+      {import.meta.env.DEV && isDemoMode() && ready && (
         <Suspense fallback={null}>
           <DemoEmptyBalance />
         </Suspense>
       )}
       <Outlet />
-    </AssetProvider>
+    </>
   )
 }
 
@@ -308,6 +268,11 @@ function DraftHome({ tag }: { tag: string }) {
   return <OnboardingScreen embedded draftTag={tag} />
 }
 
+function SipaDepositsMount() {
+  useSipaDeposits(useSession().milestones)
+  return null
+}
+
 function WalletGate() {
   const location = useLocation()
   const draft = useSyncExternalStore(subscribeDrawnOffer, drawnOfferTag)
@@ -326,12 +291,12 @@ function WalletGate() {
       {!isDemoMode() && <XmtpMount />}
       {!isDemoMode() && <SponsoredRailReadinessMount />}
       {!isDemoMode() && <PaylinkClaimMount />}
-      {/* Chain-native incoming-transfer ingest — independent of XMTP and the leader lock. */}
-      {!isDemoMode() && <TransferScannerMount />}
       {/* The SIPA sync loop runs on every wallet route, so an open deposit sheet advances anywhere. */}
       <SipaDepositsMount />
+      <PreviousAccountWatchMount />
+      {/* Not behind the backup flag: a saved rotation keeps moving with the flag off. */}
+      {!isDemoMode() && <BackupRotationMount />}
       <WebSavingsProvider>
-        <NotificationsMount />
         <Outlet />
         {/* Last so the upgrade dialog stacks above route-level sheets. */}
         <MigrationDetectionMount />
@@ -351,7 +316,9 @@ function ClaimPendingGate() {
  * A route that starts `action`, gated by {@link actionVerdict} on the attempt, with the reason:
  * a nameless account is asked for a name, one whose registration has yet to reach the rollup waits
  * for it, and one that must upgrade goes to Home with the upgrade sheet titled for the action.
- * A registered account spends a few seconds checking on every cold load, so that reads as loading.
+ * A sponsored action waits while a backup passkey rotation moves the balance, and a new link while
+ * a backup passkey add has yet to switch the account. A registered account spends a few seconds
+ * checking on every cold load, so that reads as loading.
  */
 export function ActionGate({ action }: { action: WalletAction }) {
   const verdict = useActionVerdict(action)
@@ -367,6 +334,10 @@ export function ActionGate({ action }: { action: WalletAction }) {
       return <OldVersionWithdrawScreen />
     case "home":
       return <Navigate to="/" replace />
+    case "moving":
+      return <BalanceMovingScreen />
+    case "backup":
+      return <LinkWaitsScreen />
     default:
       return <NameRequiredScreen pending={verdict === "registering"} />
   }
@@ -393,6 +364,7 @@ export function ContactRoute() {
   if (pay && (verdict === "registering" || verdict === "name")) {
     return <NameRequiredScreen pending={verdict === "registering"} />
   }
+  if (pay && verdict === "moving") return <BalanceMovingScreen />
   return (
     <>
       {pay && from !== "detail" ? <SendScreen /> : <ContactDetailScreen />}
@@ -415,6 +387,7 @@ function AppRouter({ children }: { children: ReactNode }) {
 export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: ActiveTabBoot }) {
   setActiveTabSince(activeTab.activeSince)
   const [services] = useState(() => createAppServices(activeTab.node))
+  const { contractService } = useSession()
   // Stash an inbound /connect packet before any gate redirect can drop the fragment.
   useState(stashInboundConnect)
   // Config hydrates before the rest of the tree (and so before PXE boot):
@@ -448,10 +421,7 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                   enableMainnet: services.config.network === Network.MAINNET,
                 }}
                 storageAdapter={services.storageAdapter}
-                contractServiceStorage={services.contractServiceStorage}
-                contractServiceOptions={boot.contractServiceOptions}
-                // Every sponsored rail here pays through the ClaimFPC, which each registers itself.
-                registerSponsorFpc={false}
+                contractService={contractService}
               >
                 <RegistrationDetectionMount />
                 <LeaveGuardMount />
@@ -460,8 +430,7 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                     <ProfilePanel />
                   </Suspense>
                 )}
-                <PxeBootProvider node={services.node} pxeBoot={activeTab.pxeBoot}>
-                  <OperationsMount node={services.node} activeSince={activeTab.activeSince} />
+                <PxeBootProvider pxeBoot={activeTab.pxeBoot}>
                   <BroadcastsMount />
                   <AppRouter>
                     <BootDemand />
@@ -490,9 +459,8 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                               />
                             }
                           >
-                            {/* The pay page, and the older request-link entry. It sits outside
-                      AccountGate so the SIPA pay-QR paints before PXE is up; the accountless right
-                      pane nests AccountGate + the existing /claim wizard (OnboardingScreen). */}
+                            {/* The pay page, and the older request-link entry. The SIPA pay-QR paints
+                      before the PXE is up; the accountless right pane nests the /claim wizard. */}
                             {["pay/:tag", "request", "r"].map((path) => (
                               <Route
                                 key={path}
@@ -508,27 +476,22 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                                   />
                                 }
                               >
-                                <Route element={<AccountGate />}>
-                                  <Route element={<BootHold />}>
-                                    <Route index element={<OnboardingScreen embedded />} />
-                                  </Route>
+                                <Route element={<BootHold />}>
+                                  <Route index element={<OnboardingScreen embedded />} />
                                 </Route>
                               </Route>
                             ))}
-                            {/* AccountProvider (useAccount) for every surface; BootHold PXE-gates each one. */}
-                            <Route element={<AccountGate />}>
-                              {/* Onboarding needs only useAccount — kept out of the asset layer, except the
-                        resume of a registration a payment link funds (ClaimRoute). The signup wizard
-                        is full-bleed (it carries its own invitation chrome). */}
+                            {/* BootHold PXE-gates each surface. */}
+                            <Route>
+                              {/* Onboarding starts no token, except the resume of a registration a
+                        payment link funds (ClaimRoute). The signup wizard is
+                        full-bleed (it carries its own invitation chrome). */}
                               <Route element={<BootHold />}>
-                                <Route
-                                  path="claim/:handle?"
-                                  element={<ClaimRoute assetOptions={services.assetOptions} />}
-                                />
+                                <Route path="claim/:handle?" element={<ClaimRoute />} />
                                 <Route path="enter" element={<EnterAppScreen />} />
                               </Route>
-                              {/* Wallet + paylink surfaces additionally mount the asset layer. */}
-                              <Route element={<AssetGate assetOptions={services.assetOptions} />}>
+                              {/* Wallet + paylink surfaces start the token and its co-signer. */}
+                              <Route element={<AssetGate />}>
                                 {/* Wallet surface: desktop sidebar shell; requires a claimed identity +
                           unlocked MSK (WalletGate renders the unlock pane inside the shell). */}
                                 <Route element={<WalletEntryGate />}>
@@ -600,7 +563,7 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                                     </Route>
                                   </Route>
                                 </Route>
-                                {/* Link view is identity-free but needs the asset layer to claim. */}
+                                {/* Link view is identity-free but needs the token or co-signer to claim. */}
                                 <Route element={<BootHold />}>
                                   <Route path="link" element={<LinkViewScreen />} />
                                   {/* The zk.money apex's short paylink path. */}

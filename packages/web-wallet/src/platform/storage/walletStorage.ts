@@ -1,6 +1,7 @@
 /**
  * Wallet state for the active rollup, in its own SQLite database (`wallet_<rollupVersion>`) on
- * OPFS. Reads are synchronous, served from an in-memory copy loaded when the store opens. Writes
+ * OPFS. Reads are synchronous, served from an in-memory copy loaded when the store opens; the copy
+ * leaves out the accounts' persistent stores (`isStoreKey`), which `opfsBackend` reads. Writes
  * update that copy at once and commit to the database in call order: `setItem` / `removeItem` move
  * on, `commit*` resolve once the write is saved and reject when it fails. A failed write is dropped,
  * so reads never show a value the database will not hold.
@@ -16,7 +17,10 @@ import {
   listStores,
   storePoolDirectory,
 } from "@aztec-labs/kv-store/sqlite-opfs"
+import type { DatabaseBackend, RangeOptions } from "@obsidion/front-core"
+import { mapRange } from "./mapRange"
 import { openPooledStore } from "./openPooledStore"
+import { isStoreKey } from "./storageKeys"
 
 /** One write: a value, or `null` for a removal. */
 export type WalletOp = readonly [key: string, value: string | null]
@@ -26,6 +30,9 @@ export interface WalletDb {
   readonly persistent: boolean
   load(): Promise<{ state: Map<string, string> }>
   get(key: string): Promise<string | undefined>
+  getMany(keys: readonly string[]): Promise<(string | undefined)[]>
+  /** `DatabaseBackend.range`, read as one transaction. */
+  range(prefix: string, opts?: RangeOptions): Promise<[string, string][]>
   /** Applies `ops` as one transaction. */
   apply(ops: readonly WalletOp[]): Promise<void>
   close(): Promise<void>
@@ -39,7 +46,7 @@ export interface WalletDbBackend {
 
 const DB_PREFIX = "wallet_"
 
-const opfsBackend: WalletDbBackend = {
+const opfsDatabases: WalletDbBackend = {
   async open(version, persistent) {
     const log = createLogger("web-wallet:wallet-store")
     const name = `${DB_PREFIX}${version}`
@@ -54,7 +61,10 @@ const opfsBackend: WalletDbBackend = {
         for await (const [key, value] of state.entriesAsync()) entries.set(key, value)
         return { state: entries }
       },
-      get: (key) => state.getAsync(key),
+      // A read outside a transaction would run inside one in flight and see its uncommitted writes.
+      get: (key) => store.transactionAsync(() => state.getAsync(key)),
+      getMany: (keys) => store.transactionAsync(() => state.getManyAsync([...keys])),
+      range: (prefix, opts) => store.transactionAsync(() => mapRange(state, prefix, opts)),
       apply(ops) {
         return store.transactionAsync(async () => {
           for (const [key, value] of ops) {
@@ -78,7 +88,12 @@ export function isWalletOpenElsewhere(e: unknown): boolean {
   return e instanceof Error && e.name === "SqlitePoolBusyError"
 }
 
-type Entry = { ops: WalletOp[]; settled: Promise<void> }
+/** `read`, at the entry's turn, adds the writes of what it reads to `ops`. */
+type Entry = {
+  ops: WalletOp[]
+  settled: Promise<void>
+  read?: (db: WalletDb) => Promise<WalletOp[]>
+}
 
 type StoreState = {
   backend: WalletDbBackend
@@ -102,7 +117,7 @@ type StoreState = {
 /** One store per page, shared by every instance of this module. */
 const STORE_STATE = Symbol.for("zk.money/wallet-store")
 const store: StoreState = ((globalThis as { [STORE_STATE]?: StoreState })[STORE_STATE] ??= {
-  backend: opfsBackend,
+  backend: opfsDatabases,
   generation: 0,
   lifecycle: Promise.resolve(),
   lifecycleBusy: 0,
@@ -193,7 +208,7 @@ async function openNow(version: string, persistent: boolean): Promise<void> {
   await closeNow()
   const db = await openDatabase(version, persistent)
   try {
-    store.committed = (await db.load()).state
+    store.committed = legacyKeys((await db.load()).state)
     store.db = db
     store.version = version
     await applyTestSeed()
@@ -248,8 +263,16 @@ export function walletStoreIsPersistent(): boolean {
 
 function view(): Map<string, string | null> {
   const merged = new Map<string, string | null>(store.committed)
-  for (const { ops } of store.pending) for (const [key, value] of ops) merged.set(key, value)
+  for (const { ops } of store.pending) {
+    for (const [key, value] of ops) if (!isStoreKey(key)) merged.set(key, value)
+  }
   return merged
+}
+
+/** The copy holds what code not yet on the database reads: never the persistent stores' keys. */
+function legacyKeys(state: Map<string, string>): Map<string, string> {
+  for (const key of state.keys()) if (isStoreKey(key)) state.delete(key)
+  return state
 }
 
 function enqueue(ops: readonly WalletOp[]): Promise<void> {
@@ -274,11 +297,15 @@ function commitEntry(entry: Entry): Promise<void> {
     if (at !== -1) store.pending.splice(at, 1)
   }
   const settled = store.chain
-    .then(() => db.apply(ops))
+    .then(async () => {
+      if (entry.read) ops.push(...(await entry.read(db)))
+      return db.apply(ops)
+    })
     .then(
       () => {
         if (current()) {
           for (const [key, value] of ops) {
+            if (isStoreKey(key)) continue
             if (value === null) store.committed.delete(key)
             else store.committed.set(key, value)
           }
@@ -321,13 +348,14 @@ function background(ops: readonly WalletOp[]): void {
 export const walletStorage = {
   getItem(key: string): string | null {
     openDb()
+    if (isStoreKey(key)) return null
     for (let i = store.pending.length - 1; i >= 0; i--) {
       const ops = store.pending[i].ops
       for (let j = ops.length - 1; j >= 0; j--) if (ops[j][0] === key) return ops[j][1]
     }
     return store.committed.get(key) ?? null
   },
-  /** Called with each transaction's writes once they are saved. */
+  /** Called with each transaction's writes once they are saved, all in one store `batch`. */
   onCommit(listener: (ops: readonly WalletOp[]) => void): () => void {
     commitListeners.add(listener)
     return () => commitListeners.delete(listener)
@@ -356,6 +384,29 @@ export const walletStorage = {
   /** Several writes as one transaction: all land or none do. */
   commitTransaction(ops: readonly WalletOp[]): Promise<void> {
     return enqueue(ops)
+  },
+  /**
+   * Removes every key under `prefix` as one transaction, listed at its turn in the queue: a write
+   * queued before it, to the persistent stores' keys too, is removed with the rest.
+   */
+  commitRemoveUnder(prefix: string): Promise<void> {
+    if (store.batch) throw new Error("walletStorage.commitRemoveUnder runs outside a batch")
+    const shown: WalletOp[] = this.keys()
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => [key, null])
+    const entry: Entry = {
+      ops: intercept(shown),
+      settled: Promise.resolve(),
+      read: async (db) => (await db.range(prefix)).map(([key]): WalletOp => [key, null]),
+    }
+    store.pending.push(entry)
+    return commitEntry(entry)
+  },
+  /** The entries under `prefix` once every write queued before the call has landed. */
+  async rangeQueued(prefix: string, opts?: RangeOptions): Promise<[string, string][]> {
+    const db = openDb()
+    await store.chain
+    return db.range(prefix, opts)
   },
   /**
    * Runs `write` synchronously and commits every write it makes as one transaction; a nested
@@ -402,6 +453,17 @@ export const walletStorage = {
       throw lost
     }
   },
+}
+
+/**
+ * The open wallet database as a `DatabaseBackend`. Its commits join the queue `walletStorage`
+ * writes through, so both land in call order.
+ */
+export const opfsBackend: DatabaseBackend = {
+  get: async (key) => openDb().get(key),
+  getMany: async (keys) => openDb().getMany(keys),
+  range: async (prefix, opts) => openDb().range(prefix, opts),
+  apply: async (ops) => enqueue(ops),
 }
 
 /** Reads of other databases in flight, by store generation and key. */
@@ -608,8 +670,9 @@ async function flushForExit(): Promise<void> {
 type TestWindow = {
   __zkmWalletStorage?: {
     ready: Promise<void>
-    keys(): string[]
-    read(key: string): string | null
+    /** Every key the database holds, the persistent stores' included, once queued writes land. */
+    keys(): Promise<string[]>
+    read(key: string): Promise<string | null>
     write(key: string, value: string): Promise<void>
     remove(key: string): Promise<void>
     flush(): Promise<void>
@@ -645,8 +708,11 @@ function installTestHook(): { opened(): void } | undefined {
   const ready = new Promise<void>((resolve) => (opened = resolve))
   target.__zkmWalletStorage = {
     ready,
-    keys: () => walletStorage.keys(),
-    read: (key) => walletStorage.getItem(key),
+    keys: async () => (await walletStorage.rangeQueued("")).map(([key]) => key),
+    read: async (key) =>
+      isStoreKey(key)
+        ? (await walletStorage.rangeQueued(key)).find(([at]) => at === key)?.[1] ?? null
+        : walletStorage.getItem(key),
     write: (key, value) => walletStorage.commitItem(key, value),
     remove: (key) => walletStorage.commitRemove(key),
     flush: () => walletStorage.flush(),
@@ -673,5 +739,5 @@ async function applyTestSeed(): Promise<void> {
 }
 
 export function __setWalletDbBackendForTests(backend: WalletDbBackend | undefined): void {
-  store.backend = backend ?? opfsBackend
+  store.backend = backend ?? opfsDatabases
 }

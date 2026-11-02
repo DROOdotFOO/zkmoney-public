@@ -3,25 +3,24 @@ import { useLocation, useNavigate } from "react-router-dom"
 import { REGISTRATION_SCHEDULE_DEFAULTS, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import {
   canSelfFinalizeWithdrawal,
-  useAztecContext,
   withdrawalAmounts,
   type WithdrawalRecord,
+  useResource,
 } from "@obsidion/front-core"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
-import { fireEvent, fireOnboardingEvent } from "../../lib/analytics"
-import { landingSource } from "../../lib/trafficSource"
+import { fireEvent, fireOnboardingEvent, reportLanding } from "../../lib/analytics"
+import { markTicketChannel } from "../../lib/trafficSource"
 import { shortL1Addr, usdFigure } from "../../ui/format"
 import { BalanceSkeleton } from "../../ui/Skeletons"
-import type { EntryOpener, NotificationScope } from "../../ui/NotificationsPanel"
-import { NotificationsBell } from "../../ui/NotificationsBell"
+import type { EntryOpener, NotificationScope } from "../../ui/NotificationsPanel/NotificationsPanel"
+import { NotificationsBell } from "../../ui/NotificationsBell/NotificationsBell"
 import { withdrawalStatus } from "../../ui/screens/WithdrawalDetailModal"
-import { NotificationsMount } from "../notifications/NotificationsMount"
 import { operationIdOf } from "../operations/operationEntries"
 import { TabLine } from "../operations/TabLine"
 import { releaseNote } from "../withdraw/waitingNote"
 import { SwapExitModal } from "../withdraw/SwapExitModal"
-import { swapExitReasonFor, type SwapExitReason } from "../withdraw/swapRecovery"
+import { swapExitReasonFor, type SwapExitReason } from "@obsidion/front-core"
 import { WithdrawalExitModal } from "../withdraw/WithdrawalExitModal"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
 import {
@@ -50,6 +49,7 @@ import { useLinkVoucher, useLinkWithdrawal } from "./usePaylinkDeps"
 import { CLOSED_LINK_COPY } from "./claimWindow"
 import { senderLine } from "./senderLine"
 import type { PaymentLink } from "./types"
+import { useSession } from "../../platform/session"
 
 /** A typed name's own schedule, base units: what a link with no ticket pays for it. */
 const NAME_SCHEDULE = {
@@ -87,7 +87,7 @@ export function PaylinkVisitorScreen({
 }) {
   const navigate = useNavigate()
   const { state: routeState } = useLocation()
-  const { obsidionWallet } = useAztecContext()
+  const obsidionWallet = useResource(useSession().wallet)
   // A claim is offered only once the window is known to be open; the chain refuses one before.
   const chainNow = usePolledChainSeconds(obsidionWallet?.node)
   const claimWait = claimWaitSeconds(link.claimableFrom, chainNow)
@@ -122,6 +122,7 @@ export function PaylinkVisitorScreen({
   useEffect(() => {
     stashClaimLink(link.fragment)
   }, [link.fragment])
+  useEffect(() => reportLanding("paylink"), [])
 
   // Leaving the page (Close, back, another route) before the tag is claimed drops the ticket
   // intent; the link stays stashed for an ordinary claim. Once the ticket bought a registration
@@ -208,7 +209,8 @@ export function PaylinkVisitorScreen({
   const reportTicketStart = () => {
     if (ticketShown.current) return
     ticketShown.current = true
-    fireOnboardingEvent("onboarding_started", { entry: "ticket", source: landingSource() })
+    markTicketChannel()
+    fireOnboardingEvent("onboarding_started", { entry: "ticket" })
   }
 
   /**
@@ -239,6 +241,7 @@ export function PaylinkVisitorScreen({
       })
     } else clearTicketSignup()
     if (ticket && paid) reportTicketStart()
+    if (ticket) markTicketChannel()
     setTicketSignup(ticket)
     setCashOut(false)
     setSignup(true)
@@ -257,6 +260,7 @@ export function PaylinkVisitorScreen({
     if (offer === undefined || voucherUnread) return
     if (resumable && peekTicketSignup()?.fragment === link.fragment) {
       resumed.current = true
+      markTicketChannel()
       setTicketSignup(true)
       setSignup(true)
     } else if (resumable || (sentHere && eligibility === "eligible")) {
@@ -428,8 +432,6 @@ export function PaylinkVisitorScreen({
 
   return (
     <>
-      {/* No wallet shell here: the page runs the producers the bell reads. */}
-      <NotificationsMount />
       {page}
       {exit === "finalize" && withdrawal && (
         <WithdrawalExitModal record={withdrawal} onClose={() => setExit(null)} />

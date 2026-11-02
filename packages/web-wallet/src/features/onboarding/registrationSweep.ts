@@ -63,17 +63,6 @@ import { reportRegistrationDepositSwept } from "./registrationFunnel"
 
 export { sweptPhase }
 
-/** A registration deposit the user can push through by hand: pending, and not already swept. */
-export function canManualRegistrationSweep(
-  record: Pick<PendingRegistrationRecord, "phase" | "sweptAt" | "sweepTxHash">,
-): boolean {
-  return (
-    (record.phase === "awaiting_deposit" || record.phase === "funded") &&
-    record.sweptAt === undefined &&
-    record.sweepTxHash === undefined
-  )
-}
-
 export { registrationRecordForSipa } from "./webRegistration"
 
 /** A blocked verdict throws Predicate's own message, stopping the sweep before signing. */

@@ -8,7 +8,7 @@ import {
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { SkyEscrowFactoryAbi } from "@oxide/experiments/sky/sky_savings.js"
 import type { Address, PublicClient } from "viem"
-import { logger } from "src/utils/logger"
+import { logger } from "../../../utils/logger"
 import type { SavingsDirection } from "./types"
 
 /** The Etherplan project of oxide's Sky savings feature. */

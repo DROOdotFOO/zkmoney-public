@@ -8,6 +8,7 @@ import {
   depositAmounts,
   depositPhaseCopy,
   isNativeEth,
+  neverCreditsL2,
   type SIPADepositPhase,
   type SIPADepositRecord,
 } from "@obsidion/front-core"
@@ -30,12 +31,7 @@ import { l2TxUrl } from "../../lib/explorer"
 import { l1AddressUrl, l1TxUrl, whenLabel } from "../detailRows"
 import { tokenFigure, usdFigure } from "../format"
 import { L1AddressLabel } from "../L1AddressLabel"
-import {
-  depositAttribution,
-  depositGrossFigure,
-  depositHeadline,
-  neverCreditsL2,
-} from "./activityView"
+import { depositAttribution, depositGrossFigure, depositHeadline } from "./activityView"
 import { DepositFact } from "./DepositFact"
 import { DepositHashFact } from "./DepositHashFact"
 import { DepositStatusValue } from "./DepositStatusValue"

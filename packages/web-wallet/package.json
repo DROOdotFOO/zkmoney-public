@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "rm -rf dist && NODE_OPTIONS=--max-old-space-size=8192 vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit && eslint",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:scan-qr": "vitest run --config vitest.scan-qr.config.ts",
@@ -22,7 +22,6 @@
     "test:in-app-host-bar": "node --test --test-concurrency=1 test/browser/inAppHostBar.browser.mjs",
     "test:ticket-layout": "node --test test/browser/ticketTagStep.browser.mjs",
     "test:active-tab": "node --test --test-concurrency=1 test/browser/activeTab.browser.mjs",
-    "test:qr": "vitest run --config vitest.qr.config.ts",
     "test:passkey-rp-browser": "node test/browser/passkeyRp.browser.mjs"
   },
   "dependencies": {
@@ -60,6 +59,7 @@
   "devDependencies": {
     "@aztec-labs/sqlite3mc-wasm": "v6.0.0",
     "@obsidion/metrics-policy": "workspace:*",
+    "@obsidion/lint-config": "workspace:*",
     "@oxide/l1-contracts": "workspace:*",
     "@playwright/test": "^1.61.1",
     "@types/jsdom": "^21.1.7",
@@ -68,6 +68,7 @@
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^6.0.1",
     "buffer": "^6.0.3",
+    "eslint": "^9.36.0",
     "jsdom": "^25.0.1",
     "typescript": "5.7.3",
     "vite": "^8.0.10",

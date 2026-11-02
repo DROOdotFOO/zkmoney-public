@@ -1,11 +1,11 @@
 /**
- * Operating on a retired deployment's l2Token: a migration burn, a paylink refund. Its co-signer seals to that token's
+ * Operating on a retired deployment's l2Token, such as a paylink refund. Its co-signer seals to that token's
  * own portal domain, and its token service is pinned to its address.
  */
 import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 import type { OxideEnvTuple, SourceGenerationSession } from "@obsidion/core/types"
 import {
-  IntraRollupMigrationService,
+  detectHistoricDeployments,
   TokenService,
   type ObsidionAccount,
   type ObsidionWallet,
@@ -21,7 +21,7 @@ import { isOtherGeneration, openSourceGenerationSession } from "../../platform/s
 /** The retired deployment whose l2Token is `tokenAddress`, or null when none in the manifest has it. */
 export async function findHistoricTuple(tokenAddress: string): Promise<OxideEnvTuple | null> {
   const config = getConfig()
-  const { historic } = await IntraRollupMigrationService.detectHistoricDeployments({
+  const { historic } = await detectHistoricDeployments({
     ...config.oxideProfile,
     network: config.network,
     publicClient: l1PublicClient(config),

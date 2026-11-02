@@ -1,0 +1,389 @@
+/* Home: 434px wallet card beside a 346px banner rail; the rail hides ≤1180px. */
+.home {
+  display: flex;
+  align-items: flex-start;
+  gap: 32px;
+}
+.home > * {
+  min-width: 0;
+}
+.homeWallet {
+  flex: 1 1 434px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+  padding: 40px;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+.home > :global(.ww-activation) {
+  flex: 1 1 434px;
+  /* .ww-home aligns to the start, and a size container has no content width to shrink to. */
+  align-self: stretch;
+  margin-bottom: 0;
+}
+.homeRail {
+  flex: 0 1 346px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.homeBalanceLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 16px;
+  font-weight: 500;
+}
+/* The APY pill and the earned figure on one row under the Savings balance. */
+.homeBalanceMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.homeCta {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 24px 32px;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+.homeCta img {
+  width: 210px;
+  height: 171px;
+  object-fit: contain;
+}
+.homeCta :global(.ww-home__deposit-coins) img {
+  position: absolute;
+  top: -49.48%;
+  left: -6.23%;
+  width: 111.89%;
+  max-width: none;
+  height: 192.78%;
+}
+.homeCta :global(.ww-home__deposit-token-icon) img {
+  width: 16px;
+  height: 16px;
+}
+/* The Savings empty state: the Earn coin, whole pixels only (no blur, no tilt). */
+.homeCta :global(.ww-savings-art__coin) img {
+  width: 120px;
+  height: 120px;
+}
+/* Incoming request awaiting a reply: purple-outlined card above the transactions widget. */
+.homeRequest {
+  width: 100%;
+  border-radius: var(--radius-12);
+  box-shadow: 0 0 0 1px #9c04ff;
+}
+/* Home rail "Quick actions": one slide per view in a native snap scroller. */
+.quick {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.quickHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 20px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.quickSlides {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+}
+.quickSlides::-webkit-scrollbar {
+  display: none;
+}
+:global(.ww-shell) .quickSlide {
+  flex: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  min-height: 152px;
+  padding: 15px;
+  border: 1px solid rgba(253, 253, 253, 0.1);
+  border-radius: var(--radius-12);
+  box-shadow: none;
+  background: rgba(255, 255, 255, 0.1);
+  outline-offset: -2px;
+  scroll-snap-align: start;
+}
+:global(.ww-shell) .quickSlideFresh {
+  background: linear-gradient(90deg, rgba(156, 4, 255, 0.3), rgba(6, 147, 255, 0.3));
+}
+.quickSlide :global(.ww-banner__text) {
+  max-width: 234px;
+}
+.quickSlide :global(.ww-banner__title) {
+  font-size: 20px;
+  line-height: 1.3;
+  text-wrap: balance;
+}
+.quickSlide :global(.ww-banner__body) {
+  font-size: 12px;
+  line-height: normal;
+  letter-spacing: -0.1px;
+  color: var(--text-secondary);
+  opacity: 1;
+}
+.quickSlide img {
+  position: absolute;
+}
+.quickSlideFresh img {
+  top: -25px;
+  left: 222px;
+  width: 300px;
+}
+.quickSlidePaylink img {
+  top: 25px;
+  left: 229px;
+  width: 169px;
+  transform: rotate(-21.3deg);
+}
+.quickSlideSavings {
+  background: linear-gradient(90deg, #7c3aed 0%, #2563eb 100%);
+}
+.quickSlideSavings img {
+  top: 12px;
+  left: 226px;
+  width: 130px;
+}
+/* The coin starts at 226px; the text stops short of it, and the body's two lines stay even. */
+.quickSlideSavings :global(.ww-banner__text) {
+  max-width: 196px;
+}
+.quickSlideSavings :global(.ww-banner__body) {
+  text-wrap: balance;
+}
+:global(.ww-shell) .quickSlideSavings :global(.ww-banner__body) {
+  color: rgba(255, 255, 255, 0.8);
+}
+.quickStepper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: -0.132px;
+}
+.quickTrack {
+  width: 62px;
+  height: 12px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: rgba(253, 253, 253, 0.2);
+}
+.quickTrack span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(253, 253, 253, 0.7);
+}
+:global(.ww-shell) .bannerRow {
+  padding: 24px 16px;
+}
+:global(.ww-shell) .bannerRow img {
+  width: 64px;
+  height: 64px;
+  flex: none;
+}
+:global(.ww-shell) .bannerIos {
+  padding-left: 120px;
+  cursor: default;
+}
+:global(.ww-shell) .bannerIos img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 104px;
+  height: 104px;
+}
+.inviteCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+.inviteCardTitle {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--text-primary);
+}
+.inviteCardArt {
+  width: 80px;
+  height: 80px;
+}
+:global(.ww-shell) .inviteCardClose {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+}
+.inviteCardField {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  height: 48px;
+  padding: 12px;
+  box-sizing: border-box;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.inviteCardField > button {
+  display: inline-flex;
+}
+.inviteCardField code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font: inherit;
+  color: var(--text-primary);
+}
+.inviteCardButtons {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+}
+:global(.ww-shell) .inviteCardButtons button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 24px;
+  cursor: pointer;
+}
+@media (max-width: 1180px) {
+  .homeRail {
+    display: none;
+  }
+  .homeWallet {
+    flex: 1;
+    width: 100%;
+  }
+}
+@media (min-width: 641px) and (max-width: 960px) {
+  .homeWallet {
+    padding: 24px 16px;
+  }
+  .homeWallet :global(.zkm-quick-actions) {
+    gap: 12px;
+  }
+}
+@media (max-width: 640px) {
+  .home {
+    flex-direction: column;
+    gap: 24px;
+  }
+  /* In the column the desktop basis would be a height. */
+  .home > :global(.ww-activation) {
+    flex: none;
+  }
+  .homeWallet {
+    padding: 0;
+    gap: 24px;
+    background: none;
+    box-shadow: none;
+  }
+  .homeWallet :global(.ww-home__phone-actions) {
+    gap: clamp(12px, calc((100vw - 330px) / 3), 24px);
+  }
+  .homeBalanceLabel {
+    line-height: normal;
+  }
+  .homeBalanceValueLong {
+    font-size: clamp(24px, 8.5vw, 40px);
+  }
+  .homeCta {
+    min-height: 300px;
+    padding: 24px 32px;
+    justify-content: center;
+    background: var(--surface-faint);
+  }
+}
+/* Small labels: the rate, the token, a state. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.pillGreen {
+  background: rgba(86, 231, 157, 0.12);
+  color: var(--accent-green);
+}
+.pillGreen::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+/* Home on the Savings account: the card over its own cards, in the card's place beside the rail. */
+.savingsMain {
+  flex: 1 1 434px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+@media (max-width: 1180px) {
+  .savingsMain {
+    flex: 1;
+    width: 100%;
+  }
+}

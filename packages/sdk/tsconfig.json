@@ -1,16 +1,9 @@
 {
-  "extends": "../../tsconfig.json",
+  // Typecheck, lint and editor config: workspace dependencies resolve to their source.
+  // `build` emits from tsconfig.build.json, which resolves their dist.
+  "extends": "./tsconfig.build.json",
   "compilerOptions": {
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "rootDir": "src",
-    "outDir": "./dist",
-    "forceConsistentCasingInFileNames": true,
-    "noUncheckedIndexedAccess": true,
-    "paths": {
-      "@zkpassport/*": ["./node_modules/@zkpassport/*"]
-    }
-  },
-  "include": ["src/index.ts", "src/test.ts", "src/backend.ts"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
+    "customConditions": ["source"],
+    "noEmit": true
+  }
 }

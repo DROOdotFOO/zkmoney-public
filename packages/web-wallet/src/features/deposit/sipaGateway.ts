@@ -19,8 +19,8 @@ import { getWebBroadcasterArtifact, getWebOxideToken } from "../../config/classA
  * first-ever Receive folds the deferred subscription into that same tx. From there the rail is
  * unchanged — a sender does a plain ERC-20 transfer, the relayer sweeps into the portal, this
  * wallet discovers the event, reads the L1 `Sweep` for the claim inputs, and lazy-claims via
- * `TokenService.claimSweptDeposit` (the free `store_deposit` utility sim) — after which the shared
- * asset layer's balance reflects the credit.
+ * `TokenService.claimSweptDeposit` (the free `store_deposit` utility sim) — after which the
+ * session's balances reflect the credit.
  */
 import { NO_FROM } from "@aztec-labs/aztec.js/account"
 import { Fr } from "@aztec-labs/aztec.js/fields"
@@ -61,7 +61,6 @@ import {
   type ObsidionAccount,
   type ObsidionWallet,
   selfSipaNonce,
-  type SelfResolvedSipa,
   type SipaIntent,
   BroadcasterContract,
   SipaSelfResolver,
@@ -85,11 +84,12 @@ import {
   UpgradeActivity,
   upsertDepositL1WalletContact,
   WalletSyncCoordinator,
-  bootPriority,
+  type After,
   type BroadcastExecutor,
   type BroadcastJob,
   type BroadcastKind,
   type SIPADepositRecord,
+  type SipaDepositSyncDeps,
   type SipaDepositSyncResult,
   isUnfundedSipaDeposit,
   readResolverDeployments,
@@ -98,7 +98,6 @@ import {
   type ResolverDeploymentSource,
   sipaRowFundingTokens,
   sipaRows,
-  getActiveNetworkId,
   type SipaRow,
 } from "@obsidion/front-core"
 import { getConfig, l1ChainFor } from "../../config/env"
@@ -123,11 +122,13 @@ import { RegistrationPendingError } from "../onboarding/registrationRail"
 import { registrationScheduleForSipa } from "../onboarding/webRegistration"
 import { RAIL_REGISTERED } from "../onboarding/rails"
 import {
+  WAITING_FOR_BALANCE_MOVE,
   WAITING_FOR_REGISTRATION,
   WAITING_FOR_UNLOCK,
   WAIT_MS,
   getBroadcastLedger,
 } from "../broadcasts/broadcasts"
+import { balanceMovingNow } from "../backupPasskey/backupRotationStore"
 import { getActiveStorageId } from "../../platform/storage/activeStorage"
 import { AddressesPublishingError, addressesPublishing } from "./addressesPublishing"
 import { getL1Clients } from "./l1Wallet"
@@ -137,6 +138,15 @@ import { l2TokenService } from "../token/l2TokenService"
 import { readSipaDeployed } from "./sipaSweep"
 import { getSipaSweepRoutes } from "./sipaSweepRoutes"
 import { predictSipaCandidate } from "./sipaPredict"
+import { session } from "../../platform/session"
+
+/** A pool fill is a proof: it waits for the history read to head. */
+const POOL_AFTER: After = {
+  firstBalance: true,
+  depositsReplayed: true,
+  movesReplayed: true,
+  historyAtHead: true,
+}
 
 /** How long one read of the resolver deployments serves the watcher. */
 const RESOLVER_DEPLOYMENTS_TTL_MS = 15 * 60_000
@@ -569,28 +579,25 @@ export interface SipaDepositGateway {
   /** An observe-only pass: L1 reads and record writes, no PXE work. Returns null while locked. */
   observe(wallet: ObsidionWallet, recipient: string): Promise<SipaDepositSyncResult | null>
   /**
+   * One full claims pass for `recipient`, another account of the session's MSK, queued after the
+   * passes already on the chain. It adopts no legacy cursor and stays out of the session's
+   * catch-up. `completed` is false while locked, on a throw, and when the pass fell short.
+   */
+  syncRecipient(
+    wallet: ObsidionWallet,
+    recipient: AztecAddress,
+    tokenServiceFor: NonNullable<SipaDepositSyncDeps["tokenServiceFor"]>,
+  ): Promise<{ completed: boolean; result?: SipaDepositSyncResult }>
+  /**
    * Polls the addresses the resolver can hand out for this wallet's account and records a funded one
    * at once. `onFunded` runs after a tick recorded one.
    */
-  resolverPayments(onFunded: () => void): Pick<ResolverPaymentWatcher, "tick">
+  resolverPayments(networkId: string, onFunded: () => void): Pick<ResolverPaymentWatcher, "tick">
   /** Token display metadata (read once off L1). */
   tokenMeta(): Promise<{ address: Address; symbol: string; decimals: number }>
   /** The current local deposit records (feed). */
   records(): SIPADepositRecord[]
   subscribe(listener: (records: SIPADepositRecord[]) => void): () => void
-  /** The nonce for this wallet's next self-resolution on `day`; see `nextSelfSipaNonce`. */
-  nextSelfNonce(wallet: ObsidionWallet, day: number): Promise<number>
-  /**
-   * Publish a SIPA the caller already self-resolved (intra-rollup migrate). Same ClaimFPC-sponsored
-   * broadcast as Receive; re-derives from `(day, nonce)` and refuses if the address moved.
-   * `operationId` tags its proving events with the caller's operation.
-   */
-  broadcastResolvedSipa(
-    wallet: ObsidionWallet,
-    contractService: ContractService,
-    sipa: SelfResolvedSipa,
-    operationId?: string,
-  ): Promise<void>
   /** What the broadcast ledger runs for this wallet's deposit addresses. */
   slotExecutor(wallet: ObsidionWallet): BroadcastExecutor
   /** Txs from `fromBlock` on that broadcast one of `user`'s deposit addresses. */
@@ -727,12 +734,6 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   private slotPrefix(scope: string): string {
     const account = loadWalletIdentity()?.address ?? "unknown"
     return `webwallet.sipa.address.${this.config.network}.${scope}.${account}.`
-  }
-
-  async nextSelfNonce(wallet: ObsidionWallet, day: number): Promise<number> {
-    const keys = await this.unlockedKeys(wallet)
-    if (!keys) throw new Error("no account for this session — enter with your passkey first")
-    return this.nextNonce(wallet, await getOxideTuple(this.config), keys, day)
   }
 
   /**
@@ -1115,6 +1116,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
         recipientHash: resolution.recipientHash.toString(),
         recoveryAddress: "",
         l1ChainId: this.config.l1ChainId,
+        networkId: wallet.networkId,
         tokenAddress: meta.address,
         amount: "0",
         tokenSymbol: meta.symbol,
@@ -1187,8 +1189,8 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   }
 
   /**
-   * Whether the address's broadcast mined: this wallet holds the `SIPA` event its salt names, from
-   * `sinceBlock` on when the address is being published again.
+   * Whether the address's broadcast mined: its record's recipient, else the session's account, holds
+   * the `SIPA` event its salt names, from `sinceBlock` on when the address is being published again.
    */
   private async broadcastLanded(
     wallet: ObsidionWallet,
@@ -1196,7 +1198,8 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     sinceBlock?: number,
   ): Promise<boolean> {
     await this.store.load()
-    const salt = this.store.get(getAddress(address))?.messageSecret
+    const record = this.store.get(getAddress(address))
+    const salt = record?.messageSecret
     const keys = await this.unlockedKeys(wallet)
     if (!salt || !keys) return false
     const tuple = await getOxideTuple(this.config)
@@ -1204,7 +1207,9 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     const events = await fetchSipaEvents(
       wallet,
       AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token")),
-      keys.account.getAddress(),
+      record?.recipientL2Address
+        ? AztecAddress.fromStringUnsafe(record.recipientL2Address)
+        : keys.account.getAddress(),
       sinceBlock === undefined ? undefined : { fromBlock: BlockNumber(sinceBlock) },
     )
     const wanted = salt.toLowerCase()
@@ -1220,6 +1225,9 @@ class RealSipaDepositGateway implements SipaDepositGateway {
         this.bind(wallet)
         const keys = await this.unlockedKeys(wallet)
         if (!keys) throw new BroadcastDeferred(Date.now() + WAIT_MS, WAITING_FOR_UNLOCK)
+        // The broadcast pays with the note a backup passkey's balance move spends.
+        if (await balanceMovingNow(keys.account.getAddress().toString()))
+          throw new BroadcastDeferred(Date.now() + WAIT_MS, WAITING_FOR_BALANCE_MOVE)
         const tuple = await getOxideTuple(this.config)
         const contractService = ContractService.getInstance()
         let sponsor: ClaimSponsorContext
@@ -1425,31 +1433,6 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     return readSipaBroadcastTxHashes(wallet, token, user, fromBlock)
   }
 
-  async broadcastResolvedSipa(
-    wallet: ObsidionWallet,
-    contractService: ContractService,
-    sipa: SelfResolvedSipa,
-    operationId?: string,
-  ): Promise<void> {
-    this.bind(wallet)
-    const tuple = await getOxideTuple(this.config)
-    const keys = await this.unlockedKeys(wallet)
-    if (!keys) throw new Error("no account for this session — enter with your passkey first")
-    await this.broadcastSipa(
-      wallet,
-      contractService,
-      tuple,
-      keys,
-      {
-        address: sipa.sipaAddress,
-        day: sipa.resolution.day,
-        nonce: sipa.resolution.nonce,
-        published: false,
-      },
-      { operationId },
-    )
-  }
-
   async deposit(
     params: Parameters<SipaDepositGateway["deposit"]>[0],
   ): Promise<{ txHash: Hex; address: Address; name: string }> {
@@ -1628,7 +1611,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     const msk = await getAuthService().getSecretKey()
     if (!msk) return null
     const tuple = await getOxideTuple(this.config)
-    const rows = await this.syncRows(tuple)
+    const rows = await this.syncRows(wallet.networkId, tuple)
     return this.serial(async () =>
       syncSipaDeposits({
         ...this.syncDeps(wallet, tuple, rows, msk, AztecAddress.fromStringUnsafe(recipient)),
@@ -1647,16 +1630,13 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   }
 
   /** The rows a pass claims through. Every sweep recorded before rows was claimed through the pinned bridge. */
-  private async syncRows(tuple: OxideEnvTuple): Promise<SipaRow[]> {
+  private async syncRows(networkId: string, tuple: OxideEnvTuple): Promise<SipaRow[]> {
     const [meta, rows] = await Promise.all([this.tokenMeta(), this.rows()])
-    const network = getActiveNetworkId()
-    if (network) {
-      await this.store.migrateSweepRows(network, {
-        portal: requireTupleField(tuple, "portal") as Address,
-        l2Token: requireTupleField(tuple, "l2Token"),
-        token: meta,
-      })
-    }
+    await this.store.migrateSweepRows(networkId, {
+      portal: requireTupleField(tuple, "portal") as Address,
+      l2Token: requireTupleField(tuple, "l2Token"),
+      token: meta,
+    })
     return rows
   }
 
@@ -1666,6 +1646,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
    * Reads no chain. A failure is logged and the next pass tries again.
    */
   private async discoverDirectDeposits(
+    networkId: string,
     tuple: OxideEnvTuple,
     rows: SipaRow[],
     keys: { account: ObsidionAccount; msk: Fr },
@@ -1691,6 +1672,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
         destinationPortal: (batch) => batch.run.split("/")[1] as Address | undefined,
         recipient: recipient.toString(),
         l1ChainId: this.config.l1ChainId,
+        networkId,
         secret: (direct) =>
           migrationDirectCommitment(
             { selfResolver, recipient, recoveryAccount },
@@ -1726,6 +1708,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       ),
       rows,
       l1ChainId: this.config.l1ChainId,
+      networkId: wallet.networkId,
       registrationScheduleFor: registrationScheduleForSipa,
       onFundingWalletDetected: upsertDepositL1WalletContact,
       onSweptAddressFunded: async (sipa: Address) => {
@@ -1759,11 +1742,11 @@ class RealSipaDepositGateway implements SipaDepositGateway {
 
     await this.ensureDiscovery(wallet, tuple)
 
-    const rows = await this.syncRows(tuple)
+    const rows = await this.syncRows(wallet.networkId, tuple)
     const pinnedL2Token = requireTupleField(tuple, "l2Token").toLowerCase()
 
     const result = await this.serial(async () => {
-      await this.discoverDirectDeposits(tuple, rows, keys)
+      await this.discoverDirectDeposits(wallet.networkId, tuple, rows, keys)
       return syncSipaDeposits({
         ...this.syncDeps(wallet, tuple, rows, keys.msk, keys.account.getAddress()),
         adoptLegacyCursor: true,
@@ -1780,25 +1763,52 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     await this.markOwedFunded()
 
     // The sync loop is the pool's heartbeat: fills it before the first Receive of a session and
-    // retries failed fills. No-ops while full, locked, or pre-claim (no handle yet). A fill is a
-    // proof, so it waits for the boot balance.
+    // retries failed fills. No-ops while full, locked, or pre-claim (no handle yet).
     const tag = loadWalletIdentity()?.handle
     if (tag) {
-      void bootPriority
-        .whenReady("depositPool")
-        .then(() =>
-          this.refillPool(
-            wallet,
-            ContractService.getInstance(),
-            tuple,
-            this.addressCacheKey(tuple, tag),
-          ),
-        )
+      void session()
+        .milestones.after(POOL_AFTER)
+        .then(async (over) => {
+          if (over)
+            await this.refillPool(
+              wallet,
+              ContractService.getInstance(),
+              tuple,
+              this.addressCacheKey(tuple, tag),
+            )
+        })
     }
     return result
   }
 
-  resolverPayments(onFunded: () => void): ResolverPaymentWatcher {
+  async syncRecipient(
+    wallet: ObsidionWallet,
+    recipient: AztecAddress,
+    tokenServiceFor: NonNullable<SipaDepositSyncDeps["tokenServiceFor"]>,
+  ): Promise<{ completed: boolean; result?: SipaDepositSyncResult }> {
+    try {
+      this.bind(wallet)
+      const keys = await this.unlockedKeys(wallet)
+      if (!keys) return { completed: false }
+      const tuple = await getOxideTuple(this.config)
+      await this.ensureDiscovery(wallet, tuple)
+      const rows = await this.syncRows(wallet.networkId, tuple)
+      const result = await this.serial(async () =>
+        syncSipaDeposits({
+          ...this.syncDeps(wallet, tuple, rows, keys.msk, recipient),
+          adoptLegacyCursor: false,
+          skipCatchUp: true,
+          tokenServiceFor,
+        }),
+      )
+      return { completed: result.complete, result }
+    } catch (err) {
+      console.warn(`[sipaGateway] claims pass for ${recipient} failed`, err)
+      return { completed: false }
+    }
+  }
+
+  resolverPayments(networkId: string, onFunded: () => void): ResolverPaymentWatcher {
     let cached: { at: number; deployments: Promise<ResolverDeployment[]> } | undefined
     const deployments = () => {
       if (!cached || Date.now() - cached.at > RESOLVER_DEPLOYMENTS_TTL_MS) {
@@ -1821,6 +1831,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       readHoldings: (holdings) => readSipaHoldingsAtHead(this.publicClient, holdings),
       store: this.store,
       l1ChainId: this.config.l1ChainId,
+      networkId,
       onFunded,
     })
   }

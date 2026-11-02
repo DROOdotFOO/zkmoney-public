@@ -30,7 +30,6 @@ import {
   skyBridgesOfFactory,
   SKY_PROJECT,
   tupleField,
-  WalletSyncCoordinator,
   type SavingsDeployments,
   type SavingsDirection,
   type SavingsMoveRecord,
@@ -41,7 +40,7 @@ import {
   type SavingsSource,
   type SkySavings,
   type WithdrawalRecord,
-  type WithdrawalStorage,
+  type Withdrawals,
 } from "@obsidion/front-core"
 import { useSyncExternalStore } from "react"
 import { formatUnits, type Address, type Hex } from "viem"
@@ -68,7 +67,6 @@ import { claimSponsorContext } from "../onboarding/claimSponsorship"
 import { RAIL_REGISTERED } from "../onboarding/rails"
 import { runOperation, type OperationHandle } from "../operations/operations"
 import {
-  getWithdrawalStore,
   noteSponsoredMine,
   ownSwapRecoverer,
   runBurn,
@@ -84,6 +82,7 @@ import { getSavingsMoveStore } from "./savingsMoveStore"
 import { SavingsQuoteChangedError } from "./quoteChanged"
 import { teeSignerOfToken, txAmountCap } from "../token/oxideToken"
 import { l2TokenService } from "../token/l2TokenService"
+import { session } from "../../platform/session"
 
 const savingsAvailable = createExternalState(false)
 
@@ -239,6 +238,13 @@ export interface SavingsDeps {
   tokenService: TokenService
   /** The network the wallet's balance store scopes its balances to. */
   network: string
+  /** Reads the balances again: a claim moves them with no `Transfer` event. */
+  refreshBalance(): Promise<void>
+}
+
+export async function openSavings(deps: SavingsDeps): Promise<SavingsSource | null> {
+  const tuple = await getSavingsTuple(getConfig())
+  return tuple ? createSavingsSource(deps, tuple) : null
 }
 
 /** How long one price read answers for; Home and the move sheet read together. */
@@ -265,10 +271,10 @@ function once<T>(make: () => Promise<T>): () => Promise<T> {
  */
 export async function dropMoveWithSeed(
   moves: Pick<SavingsMoveStorage, "remove">,
-  burns: Pick<WithdrawalStorage, "get">,
+  burns: Pick<Withdrawals, "get">,
   localId: string | undefined,
 ): Promise<void> {
-  if (!localId || burns.get(localId)) return
+  if (!localId || (await burns.get(localId))) return
   await moves.remove(localId).catch(() => {})
 }
 
@@ -463,7 +469,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
         seeded = record
         await moves.put(moveOf(record))
       },
-      burn: () => {
+      burn: (_record, onTxHash) => {
         onStage("proving")
         return sourceToken.exitToL1PrivateSponsored(
           build.escrowOptions.escrow,
@@ -474,11 +480,12 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
             userAccount: deps.account,
             useRawAmount: true,
             withdrawal: { ...options, escrow: build.escrowOptions },
+            onTxHash,
           },
         )
       },
     }).catch(async (err: unknown) => {
-      await dropMoveWithSeed(moves, getWithdrawalStore(), seeded?.localId)
+      await dropMoveWithSeed(moves, session().withdrawals, seeded?.localId)
       throw err
     })
     const move = moves.get(record.localId) ?? (await moves.put(moveOf(record)))
@@ -538,8 +545,8 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
       fromBlock: BigInt(tuple.deployedAtBlock ?? 0),
       claimer,
     })
-    const withdrawals = getWithdrawalStore()
-    await withdrawals.load()
+    const withdrawals = session().withdrawals
+    await withdrawals.ready
     await settleSavingsMoves(
       moves,
       {
@@ -552,7 +559,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
           ),
         masterSecret,
         recipient: deps.account.getAddress(),
-        refreshBalance: () => WalletSyncCoordinator.refreshBalance(),
+        refreshBalance: deps.refreshBalance,
         main: destination(main, async () => deps.tokenService),
         savings: destination(savings, savingsToken),
         destinationFor: async (move) => {
@@ -582,7 +589,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
           )
         },
       },
-      withdrawals.list(),
+      [...(await withdrawals.all())],
       (move, err) => console.warn(`[savingsGateway] claim for move ${move.escrow} refused:`, err),
     )
   }

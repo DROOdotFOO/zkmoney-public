@@ -192,6 +192,7 @@ function makeWatcher(
     readHoldings,
     store,
     l1ChainId: 11155111,
+    networkId: "0xnet",
     onFunded,
     now: () => NOW,
   })
@@ -281,6 +282,7 @@ describe("ResolverPaymentWatcher", () => {
         recipientHash: paid.recipientCommitment,
         recoveryAddress: "",
         l1ChainId: 11155111,
+        networkId: "0xnet",
         amount: "25",
         tokenSymbol: "DAI",
         startTime: 1,
@@ -296,6 +298,7 @@ describe("ResolverPaymentWatcher", () => {
       readHoldings: read,
       store,
       l1ChainId: 11155111,
+      networkId: "0xnet",
       onFunded,
       now: () => NOW,
     })
@@ -458,6 +461,7 @@ describe("ResolverPaymentWatcher", () => {
           },
         ],
         l1ChainId: 11155111,
+        networkId: "0xnet",
       })
 
     await sync(store)
@@ -513,6 +517,7 @@ describe("ResolverPaymentWatcher", () => {
       readHoldings: read,
       store: makeStore(),
       l1ChainId: 11155111,
+      networkId: "0xnet",
     })
 
     expect(await watcher.tick()).toBe(RESOLVER_PAYMENT_POLL_MS)

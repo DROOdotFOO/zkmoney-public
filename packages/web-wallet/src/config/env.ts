@@ -6,6 +6,7 @@ import {
   resolveWalletProfile,
   type ConfigProfileErrorCode,
   type WalletSourceRollup,
+  type WalletSourceRollupIssue,
   type ConfigVersion,
   type WalletProfileBoot,
   type ResolveWalletProfileInput,
@@ -29,7 +30,7 @@ import {
 } from "@obsidion/core/constants"
 import type { ContractServiceOptions, OxideEnvProfile } from "@obsidion/core/types"
 import { assertHostProfileUrl, assertProfilePolicy, parseNetwork } from "./profilePolicy"
-import type { PredicateScreeningConfig } from "@obsidion/front-core"
+import { WalletError, type PredicateScreeningConfig } from "@obsidion/front-core"
 import { http } from "viem"
 import { foundry, mainnet, sepolia, type Chain } from "viem/chains"
 
@@ -84,6 +85,11 @@ export type WebWalletConfig = {
   sourceRollupNodes?: ReadonlyMap<string, string>
   /** The rollups a cutover left, each with its version's contracts. */
   sourceRollups?: readonly WalletSourceRollup[]
+  /**
+   * The previous-generation profiles boot could not read. Their rollups, and every older one, are
+   * missing from `sourceRollups`, so nothing here can say their deployments hold nothing.
+   */
+  sourceRollupIssues?: readonly WalletSourceRollupIssue[]
   /** L1 chain the accounts and the Registry live on. */
   l1ChainId: number
   /** Viem chain for `l1ChainId` (TEE signer source, injected-wallet clients). */
@@ -159,7 +165,8 @@ function resolveAccountServiceTestMode(
   const raw = env.VITE_ACCOUNT_SERVICE_TEST_MODE
   const testMode = raw === undefined ? network === Network.SANDBOX : raw === "true"
   if (testMode && network === Network.MAINNET) {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       "VITE_ACCOUNT_SERVICE_TEST_MODE=true bypasses the personhood gate — not valid on mainnet",
     )
   }
@@ -196,7 +203,8 @@ function resolvePredicateConfig(
   // runs unscreened, so an explicit disable there is a misconfiguration, not a choice.
   if (env.VITE_PREDICATE_DISABLED === "true") {
     if (network === Network.MAINNET) {
-      throw new Error(
+      throw new WalletError(
+        "config.invalid",
         "VITE_PREDICATE_DISABLED=true turns off L1 address screening — not valid on mainnet",
       )
     }
@@ -207,13 +215,15 @@ function resolvePredicateConfig(
   const chain = env.VITE_PREDICATE_CHAIN
   if (!verificationHash) {
     if (network === Network.MAINNET) {
-      throw new Error(
+      throw new WalletError(
+        "config.invalid",
         "Mainnet requires L1 address screening — set VITE_PREDICATE_VERIFICATION_HASH and " +
           "VITE_PREDICATE_CHAIN (plus VITE_PREDICATE_API_KEY when no key-injecting proxy fronts the API)",
       )
     }
     if (apiKey) {
-      throw new Error(
+      throw new WalletError(
+        "config.invalid",
         "Partial Predicate config — VITE_PREDICATE_API_KEY is set without " +
           "VITE_PREDICATE_VERIFICATION_HASH",
       )
@@ -221,7 +231,8 @@ function resolvePredicateConfig(
     return undefined
   }
   if (!chain) {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       "Partial Predicate config — VITE_PREDICATE_VERIFICATION_HASH requires VITE_PREDICATE_CHAIN",
     )
   }
@@ -326,13 +337,13 @@ export function loadConfig(
 }
 
 let cached: WebWalletConfig | undefined
-
 type LiveProfileRequest = Pick<
   ResolveWalletProfileInput,
   "profileUrl" | "expectedProfileId" | "expectedZkJwtVkeyHash"
 > & { network: Network }
 
 let liveProfileRequest: LiveProfileRequest | undefined
+let contractServiceOptions: ContractServiceOptions | undefined
 let liveProfileFetchImpl: typeof fetch | undefined
 
 /**
@@ -341,12 +352,20 @@ let liveProfileFetchImpl: typeof fetch | undefined
  */
 export function getConfig(): WebWalletConfig {
   if (!cached) {
-    throw new Error(
+    throw new WalletError(
+      "invariant",
       "getConfig() before resolveBootConfig() — the wallet boots from a config profile, and no " +
         "config exists until it has resolved.",
     )
   }
   return cached
+}
+
+/** The page's contract service options, seeded with `getConfig()`. */
+export function getContractServiceOptions(): ContractServiceOptions {
+  if (!contractServiceOptions)
+    throw new WalletError("invariant", "getContractServiceOptions() before resolveBootConfig()")
+  return contractServiceOptions
 }
 
 /** Test injections; every default reads the build's own `import.meta.env`. */
@@ -366,7 +385,7 @@ export interface ResolveBootConfigInput {
 
 export interface WebBootConfig {
   config: WebWalletConfig
-  /** Handed to ObsidionCoreProvider verbatim. */
+  /** The page's contract service options (`getContractServiceOptions`). */
   contractServiceOptions: ContractServiceOptions
   /** The version's zkJWT vkey hash differs from the bundled one. Reported at boot, never gating. */
   zkJwtVkeySkew: boolean
@@ -459,6 +478,7 @@ function mergeProfileConfig(
     oxideProfile,
     sourceRollupNodes,
     sourceRollups,
+    sourceRollupIssues: boot.sourceRollupIssues,
     claimFpcAddress: boot.snapshot.contracts.claimFpc?.address,
     assets: boot.version.assets ?? [],
   }
@@ -515,7 +535,8 @@ export async function resolveBootConfig(
   // URL serve this build's profile rather than some other one.
   const profileUrl = runtime.configProfileUrl || env.VITE_CONFIG_PROFILE_URL
   if (!profileUrl) {
-    throw new Error(
+    throw new WalletError(
+      "config.invalid",
       "VITE_CONFIG_PROFILE_URL is not set — the wallet boots from a config profile and has no " +
         "other address source.",
     )
@@ -621,6 +642,7 @@ function seed(
   boot: WebBootConfig,
 ): WebBootConfig {
   cached = boot.config
+  contractServiceOptions = boot.contractServiceOptions
   liveProfileRequest = request
   liveProfileFetchImpl = fetchImpl
   return boot
@@ -628,7 +650,8 @@ function seed(
 
 export async function fetchLiveProfilePortal(fetchImpl?: typeof fetch): Promise<string> {
   if (!liveProfileRequest) {
-    throw new Error(
+    throw new WalletError(
+      "invariant",
       "fetchLiveProfilePortal() before resolveBootConfig() — no profile request exists until the " +
         "wallet has booted from one.",
     )

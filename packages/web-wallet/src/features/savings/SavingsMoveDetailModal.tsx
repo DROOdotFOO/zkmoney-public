@@ -2,7 +2,6 @@ import { formatUnits } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   claimCheckCopy,
-  claimRefusalMessage,
   REORGED_ERROR,
   savingsMoveLabel,
   shortHex,
@@ -29,6 +28,7 @@ import {
   savingsMoveStatus,
 } from "./SavingsMoveRow"
 import { savingsEtaCopy } from "./savingsMoveTiming"
+import { withdrawalFailureText } from "../withdraw/withdrawalFailure"
 
 /** The sheet's status: the row's one state, or the done state once the deposit is claimed. */
 function moveStatus(
@@ -44,11 +44,9 @@ function moveStatus(
 }
 
 /** The burn's error names the active-tab takeover: another tab became the wallet before the send. */
-const TAB_TAKEOVER = /not the active zk\.money tab/i
-
 /**
  * Why a failed burn failed, for the sheet's status: a reorg that took it back or a burn that never
- * got sent (no L2 hash: the move didn't start), both leaving the funds in `direction`'s source, else
+ * got sent (no L2 hash), both leaving the funds in `direction`'s source, else
  * the error's first line, or a plain drop by the network when it recorded none.
  */
 function burnFailureReason(
@@ -56,16 +54,22 @@ function burnFailureReason(
   direction: SavingsDirection,
 ): string | undefined {
   if (burn.phase !== "failed") return undefined
-  const kept = `Your funds are still in ${direction === "in" ? "Main Account" : "Savings"}.`
+  const kept = `Funds still in ${direction === "in" ? "Main Account" : "Savings"}.`
   if (burn.droppedBurn) return `${REORGED_ERROR} ${kept}`
-  const dropped = burn.burnDroppedAt !== undefined || /dropped/i.test(burn.error ?? "")
+  const code = burn.failure?.code
+  const dropped =
+    burn.burnDroppedAt !== undefined ||
+    code === "withdrawal.dropped" ||
+    code === "withdrawal.reorged"
   if (!dropped && !burn.l2TxHash) {
-    const why = TAB_TAKEOVER.test(burn.error ?? "")
-      ? "Another zk.money tab took over before this move was sent, so nothing moved."
-      : "This move didn't start, so nothing moved."
+    const why =
+      code === "withdrawal.inactiveTab"
+        ? "Another zk.money tab took over before this move was sent."
+        : "Transaction not sent."
     return `${why} ${kept}`
   }
-  if (burn.error) return shortHex(claimRefusalMessage(burn.error))
+  const failure = withdrawalFailureText(burn)
+  if (failure) return shortHex(failure)
   return dropped ? "Dropped by the network." : undefined
 }
 

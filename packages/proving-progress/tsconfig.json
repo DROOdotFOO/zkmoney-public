@@ -1,5 +1,5 @@
 {
-  "extends": "../../tsconfig.json",
+  "extends": ["../../tsconfig.json", "@obsidion/lint-config/tsconfig.strict.json"],
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",

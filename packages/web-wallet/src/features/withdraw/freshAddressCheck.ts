@@ -12,7 +12,7 @@ import type { Address, PublicClient } from "viem"
 import { ContactStorage, type Contact, type WithdrawalRecord } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
-import { getWithdrawalStore } from "./withdrawGateway"
+import { session } from "../../platform/session"
 
 export type FreshAddressVerdict =
   | { kind: "idle" } // no parseable address
@@ -26,7 +26,7 @@ export type FreshAddressVerdict =
 
 export interface FreshAddressCheckDeps {
   client: Pick<PublicClient, "getTransactionCount" | "getBalance" | "getCode">
-  withdrawals: () => Promise<WithdrawalRecord[]>
+  withdrawals: () => Promise<readonly WithdrawalRecord[]>
   contacts: () => Promise<Contact[]>
 }
 
@@ -88,7 +88,7 @@ const isLiveL1Contact = (contact: Contact): boolean => {
 /** What this wallet already did with the address; the deposit link outranks a prior withdrawal. */
 export function localVerdict(
   target: string,
-  withdrawals: WithdrawalRecord[],
+  withdrawals: readonly WithdrawalRecord[],
   contacts: Contact[],
 ): { kind: "linked-deposit" | "withdrew-before" } | null {
   const provenance = contacts
@@ -137,11 +137,7 @@ export async function checkFreshAddress(
 function liveDeps(): FreshAddressCheckDeps {
   return {
     client: l1PublicClient(getConfig()),
-    withdrawals: async () => {
-      const store = getWithdrawalStore()
-      await store.load()
-      return store.list()
-    },
+    withdrawals: () => session().withdrawals.all(),
     contacts: () => ContactStorage.get().getEntries(),
   }
 }

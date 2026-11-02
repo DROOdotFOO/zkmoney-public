@@ -12,7 +12,6 @@
   "test/token/tokenEvent.sandbox.test.ts": 76,
   "test/paylink/golden-ticket.sandbox.test.ts": 69,
   "test/token/tokenBridge.sandbox.test.ts": 67,
-  "test/handshake/pureSyncDiscovery.sandbox.test.ts": 66,
   "test/paylink/direct/cold-claim.sandbox.test.ts": 64,
   "test/paylink/direct/escrow-tag-secret.sandbox.test.ts": 58,
   "test/oidcKeyRegistry/oidcKeyRegistry.sandbox.test.ts": 42,

@@ -1,7 +1,4 @@
-export * from "./useAccountContext"
 export * from "./useConfigContext"
-export * from "./useAssetContext"
-export * from "./useAztecContext"
 export * from "./useContractServiceContext"
 export * from "./useOidcKeyRegistryContext"
 export * from "./useScreeningContext"

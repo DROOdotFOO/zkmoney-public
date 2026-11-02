@@ -2,7 +2,7 @@ import type { BatchCall } from "@aztec-labs/aztec.js/contracts"
 import type { FeePaymentMethod, SponsoredFeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 import { waitForTx } from "@aztec-labs/aztec.js/node"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
-import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
 import type { TxExecutionRequest } from "@aztec-labs/stdlib/tx"
 import type { PXE } from "@aztec-labs/pxe/server"
@@ -18,8 +18,8 @@ import type {
   Operation,
   SpendMetadataResolver,
 } from "../../src/oxide/index.js"
-import type { OxideTokenSandbox } from "../utils/oxideTokenSandbox.js"
-import { profileExecutionPayload } from "../utils/profiler.js"
+import type { OxideTokenSandbox } from "../utils/oxide/oxideTokenSandbox.js"
+import { profileExecutionPayload } from "../utils/bench/profiler.js"
 import { emptyTransferMeta } from "@obsidion/core/constants"
 
 export type OxideTokenTeeTestContext = {
@@ -149,7 +149,7 @@ export async function sendOxideTokenTransferViaTee(
     resolveSpendMetadata,
     resolveDepositSpendMetadata,
   )
-  return batchCall.send(sendOptions as any)
+  return batchCall.send(sendOptions)
 }
 
 export async function sendAlphaTransferViaTee(
@@ -164,7 +164,7 @@ export async function sendAlphaTransferViaTee(
     to,
     amount,
   })
-  return batchCall.send(sendOptions as any)
+  return batchCall.send(sendOptions)
 }
 
 export async function profileTeeBatch(

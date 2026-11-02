@@ -1,0 +1,62 @@
+.activityList {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+@media (max-width: 640px) {
+  .activityList {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}
+.activityGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.activityFoot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 40px 24px;
+}
+@media (max-width: 640px) {
+  .activityFoot {
+    padding-inline: 16px;
+  }
+}
+.activityExport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  opacity: 0.8;
+  transition: opacity 120ms ease;
+}
+.activityExport:is(:hover, :focus-visible) {
+  opacity: 1;
+}
+/* Activity's Pending: the outside-contacts entry and the way to the full contacts list. */
+:global(.zkm-btn-reset).activityContacts {
+  align-self: flex-start;
+  padding: 4px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #47b3ff;
+}
+@media (max-width: 640px) {
+  /* The summary takes its own full-width line under the avatars and count. */
+  :global(.ww-shell) :global(.ww-noncontacts-entry).activityRequestsEntry {
+    flex-wrap: wrap;
+  }
+  .activityRequestsEntry :global(.ww-noncontacts-entry__count) {
+    margin-left: auto;
+  }
+  .activityRequestsEntry :global(.ww-noncontacts-entry__text) {
+    order: 1;
+    flex-basis: 100%;
+  }
+}
