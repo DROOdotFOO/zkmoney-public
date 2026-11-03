@@ -1,0 +1,33 @@
+{
+  "name": "@oxide/tee-router",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dest/main.js",
+  "exports": {
+    "./registry-writer": {
+      "types": "./dest/registry_writer.d.ts",
+      "import": "./dest/registry_writer.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dest && tsc -p tsconfig.json",
+    "test": "yarn test:node && yarn test:jest",
+    "test:node": "node --test dest/registry_writer.test.js dest/target_registry.test.js",
+    "test:jest": "NODE_NO_WARNINGS=1 node --experimental-vm-modules ../node_modules/.bin/jest --runInBand"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1045.0",
+    "@aws-sdk/client-ssm": "^3.1045.0",
+    "@aztec-labs/foundation": "6.0.0",
+    "@oxide/telemetry": "workspace:^"
+  },
+  "devDependencies": {
+    "@jest/globals": "^30.0.0",
+    "@swc/core": "^1.10.12",
+    "@swc/jest": "^0.2.36",
+    "@types/node": "^22.15.17",
+    "jest": "^30.0.0",
+    "typescript": "^5.3.3"
+  }
+}

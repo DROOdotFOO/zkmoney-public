@@ -1,0 +1,12 @@
+.git
+.context
+dist
+docs
+l1-contracts
+**/node_modules
+**/dest
+**/.tsbuildinfo
+**/.etherplan
+**/.terraform
+**/*.tfstate
+**/*.tfplan

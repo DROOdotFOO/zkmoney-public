@@ -84,11 +84,31 @@ See [packages/web-wallet-desktop/README.md](packages/web-wallet-desktop/README.m
 
 ## Enclave host
 
-The wallet sends signature requests to the Oxide enclave at the `enclaveUrl` in the Oxide manifest. `vendor/oxide/yarn-project/tee-proxy` is the HTTP front end of an enclave host. This repository does not build the EIF (Enclave Image File) or contain the host tooling that starts it. They are in the Oxide repository, under `enclave/` and `tee-host/`, at commit `3b5e1f7c8`.
+The wallet sends signature requests to the Oxide enclave at the `enclaveUrl` in the Oxide manifest. `vendor/oxide/yarn-project/tee-proxy` is the HTTP front end of an enclave host. The host tooling that starts the enclave is in the Oxide repository, under `tee-host/`, at commit `3b5e1f7c8`.
 
 The `TeeRegistry` contract on L1 accepts an enclave only if its PCR0 is the same as the `PCR0_HASH` that the contract got at deployment. Each new enclave must be registered with `TeeRegistry.registerTee`. The registration sends a message to L2, and each spend proves the inclusion of this message. The Oxide repository does this registration in `yarn-project/tee-registrar`.
 
 To make the wallet use your own host, set the enclave URL in the endpoint editor on the wallet's Settings page.
+
+### Reproduce the enclave image
+
+`scripts/build-enclave.sh` builds the EIF from `vendor/oxide` (copied from Oxide commit `3b5e1f7c8`) and prints its measurements. Compare them with the release build values below.
+
+Requirements: Linux x86_64, Docker with buildx, `jq`, `nitro-cli` 1.5.0, and the [v1.5.0 `blobs/x86_64`](https://github.com/aws/aws-nitro-enclaves-cli/tree/v1.5.0/blobs/x86_64) files in `/usr/share/nitro_enclaves/blobs`. The Amazon Linux package ships different blobs, which change PCR0.
+
+```sh
+scripts/build-enclave.sh dist/enclave
+```
+
+| | Release build value |
+| --- | --- |
+| PCR0 | `4d28e5b10f51d67b1383f1cf738b567fe9e19efa6043d8470a5dad299d2e30c9e76e7493c0df7bb5e9c2cc2156348b73` |
+| PCR1 | `0343b056cd8485ca7890ddd833476d78460aed2aa161548e4e26bedf321726696257d623e8805f3f605946b3d8b0c6aa` |
+| PCR2 | `13436262d1a664df460a32c51802b0b365654cfdde6030bbad56f73ae58e21ff6ea8e9d59fe6e0bbdb6874baf9b6e5d2` |
+| Docker image | `sha256:84c4463dcd1e26e6efd53135832544de0ab5b03dbad4365fb1236e81666fe26d` |
+| Blobs fingerprint | `9f2473748e0c953194d30d7a2708887875ac58ba1918406353b405909485772e` |
+
+The Keccak-256 hash of PCR0 equals `PCR0_HASH()` of `TeeRegistry` `0x8b705C3519169F29850D156574ec377B686bd9CD`.
 
 ## Relayer
 

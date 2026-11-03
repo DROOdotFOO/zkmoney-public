@@ -1,0 +1,40 @@
+{
+  "name": "@oxide/snapshot-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": "./dest/bin/snapshot-service.js",
+  "scripts": {
+    "build": "rm -rf dest && tsc -p tsconfig.json",
+    "lint": "../node_modules/.bin/eslint --cache ./src",
+    "lint:fix": "../node_modules/.bin/eslint --cache --fix ./src",
+    "test": "NODE_NO_WARNINGS=1 node --experimental-vm-modules ../node_modules/.bin/jest"
+  },
+  "exports": {
+    "./*": "./dest/*"
+  },
+  "dependencies": {
+    "@aztec-labs/archiver": "6.0.0",
+    "@aztec-labs/aztec.js": "6.0.0",
+    "@aztec-labs/constants": "6.0.0",
+    "@aztec-labs/ethereum": "6.0.0",
+    "@aztec-labs/foundation": "6.0.0",
+    "@aztec-labs/kv-store": "6.0.0",
+    "@aztec-labs/stdlib": "6.0.0",
+    "@aztec-labs/world-state": "6.0.0",
+    "commander": "^15.0.0",
+    "viem": "2.57.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@jest/globals": "^30.0.0",
+    "@oxide/oxide-client": "workspace:^",
+    "@oxide/oxide-lib": "workspace:^",
+    "@swc/core": "^1.10.12",
+    "@swc/jest": "^0.2.36",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.15.17",
+    "jest": "^30.0.0",
+    "typescript": "^5.3.3"
+  }
+}

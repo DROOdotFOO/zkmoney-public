@@ -1,0 +1,7 @@
+# Pin the toolchain so two builds of the same SHA produce byte-identical
+# binaries. Bump this in lockstep with the Dockerfile's rust:* base image.
+[toolchain]
+channel = "1.83.0"
+components = ["rustc", "cargo"]
+targets = ["x86_64-unknown-linux-musl"]
+profile = "minimal"

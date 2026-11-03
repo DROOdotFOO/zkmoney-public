@@ -1,0 +1,21 @@
+[package]
+name = "nsm-attest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+aws-nitro-enclaves-nsm-api = "0.4"
+serde_bytes = "0.11"
+
+# Reproducible-build profile. `strip` removes symbol/debug info that would otherwise
+# embed host-specific paths; `panic = "abort"` drops the unwinder + format-string
+# machinery (this binary has no need to recover from panics, so the smaller .text
+# section is pure win). `codegen-units = 1` and `lto = "fat"` collapse remaining
+# nondeterminism that comes from parallel codegen.
+[profile.release]
+opt-level = "z"
+strip = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"

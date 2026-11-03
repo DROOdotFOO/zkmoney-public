@@ -1,0 +1,36 @@
+{
+  "name": "@oxide/account-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dest/main.js",
+  "exports": {
+    ".": "./dest/index.js",
+    "./*": "./dest/*"
+  },
+  "scripts": {
+    "build": "rm -rf dest && tsc -p tsconfig.json",
+    "start": "node dest/main.js",
+    "lint": "../node_modules/.bin/eslint --cache ./src",
+    "lint:fix": "../node_modules/.bin/eslint --cache --fix ./src",
+    "test": "NODE_NO_WARNINGS=1 node --experimental-vm-modules ../node_modules/.bin/jest --passWithNoTests"
+  },
+  "dependencies": {
+    "@aztec-labs/foundation": "6.0.0",
+    "@oxide/l1-contracts": "workspace:^",
+    "@oxide/oxide-lib": "workspace:^",
+    "express": "^4.21.2",
+    "viem": "2.57.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@jest/globals": "^30.0.0",
+    "@swc/core": "^1.10.12",
+    "@swc/jest": "^0.2.36",
+    "@types/express": "^4.17.21",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.15.17",
+    "jest": "^30.0.0",
+    "typescript": "^5.3.3"
+  }
+}
