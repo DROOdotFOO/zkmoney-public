@@ -14,6 +14,9 @@ on:
       - ".github/workflows/oxide-relayer-safety.yml"
       - "pnpm-lock.yaml"
 
+env:
+  AZTEC_VERSION: 6.0.0
+
 permissions:
   contents: read
 
@@ -24,17 +27,39 @@ concurrency:
 jobs:
   build-and-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          cache: pnpm
+          node-version: "24"
+      - run: corepack enable
+      - uses: pnpm/action-setup@v4
       - name: Install exact lockfile
         run: pnpm install --frozen-lockfile
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Cache Aztec installation
+        id: cache-aztec
+        uses: actions/cache@v4
+        with:
+          path: ~/.aztec
+          key: aztec-installation-${{ env.AZTEC_VERSION }}
+      - name: Install Aztec
+        if: steps.cache-aztec.outputs.cache-hit != 'true'
+        run: VERSION=${{ env.AZTEC_VERSION }} bash -i <(curl -sL https://install.aztec.network/${{ env.AZTEC_VERSION }})
+      - name: Add Aztec binaries to PATH
+        run: |
+          {
+            echo "$HOME/.aztec/bin"
+            echo "$HOME/.aztec/current/bin"
+            echo "$HOME/.aztec/current/node_modules/.bin"
+            echo "$HOME/.aztec/current/internal-bin"
+          } >> "$GITHUB_PATH"
       - name: Build reviewed source
-        run: pnpm --filter @oxide/oxide-relayer build
+        run: |
+          pnpm build-contracts
+          pnpm build:relayer -- --clean
       - name: Run complete source tests
         run: pnpm --filter @oxide/oxide-relayer test
