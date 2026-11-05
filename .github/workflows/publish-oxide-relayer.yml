@@ -72,8 +72,25 @@ jobs:
       - name: Set up exact pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
 
-      - name: Install the exact lockfile
-        run: pnpm install --frozen-lockfile
+      - name: Install the exact lockfile without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build SQLite from the integrity-locked source without network
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_root="$(dirname "$(dirname "$(command -v node)")")"
+          test -f "$node_root/include/node/node.h"
+          sudo unshare --net -- runuser -u "$USER" -- env \
+            "HOME=$HOME" \
+            "PATH=$PATH" \
+            "npm_config_nodedir=$node_root" \
+            "npm_config_build_from_source=true" \
+            pnpm rebuild sqlite3
+          sudo unshare --net -- runuser -u "$USER" -- env \
+            "HOME=$HOME" \
+            "PATH=$PATH" \
+            pnpm --filter @oxide/oxide-relayer exec node -e 'require("sqlite3")'
 
       - name: Set up exact Foundry
         uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf
@@ -277,6 +294,7 @@ jobs:
           sudo runuser -u "$USER" -- env \
             "HOME=$HOME" \
             "PATH=$PATH" \
+            "npm_config_ignore_scripts=true" \
             "GIT_CONFIG_GLOBAL=$NARGO_GIT_CONFIG" \
             "GIT_ALLOW_PROTOCOL=file" \
             "YARN_ENABLE_NETWORK=false" \
@@ -419,15 +437,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          candidate="$IMAGE_URI:candidate-$GITHUB_SHA"
-          if docker manifest inspect "$candidate" >/dev/null 2>&1; then
-            echo "Candidate tag already exists; refusing repeat publication" >&2
-            exit 1
-          fi
-          if docker manifest inspect "$IMAGE_URI:$IMAGE_VERSION" >/dev/null 2>&1; then
-            echo "Final version tag already exists; refusing repeat publication" >&2
-            exit 1
-          fi
+          candidate="$IMAGE_URI:candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           (cd release-build && sha256sum --check SHA256SUMS)
           docker load --input release-build/oxide-relayer-exact-v1.0.0.tar
           docker tag "$LOCAL_IMAGE" "$candidate"
@@ -825,47 +835,11 @@ jobs:
           docker run --rm "$image" relay-exact --help
           docker run --rm "$image" authorize-generic-restore --help
 
-  promote-version:
-    needs:
-      - publish-candidate
-      - verify-evidence
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      image-digest: ${{ steps.promote.outputs.image-digest }}
-    steps:
-      - name: Log in to GHCR
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Promote only the verified digest to the version tag
-        id: promote
-        env:
-          IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          final="$IMAGE_URI:$IMAGE_VERSION"
-          if docker manifest inspect "$final" >/dev/null 2>&1; then
-            echo "Final version tag already exists; refusing mutation" >&2
-            exit 1
-          fi
-          docker buildx imagetools create --prefer-index=false \
-            --tag "$final" "$IMAGE_URI@$IMAGE_DIGEST"
-          final_digest="sha256:$(docker buildx imagetools inspect --raw "$final" | sha256sum | cut -d ' ' -f 1)"
-          test "$final_digest" = "$IMAGE_DIGEST"
-          printf 'image-digest=%s\n' "$final_digest" >> "$GITHUB_OUTPUT"
 
   final-verify:
     needs:
       - publish-candidate
-      - promote-version
+      - verify-evidence
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -884,15 +858,12 @@ jobs:
         with:
           cosign-release: v3.1.4
 
-      - name: Verify the final tag resolves only to the reviewed digest
+      - name: Verify and smoke the immutable reviewed digest
         env:
-          IMAGE_DIGEST: ${{ needs.promote-version.outputs.image-digest }}
+          IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
         shell: bash
         run: |
           set -euo pipefail
-          test "$IMAGE_DIGEST" = "${{ needs.publish-candidate.outputs.image-digest }}"
-          final_digest="sha256:$(docker buildx imagetools inspect --raw "$IMAGE_URI:$IMAGE_VERSION" | sha256sum | cut -d ' ' -f 1)"
-          test "$final_digest" = "$IMAGE_DIGEST"
           image="$IMAGE_URI@$IMAGE_DIGEST"
           identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.0"
           cosign verify \
