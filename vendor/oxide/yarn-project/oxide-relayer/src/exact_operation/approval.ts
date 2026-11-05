@@ -1,37 +1,40 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { type KeyLike, createHash, sign, verify } from 'node:crypto';
 
 import type { ExactOperationApproval } from './contract.js';
 
 const APPROVAL_DOMAIN = 'oxide-relayer/exact-operation-approval/v1\0';
-const APPROVAL_PREFIX = 'ENABLE-OXIDE-EXACT-OPERATION';
+const SIGNATURE_PREFIX = 'ed25519:';
 
 export function exactApprovalDigest(approval: ExactOperationApproval): `sha256:${string}` {
-  const digest = createHash('sha256')
-    .update(APPROVAL_DOMAIN, 'utf8')
-    .update(stableJson(approval), 'utf8')
-    .digest('hex');
-  return `sha256:${digest}`;
+  return `sha256:${createHash('sha256').update(approvalMessage(approval)).digest('hex')}`;
 }
 
-export function exactApprovalToken(approval: ExactOperationApproval): string {
-  return [
-    APPROVAL_PREFIX,
-    approval.runtime.host,
-    approval.runtime.sourceCommit,
-    approval.runtime.imageDigest,
-    approval.runtime.stateSetDigest,
-    approval.deployment.portal,
-    approval.operation.id,
-    exactApprovalDigest(approval),
-  ].join(':');
+export function signExactApproval(approval: ExactOperationApproval, privateKey: KeyLike): string {
+  return `${SIGNATURE_PREFIX}${sign(null, approvalMessage(approval), privateKey).toString('base64url')}`;
 }
 
-export function assertExactApprovalToken(approval: ExactOperationApproval, received: string): void {
-  const expectedBytes = Buffer.from(exactApprovalToken(approval), 'utf8');
-  const receivedBytes = Buffer.from(received.trim(), 'utf8');
-  if (expectedBytes.length !== receivedBytes.length || !timingSafeEqual(expectedBytes, receivedBytes)) {
-    throw new Error('Exact-operation approval does not match the reviewed runtime and operation');
+export function assertExactApprovalToken(
+  approval: ExactOperationApproval,
+  received: string,
+  publicKey: KeyLike,
+): void {
+  const token = received.trim();
+  if (!token.startsWith(SIGNATURE_PREFIX)) {
+    throw new Error('Exact-operation approval signature is malformed');
   }
+  let signature: Buffer;
+  try {
+    signature = Buffer.from(token.slice(SIGNATURE_PREFIX.length), 'base64url');
+  } catch {
+    throw new Error('Exact-operation approval signature is malformed');
+  }
+  if (signature.length !== 64 || !verify(null, approvalMessage(approval), publicKey, signature)) {
+    throw new Error('Exact-operation approval signature is not valid for the reviewed authority');
+  }
+}
+
+function approvalMessage(approval: ExactOperationApproval): Buffer {
+  return Buffer.from(`${APPROVAL_DOMAIN}${stableJson(approval)}`, 'utf8');
 }
 
 function stableJson(value: unknown): string {

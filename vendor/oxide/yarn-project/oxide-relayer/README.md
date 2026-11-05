@@ -61,12 +61,16 @@ the exact Portal deployment, source transaction hash and block, the single Broad
 resulting operation ID. The source block must be at or below the proven L2 tip, the withdrawal must verify against the
 transaction effect, and an Outbox witness must exist. Recipient plus amount is not an operation identity.
 
-The approval, approval token, and independently verified runtime identity are accepted only through inherited file
-descriptors. Use either `--bundle-fd` for a strict in-memory bundle or all of `--approval-fd`,
-`--approval-token-fd`, and `--runtime-identity-fd`. The token is bound to the source commit, immutable image digest,
-singleton host, generic-state-set digest, Portal, and operation ID. Never place these values in inventory,
-environment files, generated Compose, command arguments, or logs. RPC, manifest, Portal, node, and signer
-references use the ordinary reviewed environment configuration.
+The approval and Ed25519 approval signature are accepted only in a strict inherited `--bundle-fd`. The authority
+public key is baked into the immutable image; it is not caller-selectable. The signed approval binds the source
+commit, immutable image digest, singleton host, generic-state-set digest, Portal, and operation ID. Runtime reads
+host, source commit and state bytes independently from fixed image/runtime paths before network or signer access.
+Never place approval material in inventory, environment files, generated Compose, command arguments, or logs.
+RPC, manifest, Portal, node, and signer references use the ordinary reviewed environment configuration.
+
+The exact journal and shared lease have fixed `/data` paths. CLI callers cannot select a fresh journal or lease.
+Existing paths must be owner-only regular files under a canonical owner-only directory; symlinks and unrelated
+SQLite schemas are rejected before initialization.
 
 Cutover is fail closed:
 
@@ -75,8 +79,9 @@ Cutover is fail closed:
    outcome. Only then does it write the clean-handoff marker while still holding the shared lease.
 3. Preserve and hash every generic SQLite, WAL, and cursor artifact. The hash set is the approved
    `stateSetDigest`; do not copy, filter, migrate, or rewrite the database.
-4. Confirm the exact singleton host, commit, image digest, journal schema, deployment, source evidence, operation,
-   and economics. Start `relay-exact`; acquiring its lease consumes the clean-handoff marker.
+4. Confirm the exact singleton host, source commit, launched image digest, journal schema, deployment, source
+   evidence, operation and economics. Start `relay-exact`; acquiring its fixed lease consumes the clean-handoff
+   marker, recomputes generic state bytes and verifies the fixed runtime identity against the signed approval.
 5. The exact journal records `signing`, signed transaction bytes, and `send_started` durably before the only send.
    A signing, send, or receipt ambiguity locks the approval and evidence permanently. There is no second send.
 6. Restore the generic runtime only under separate approval. Its startup does not consume or alter the exact journal.

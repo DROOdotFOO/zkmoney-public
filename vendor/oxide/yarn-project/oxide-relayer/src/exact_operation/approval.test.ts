@@ -1,6 +1,8 @@
+import { generateKeyPairSync } from 'node:crypto';
+
 import { describe, expect, it } from '@jest/globals';
 
-import { assertExactApprovalToken, exactApprovalToken } from './approval.js';
+import { assertExactApprovalToken, signExactApproval } from './approval.js';
 import type { ExactOperationApproval } from './contract.js';
 
 const approval: ExactOperationApproval = {
@@ -51,15 +53,19 @@ const approval: ExactOperationApproval = {
   },
 };
 
-describe('exact operation approval token', () => {
-  it('binds the non-persisted approval to every reviewed identity', () => {
-    const token = exactApprovalToken(approval);
-    expect(() => assertExactApprovalToken(approval, token)).not.toThrow();
+describe('exact operation approval signature', () => {
+  it('requires the reviewed authority and binds every reviewed identity', () => {
+    const authority = generateKeyPairSync('ed25519');
+    const attacker = generateKeyPairSync('ed25519');
+    const token = signExactApproval(approval, authority.privateKey);
+    expect(() => assertExactApprovalToken(approval, token, authority.publicKey)).not.toThrow();
+    expect(() => assertExactApprovalToken(approval, token, attacker.publicKey)).toThrow(/reviewed authority/);
     expect(() =>
       assertExactApprovalToken(
         { ...approval, operation: { ...approval.operation, id: `0x${'ff'.repeat(32)}` } },
         token,
+        authority.publicKey,
       ),
-    ).toThrow(/approval does not match/);
+    ).toThrow(/reviewed authority/);
   });
 });

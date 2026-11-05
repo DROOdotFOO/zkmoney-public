@@ -1,5 +1,6 @@
-import { access, cp, mkdir, rm } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { createPublicKey } from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
+import { access, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +18,27 @@ const runtimeAssets = new Map([
   ['telemetry', ['dest']],
   ['watcher-lib', ['dest']],
 ]);
+
+const authorityPath = process.env.OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE;
+if (!authorityPath) {
+  throw new Error('OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE must name the reviewed Ed25519 public key');
+}
+const authority = await readFile(authorityPath, 'utf8');
+const authorityKey = createPublicKey(authority);
+if (authorityKey.asymmetricKeyType !== 'ed25519') {
+  throw new Error('Exact-operation approval authority must be an Ed25519 public key');
+}
+const repositoryStatus = execFileSync('git', ['status', '--porcelain'], {
+  cwd: repository,
+  encoding: 'utf8',
+}).trim();
+if (repositoryStatus) {
+  throw new Error('Refusing to prepare a relayer image from a dirty repository');
+}
+const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+  cwd: repository,
+  encoding: 'utf8',
+}).trim();
 
 await requireBuildOutput(path.join(yarnProject, 'oxide-relayer/dest/bin/oxide-relayer.js'));
 for (const [packageName, assets] of runtimeAssets) {
@@ -46,6 +68,9 @@ for (const [packageName, assets] of runtimeAssets) {
     }
   }
 }
+
+await writeFile(path.join(output, 'approval-authority.pem'), authority, { mode: 0o444 });
+await writeFile(path.join(output, 'source-commit'), `${sourceCommit}\n`, { mode: 0o444 });
 
 await run('node', [path.join(output, 'dest/bin/oxide-relayer.js'), 'relay-exact', '--help']);
 

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,7 +9,7 @@ import { RuntimeLease } from './runtime_lease.js';
 const directories: string[] = [];
 
 async function leasePath(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), 'oxide-runtime-lease-'));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'oxide-runtime-lease-')));
   directories.push(directory);
   return join(directory, 'runtime.sqlite3');
 }
@@ -35,5 +35,13 @@ describe('RuntimeLease', () => {
     await generic.close();
 
     await expect(RuntimeLease.acquire(path, 'exact-operation')).rejects.toThrow(/clean generic handoff/);
+  });
+
+  it('rejects a substituted lease symlink', async () => {
+    const path = await leasePath();
+    const target = `${path}.target`;
+    await writeFile(target, '', { mode: 0o600 });
+    await symlink(target, path);
+    await expect(RuntimeLease.acquire(path, 'generic')).rejects.toThrow(/owner-only regular file/);
   });
 });

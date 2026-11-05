@@ -49,12 +49,7 @@ export function createCliProgram(
     program.addCommand(
       new Command('relay-exact')
         .description('submit one approved finalized L1 operation without discovery or retry')
-        .option('--bundle-fd <fd>', 'inherited descriptor containing the one-run approval bundle', integerFd)
-        .option('--approval-fd <fd>', 'inherited descriptor containing the approval', integerFd)
-        .option('--approval-token-fd <fd>', 'inherited descriptor containing the one-run approval token', integerFd)
-        .option('--runtime-identity-fd <fd>', 'inherited descriptor containing verified runtime identity', integerFd)
-        .requiredOption('--journal <path>', 'dedicated exact-operation journal')
-        .requiredOption('--runtime-lease <path>', 'shared generic/exact runtime lease')
+        .requiredOption('--bundle-fd <fd>', 'inherited descriptor containing the signed one-run approval', integerFd)
         .allowExcessArguments(false)
         .action(async options => {
           await runExact(exactConfigFromEnvironment(options));
@@ -197,38 +192,13 @@ function missing(label: string): never {
   throw new Error(`missing required config: ${label}`);
 }
 
-function exactConfigFromEnvironment(options: {
-  bundleFd?: number;
-  approvalFd?: number;
-  approvalTokenFd?: number;
-  runtimeIdentityFd?: number;
-  journal: string;
-  runtimeLease: string;
-}): RunExactOperationConfig {
-  const individualDescriptorCount = [
-    options.approvalFd,
-    options.approvalTokenFd,
-    options.runtimeIdentityFd,
-  ].filter(value => value !== undefined).length;
-  if (
-    (options.bundleFd === undefined && individualDescriptorCount !== 3) ||
-    (options.bundleFd !== undefined && individualDescriptorCount !== 0)
-  ) {
-    throw new Error(
-      'relay-exact requires --bundle-fd or all of --approval-fd, --approval-token-fd and --runtime-identity-fd',
-    );
-  }
+function exactConfigFromEnvironment(options: { bundleFd: number }): RunExactOperationConfig {
   const signer = process.env.OXIDE_RELAYER_SIGNER ?? 'env';
   if (signer !== 'env' && signer !== 'keystore') {
     throw new Error("OXIDE_RELAYER_SIGNER must be 'env' or 'keystore' for relay-exact");
   }
   return {
     bundleFd: options.bundleFd,
-    approvalFd: options.approvalFd,
-    approvalTokenFd: options.approvalTokenFd,
-    runtimeIdentityFd: options.runtimeIdentityFd,
-    journalPath: options.journal,
-    runtimeLeasePath: options.runtimeLease,
     deploymentEnvManifestUrl: requiredEnv('OXIDE_DEPLOYMENT_ENV_MANIFEST_URL'),
     portal: EthAddress.fromString(requiredEnv('OXIDE_PORTAL')),
     readL1RpcUrl: requiredEnv('READ_L1_RPC_URL'),

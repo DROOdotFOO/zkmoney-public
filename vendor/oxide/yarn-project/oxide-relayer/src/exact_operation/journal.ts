@@ -1,4 +1,4 @@
-import { chmod, mkdir } from 'node:fs/promises';
+import { chmod, lstat, open as openFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import { type Database, open } from 'sqlite';
@@ -34,19 +34,33 @@ export class ExactOperationJournal {
   ) {}
 
   static async open(filename: string): Promise<ExactOperationJournal> {
-    await mkdir(path.dirname(path.resolve(filename)), { recursive: true, mode: 0o700 });
+    const resolved = path.resolve(filename);
+    await assertSecureParent(resolved);
+    await createOrValidateJournalFile(resolved);
+    await assertEmptyOrExactJournalFile(resolved);
+    // OPEN_URI enables SQLite's nofollow flag, so a path swap to a symlink is rejected.
     // sqlite3 is a CJS native addon whose runtime constructor is on the default export.
     // eslint-disable-next-line import-x/no-named-as-default-member
-    const db = await open({ filename, driver: sqlite3Driver.Database });
+    const mode =
+      sqlite3Driver.OPEN_READWRITE |
+      sqlite3Driver.OPEN_CREATE |
+      sqlite3Driver.OPEN_FULLMUTEX |
+      sqlite3Driver.OPEN_URI;
+    const db = await open({
+      filename: `file:${resolved}?mode=rwc&nofollow=1`,
+      driver: sqlite3Driver.Database,
+      mode,
+    });
     try {
       await db.exec('PRAGMA busy_timeout = 0');
       await db.exec('PRAGMA locking_mode = EXCLUSIVE');
       await db.exec('PRAGMA journal_mode = DELETE');
       await db.exec('PRAGMA synchronous = FULL');
       await db.exec('BEGIN EXCLUSIVE; COMMIT');
+      await assertEmptyOrExactJournal(db);
       await initialize(db);
-      await chmod(filename, 0o600);
-      return new ExactOperationJournal(filename, db);
+      await chmod(resolved, 0o600);
+      return new ExactOperationJournal(resolved, db);
     } catch (error) {
       await db.close();
       throw error;
@@ -217,6 +231,65 @@ export class ExactOperationJournal {
         await this.db.exec('ROLLBACK').catch(() => undefined);
       }
     }
+  }
+}
+
+async function assertSecureParent(filename: string): Promise<void> {
+  const parent = path.dirname(filename);
+  const [metadata, canonical] = await Promise.all([lstat(parent), realpath(parent)]);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() || canonical !== parent) {
+    throw new Error('Exact-operation journal parent must be one canonical directory');
+  }
+  if ((metadata.mode & 0o022) !== 0) {
+    throw new Error('Exact-operation journal parent must not be group- or world-writable');
+  }
+}
+
+async function createOrValidateJournalFile(filename: string): Promise<void> {
+  try {
+    const handle = await openFile(filename, 'wx', 0o600);
+    await handle.close();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+      throw error;
+    }
+  }
+  const metadata = await lstat(filename);
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1 ||
+    metadata.uid !== process.getuid?.() ||
+    (metadata.mode & 0o777) !== 0o600
+  ) {
+    throw new Error('Exact-operation journal must be one owner-only regular file');
+  }
+}
+
+async function assertEmptyOrExactJournalFile(filename: string): Promise<void> {
+  // sqlite3 is a CJS native addon whose runtime constructor is on the default export.
+  // eslint-disable-next-line import-x/no-named-as-default-member
+  const mode = sqlite3Driver.OPEN_READONLY | sqlite3Driver.OPEN_FULLMUTEX | sqlite3Driver.OPEN_URI;
+  const db = await open({
+    filename: `file:${filename}?mode=ro&nofollow=1`,
+    driver: sqlite3Driver.Database,
+    mode,
+  });
+  try {
+    await assertEmptyOrExactJournal(db);
+  } finally {
+    await db.close();
+  }
+}
+
+async function assertEmptyOrExactJournal(db: SqliteDatabase): Promise<void> {
+  const tables = await db.all<{ name: string }[]>(
+    `SELECT name FROM sqlite_master
+     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+     ORDER BY name`,
+  );
+  if (tables.length > 0 && !tables.some(table => table.name === 'exact_operation_meta')) {
+    throw new Error('Existing SQLite file is not an exact-operation journal');
   }
 }
 

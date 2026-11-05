@@ -1,4 +1,4 @@
-import { assertExactApprovalToken, exactApprovalDigest } from './approval.js';
+import { exactApprovalDigest } from './approval.js';
 import {
   type ExactOperationApproval,
   type ExactOperationObservation,
@@ -24,18 +24,15 @@ export interface ExactOperationExecution {
 
 export interface RelayExactOperationOptions {
   approval: ExactOperationApproval;
-  approvalToken: string;
   journal: ExactOperationJournal;
   execution: ExactOperationExecution;
 }
 
 export async function relayExactOperation({
   approval,
-  approvalToken,
   journal,
   execution,
 }: RelayExactOperationOptions): Promise<{ l1TxHash: string }> {
-  assertExactApprovalToken(approval, approvalToken);
   const observation = await execution.observe(approval);
   assertExactOperationMatches(approval, observation);
 

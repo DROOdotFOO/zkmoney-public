@@ -1,11 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from '@jest/globals';
 
-import { exactApprovalToken } from './approval.js';
 import type { ExactOperationApproval } from './contract.js';
 import { ExactOperationJournal } from './journal.js';
 import { relayExactOperation, type ExactOperationExecution } from './runner.js';
@@ -86,7 +85,7 @@ class RecordingExecution implements ExactOperationExecution {
 }
 
 async function journal(): Promise<ExactOperationJournal> {
-  const directory = await mkdtemp(join(tmpdir(), 'oxide-exact-runner-'));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'oxide-exact-runner-')));
   directories.push(directory);
   return await ExactOperationJournal.open(join(directory, 'journal.sqlite3'));
 }
@@ -108,12 +107,10 @@ describe('relayExactOperation', () => {
     await writeFile(unrelatedState, Buffer.from('generic SQLite state'));
     await writeFile(unrelatedWal, Buffer.from('generic WAL state'));
     const before = await Promise.all([fileSha256(unrelatedState), fileSha256(unrelatedWal)]);
-    await expect(
-      relayExactOperation({ approval, approvalToken: exactApprovalToken(approval), journal: state, execution }),
-    ).resolves.toEqual({ l1TxHash: `0x${'aa'.repeat(32)}` });
-    await expect(
-      relayExactOperation({ approval, approvalToken: exactApprovalToken(approval), journal: state, execution }),
-    ).rejects.toThrow(/already consumed/);
+    await expect(relayExactOperation({ approval, journal: state, execution })).resolves.toEqual({
+      l1TxHash: `0x${'aa'.repeat(32)}`,
+    });
+    await expect(relayExactOperation({ approval, journal: state, execution })).rejects.toThrow(/already consumed/);
     expect(execution.signingCount).toBe(1);
     expect(execution.sendCount).toBe(1);
     await expect(Promise.all([fileSha256(unrelatedState), fileSha256(unrelatedWal)])).resolves.toEqual(before);
@@ -128,12 +125,10 @@ describe('relayExactOperation', () => {
       throw new Error('transport result unknown');
     };
 
-    await expect(
-      relayExactOperation({ approval, approvalToken: exactApprovalToken(approval), journal: state, execution }),
-    ).rejects.toThrow(/no second send is permitted/);
-    await expect(
-      relayExactOperation({ approval, approvalToken: exactApprovalToken(approval), journal: state, execution }),
-    ).rejects.toThrow(/already consumed/);
+    await expect(relayExactOperation({ approval, journal: state, execution })).rejects.toThrow(
+      /no second send is permitted/,
+    );
+    await expect(relayExactOperation({ approval, journal: state, execution })).rejects.toThrow(/already consumed/);
     expect(execution.signingCount).toBe(1);
     expect(execution.sendCount).toBe(1);
     await expect(state.read(approval.operation.id)).resolves.toMatchObject({ state: 'ambiguous' });

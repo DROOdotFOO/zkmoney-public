@@ -22,18 +22,7 @@ describe('createCliProgram', () => {
   });
 
   it('keeps exact-operation approval descriptor-only and starts no generic workers', async () => {
-    const args = [
-      '--approval-fd',
-      '3',
-      '--approval-token-fd',
-      '4',
-      '--runtime-identity-fd',
-      '5',
-      '--journal',
-      '/data/exact.sqlite3',
-      '--runtime-lease',
-      '/data/runtime-lease.sqlite3',
-    ];
+    const args = ['--bundle-fd', '3'];
     const env = {
       OXIDE_DEPLOYMENT_ENV_MANIFEST_URL: 'https://manifest.example/v6/prod/releases.json',
       OXIDE_PORTAL: '0x0000000000000000000000000000000000000001',
@@ -42,40 +31,18 @@ describe('createCliProgram', () => {
       OXIDE_EXACT_APPROVAL_TOKEN: 'must-not-be-read',
     };
     const config = await parseExactOperationConfig(args, env);
-    const bundled = await parseExactOperationConfig(
-      [
-        '--bundle-fd',
-        '3',
-        '--journal',
-        '/data/exact.sqlite3',
-        '--runtime-lease',
-        '/data/runtime-lease.sqlite3',
-      ],
-      env,
-    );
 
     expect(config).not.toHaveProperty('modes');
     expect(config).not.toHaveProperty('disableSubmission');
-    expect(config.approvalTokenFd).toBe(4);
-    expect(bundled.bundleFd).toBe(3);
+    expect(config).not.toHaveProperty('journalPath');
+    expect(config).not.toHaveProperty('runtimeLeasePath');
+    expect(config).not.toHaveProperty('approvalTokenFd');
+    expect(config).not.toHaveProperty('runtimeIdentityFd');
+    expect(config.bundleFd).toBe(3);
+    await expect(parseExactOperationConfig([], env)).rejects.toThrow(/bundle-fd/);
     await expect(
-      parseExactOperationConfig(args.filter((_, index) => index !== 2 && index !== 3), env),
-    ).rejects.toThrow(/approval-token-fd/);
-    await expect(
-      parseExactOperationConfig(
-        [
-          '--bundle-fd',
-          '3',
-          '--approval-fd',
-          '4',
-          '--journal',
-          '/data/exact.sqlite3',
-          '--runtime-lease',
-          '/data/runtime-lease.sqlite3',
-        ],
-        env,
-      ),
-    ).rejects.toThrow(/requires --bundle-fd or all/);
+      parseExactOperationConfig(['--bundle-fd', '3', '--journal', '/tmp/bypass.sqlite3'], env),
+    ).rejects.toThrow(/unknown option/);
   });
 
   it('parses public docker one-liner flags', async () => {
