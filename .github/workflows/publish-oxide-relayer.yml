@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_COMMIT: 881ff2f1fe7020fa1df403a805ca667d7f10dc30
+  SOURCE_COMMIT: ${{ github.sha }}
   SOURCE_TAG: oxide-relayer-exact-v1.0.1
   IMAGE_URI: ghcr.io/droodotfoo/oxide-relayer-exact-operation
   IMAGE_VERSION: 1.0.1
