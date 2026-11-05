@@ -292,6 +292,8 @@ jobs:
             [[ "$5" == "--prod" ]]; then
             destination="$6"
             cp -a "$RELEASE_PREWARM_DEPLOY/." "$destination/"
+            rm -rf "$destination/dest"
+            cp -a vendor/oxide/yarn-project/oxide-relayer/dest "$destination/dest"
             "$RELEASE_REAL_COREPACK" pnpm --dir "$destination" rebuild --pending
             node -e 'require(process.argv[1])' "$destination/node_modules/sqlite3"
             exit 0
