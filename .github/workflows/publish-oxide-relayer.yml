@@ -215,6 +215,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$(corepack pnpm --version)" = "9.14.4"
+          prewarm="$RUNNER_TEMP/oxide-relayer-production-deploy"
+          pnpm --filter @oxide/oxide-relayer deploy --prod "$prewarm"
+          rm -rf "$prewarm"
           l1_contracts="$GITHUB_WORKSPACE/vendor/oxide/l1-contracts"
           test "$(sha256sum "$l1_contracts/yarn.lock" | cut -d ' ' -f 1)" = "$RELEASE_YARN_LOCK_SHA256"
           yarn_version="$(cd "$l1_contracts" && corepack yarn --version)"
@@ -278,6 +281,7 @@ jobs:
             "YARN_ENABLE_NETWORK=false" \
             "YARN_ENABLE_IMMUTABLE_CACHE=true" \
             "YARN_ENABLE_IMMUTABLE_INSTALLS=true" \
+            "PNPM_CONFIG_OFFLINE=true" \
             "FOUNDRY_SOLC_VERSION=$SOLC_BINARY" \
             "FOUNDRY_OFFLINE=true" \
             "OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE=$authority" \
