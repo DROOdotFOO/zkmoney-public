@@ -18,9 +18,8 @@ const receipt = {
 };
 const claim = {
   claim: {
-    schema: 'oxide-relayer.exact-operation-consumption.v1' as const,
-    approvalDigest: `sha256:${'11'.repeat(32)}`,
-    approvalNonce: `0x${'22'.repeat(32)}`,
+    schema: 'oxide-relayer.exact-operation-consumption.v2' as const,
+    approvalCommitment: `sha256:${'11'.repeat(32)}`,
     chainId: '1',
     rollupVersion: '2',
     deploymentLabel: 'reviewed',
@@ -29,6 +28,7 @@ const claim = {
     sourceCommit: '55'.repeat(20),
     imageDigest: `sha256:${'66'.repeat(32)}`,
     targetHost: 'relayer-safe',
+    signerAddress: `0x${'10'.repeat(20)}`,
     schemaIdentity: EXACT_DATABASE_SCHEMA_IDENTITY,
     stateInventoryDigest: `sha256:${'77'.repeat(32)}`,
     canonicalStateDigest: `sha256:${'88'.repeat(32)}`,
@@ -45,7 +45,7 @@ function record(state: ExactOperationRecord['state'] = 'confirmed'): ExactOperat
   return {
     state,
     operationId: claim.claim.operationId,
-    approvalDigest: claim.claim.approvalDigest,
+    approvalCommitment: claim.claim.approvalCommitment,
     signedTxHash: `0x${'99'.repeat(32)}`,
     l1TxHash: `0x${'99'.repeat(32)}`,
     witness: receipt,

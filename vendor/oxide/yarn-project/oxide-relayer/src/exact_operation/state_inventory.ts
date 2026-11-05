@@ -15,18 +15,43 @@ const artifactSchema = z.strictObject({
 });
 const mountSchema = z.strictObject({
   destination: z.string().min(1),
+  mode: z.string(),
+  propagation: z.string(),
   source: z.string().min(1),
   type: z.enum(['bind', 'volume', 'tmpfs']),
   readOnly: z.boolean(),
 });
+const environmentSchema = z.strictObject({
+  name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+  valueSha256: sha256,
+});
 const inventorySchema = z.strictObject({
-  schema: z.literal('oxide-relayer.state-inventory.v1'),
+  schema: z.literal('oxide-relayer.state-inventory.v2'),
   container: z.strictObject({
-    name: z.string().min(1),
+    capAdd: z.array(z.string()),
+    capDrop: z.array(z.string()),
+    command: z.array(z.string()).nullable(),
+    entrypoint: z.array(z.string()).nullable(),
+    environment: z.array(environmentSchema),
     image: z.string().min(1),
-    project: z.string().min(1),
-    service: z.string().min(1),
+    ipcMode: z.string(),
+    labels: z.record(z.string(), z.string()),
     mounts: z.array(mountSchema).min(1),
+    name: z.string().min(1),
+    networkMode: z.string(),
+    pidMode: z.string(),
+    pidsLimit: z.number().int().nullable(),
+    privileged: z.boolean(),
+    project: z.string().min(1),
+    readOnlyRootfs: z.boolean(),
+    restartPolicy: z.strictObject({
+      Name: z.string(),
+      MaximumRetryCount: z.number().int().nonnegative(),
+    }),
+    securityOptions: z.array(z.string()),
+    service: z.string().min(1),
+    user: z.string(),
+    workingDirectory: z.string(),
   }),
   artifacts: z.array(artifactSchema).min(1),
   canonicalStateDigest: sha256,
@@ -52,6 +77,7 @@ export async function verifyStateInventory(
   if (`${canonicalJson(inventory)}\n` !== input) {
     throw new Error('State inventory manifest is not canonical JSON');
   }
+  validateContainer(inventory.container);
   validateArtifacts(inventory.artifacts);
 
   const actualPaths = await listFiles(dataDirectory);
@@ -80,12 +106,29 @@ export async function verifyStateInventory(
   }
   return {
     stateInventoryDigest: `sha256:${createHash('sha256')
-      .update('oxide-relayer-state-inventory-v1\0')
+      .update('oxide-relayer-state-inventory-v2\0')
       .update(input)
       .digest('hex')}`,
     canonicalStateDigest,
   };
 }
+
+function validateContainer(container: StateInventory['container']): void {
+  if (
+    container.labels['com.docker.compose.project'] !== container.project ||
+    container.labels['com.docker.compose.service'] !== container.service
+  ) {
+    throw new Error('State inventory Compose identity is missing or inconsistent');
+  }
+  const environmentNames = container.environment.map(variable => variable.name);
+  if (
+    new Set(environmentNames).size !== environmentNames.length ||
+    [...environmentNames].sort().some((value, index) => value !== environmentNames[index])
+  ) {
+    throw new Error('State inventory environment commitments must be unique and sorted');
+  }
+}
+
 
 function validateArtifacts(artifacts: StateInventory['artifacts']): void {
   const paths = artifacts.map(artifact => artifact.path);

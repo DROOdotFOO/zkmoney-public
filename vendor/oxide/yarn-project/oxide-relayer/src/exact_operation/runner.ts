@@ -1,4 +1,4 @@
-import { exactApprovalDigest } from './approval.js';
+import type { ExactApprovalCommitment } from './approval.js';
 import {
   type ExactOperationApproval,
   type ExactOperationObservation,
@@ -19,6 +19,8 @@ export interface SignedExactOperation {
 export interface ExactOperationExecution {
   /** Point reads for the named deployment, source event and operation only. */
   observe(approval: ExactOperationApproval): Promise<ExactOperationObservation>;
+  /** Loads the L1 account without signing and verifies the signed runtime identity. */
+  assertSignerIdentity(approval: ExactOperationApproval): Promise<void>;
   /** Builds all finalization material and signs one L1 transaction exactly once. */
   signOnce(approval: ExactOperationApproval): Promise<SignedExactOperation>;
   /** Makes one transport call with the durable signed bytes. */
@@ -29,6 +31,7 @@ export interface ExactOperationExecution {
 
 export interface RelayExactOperationOptions {
   approval: ExactOperationApproval;
+  approvalCommitment: ExactApprovalCommitment;
   journal: ExactOperationJournal;
   execution: ExactOperationExecution;
   claimStore: ExactApprovalClaimStore;
@@ -36,6 +39,7 @@ export interface RelayExactOperationOptions {
 
 export async function relayExactOperation({
   approval,
+  approvalCommitment,
   journal,
   execution,
   claimStore,
@@ -43,14 +47,14 @@ export async function relayExactOperation({
   const observation = await execution.observe(approval);
   assertExactOperationMatches(approval, observation);
 
-  const approvalDigest = exactApprovalDigest(approval);
-  const existing = await journal.findConsumption(approvalDigest, approval.operation.id);
+  await execution.assertSignerIdentity(approval);
+  const existing = await journal.findConsumption(approvalCommitment, approval.operation.id);
   if (existing) {
     await verifyExactApprovalClaimReceipt(claimStore, existing);
     throw new Error(`Exact operation ${approval.operation.id} approval was already consumed`);
   }
-  const witness = await consumeExactApprovalExternally(approval, claimStore);
-  await journal.consumeApproval(approvalDigest, approval.operation.id, witness);
+  const witness = await consumeExactApprovalExternally(approval, approvalCommitment, claimStore);
+  await journal.consumeApproval(approvalCommitment, approval.operation.id, witness);
   await journal.beginSigning(approval.operation.id);
 
   let signed: SignedExactOperation;

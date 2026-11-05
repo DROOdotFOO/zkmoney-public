@@ -1,5 +1,5 @@
-import { createHash, createPublicKey, verify } from 'node:crypto';
-import { lstat, open as openFile, readFile } from 'node:fs/promises';
+import { createHash, createPublicKey, randomUUID, verify } from 'node:crypto';
+import { lstat, open as openFile, readFile, rename } from 'node:fs/promises';
 
 import { hostname } from 'node:os';
 import { z } from 'zod';
@@ -78,7 +78,7 @@ export async function authorizeGenericRestore(bundleFd: number): Promise<void> {
   const bundle = await readBundle(bundleFd);
   const approval = restoreApprovalSchema.parse(bundle.approval);
   const authority = await readFile(EXACT_APPROVAL_AUTHORITY_PATH, 'utf8');
-  assertRestoreSignature(approval, bundle.approvalToken, authority);
+  const restoreApprovalCommitment = assertRestoreSignature(approval, bundle.approvalToken, authority);
   const runtime = await fixedRuntimeIdentity();
   if (canonicalJson(approval.runtime) !== canonicalJson(runtime)) {
     throw new Error('Generic restore approval runtime identity does not match current immutable state');
@@ -105,7 +105,7 @@ export async function authorizeGenericRestore(bundleFd: number): Promise<void> {
   }
   const marker: RestoreMarker = {
     schema: 'oxide-relayer.generic-restore-marker.v1',
-    restoreEvidenceDigest: digest('oxide-relayer/generic-restore-evidence/v1\0', canonicalJson(approval)),
+    restoreEvidenceDigest: restoreApprovalCommitment,
     claimSetDigest,
     terminalEvidenceDigest,
     schemaIdentity: runtime.schemaIdentity,
@@ -154,7 +154,7 @@ function assertWitnessJournalConsistency(claims: WitnessClaim[], records: ExactO
     const record = recordsByOperation.get(claim.operationId);
     if (
       !record ||
-      record.approvalDigest !== claim.approvalDigest ||
+      record.approvalCommitment !== claim.approvalCommitment ||
       canonicalJson(record.witness) !== canonicalJson(receipt)
     ) {
       throw new Error('Exact-operation witness and local journal are missing or inconsistent');
@@ -188,7 +188,7 @@ function digestClaims(claims: WitnessClaim[]): `sha256:${string}` {
 function digestTerminalEvidence(records: ExactOperationRecord[]): `sha256:${string}` {
   const evidence = records
     .map(record => ({
-      approvalDigest: record.approvalDigest,
+      approvalCommitment: record.approvalCommitment,
       operationId: record.operationId,
       state: record.state,
       signedTxHash: record.signedTxHash,
@@ -253,13 +253,17 @@ async function readRestoreMarker(): Promise<RestoreMarker | undefined> {
 }
 
 async function writeRestoreMarker(marker: RestoreMarker): Promise<void> {
-  const handle = await openFile(RESTORE_MARKER_PATH, 'wx', 0o600);
+  const existing = await readRestoreMarker();
+  if (existing && canonicalJson(existing) === canonicalJson(marker)) return;
+  const temporary = `${RESTORE_MARKER_PATH}.${randomUUID()}.tmp`;
+  const handle = await openFile(temporary, 'wx', 0o600);
   try {
     await handle.writeFile(`${canonicalJson(marker)}\n`);
     await handle.sync();
   } finally {
     await handle.close();
   }
+  await rename(temporary, RESTORE_MARKER_PATH);
   const directory = await openFile(EXACT_DATA_DIRECTORY, 'r');
   try {
     await directory.sync();
@@ -278,13 +282,18 @@ async function readBundle(fd: number): Promise<{ approval: unknown; approvalToke
   return { approval: value.approval, approvalToken: value.approvalToken };
 }
 
-function assertRestoreSignature(approval: RestoreApproval, token: string, authority: string): void {
+function assertRestoreSignature(
+  approval: RestoreApproval,
+  token: string,
+  authority: string,
+): `sha256:${string}` {
   if (!/^ed25519:[A-Za-z0-9_-]{86}$/.test(token)) throw new Error('Generic restore approval signature is malformed');
   const signature = Buffer.from(token.slice('ed25519:'.length), 'base64url');
   const message = Buffer.from(`${RESTORE_DOMAIN}${canonicalJson(approval)}`, 'utf8');
   if (!verify(null, message, createPublicKey(authority), signature)) {
     throw new Error('Generic restore approval signature is invalid');
   }
+  return digest('oxide-relayer/generic-restore-signature-commitment/v1\0', signature.toString('base64url'));
 }
 
 function requiredEnvironment(name: string): string {

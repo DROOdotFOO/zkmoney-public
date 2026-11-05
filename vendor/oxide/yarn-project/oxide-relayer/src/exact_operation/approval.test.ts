@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 
 import { describe, expect, it } from '@jest/globals';
 
-import { assertExactApprovalToken, signExactApproval } from './approval.js';
+import { assertExactApprovalToken, exactApprovalTokenCommitment, signExactApproval } from './approval.js';
 import type { ExactOperationApproval } from './contract.js';
 
 const approval: ExactOperationApproval = {
@@ -12,7 +12,8 @@ const approval: ExactOperationApproval = {
     host: 'ovh-ubuntu1',
     sourceCommit: '0123456789abcdef0123456789abcdef01234567',
     imageDigest: `sha256:${'11'.repeat(32)}`,
-    schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v1+lease-v1',
+    signerAddress: `0x${'10'.repeat(20)}`,
+    schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v2+lease-v1',
     stateInventoryDigest: `sha256:${'22'.repeat(32)}`,
     canonicalStateDigest: `sha256:${'33'.repeat(32)}`,
   },
@@ -78,5 +79,7 @@ describe('exact operation approval signature', () => {
         authority.publicKey,
       ),
     ).toThrow(/reviewed authority/);
+    expect(exactApprovalTokenCommitment(token)).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(exactApprovalTokenCommitment(token)).not.toContain(approval.approvalNonce);
   });
 });

@@ -109,6 +109,7 @@ export class RuntimeLease {
         await handle.close();
       }
       await rename(temporary, marker);
+      await syncParent(marker);
     }
     await this.db.exec('ROLLBACK');
     await this.db.close();
@@ -208,10 +209,20 @@ async function setLeaseKind(db: SqliteDatabase, kind: RuntimeKind): Promise<void
 async function removeFile(filename: string): Promise<void> {
   try {
     await unlink(filename);
+    await syncParent(filename);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       throw error;
     }
+  }
+}
+
+async function syncParent(filename: string): Promise<void> {
+  const directory = await openFile(path.dirname(filename), 'r');
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
   }
 }
 

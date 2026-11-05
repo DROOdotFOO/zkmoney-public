@@ -302,8 +302,27 @@ export class L1TxQueue {
     if (this.disableSubmission) {
       return this.#skipSend(request);
     }
-    const { txHash, nonce, sentAtBlock } = await this.#inOrder(() => this.#broadcast(request, identity));
-    const settled = this.#monitor(txHash, nonce, sentAtBlock);
+    const { txHash, nonce, sentAtBlock, operationIdentity } = await this.#inOrder(() =>
+      this.#broadcast(request, identity),
+    );
+    const settled = this.#monitor(txHash, nonce, sentAtBlock).then(
+      async receipt => {
+        await this.submissionJournal.recordTerminal(
+          operationIdentity,
+          receipt.status === 'success' ? 'confirmed' : 'reverted',
+          JSON.stringify({ txHash, receiptStatus: receipt.status }),
+        );
+        return receipt;
+      },
+      async error => {
+        await this.submissionJournal.recordTerminal(
+          operationIdentity,
+          'dropped_or_replaced',
+          JSON.stringify({ txHash, outcome: 'dropped_or_replaced' }),
+        );
+        throw error;
+      },
+    );
     // Callers see a failure through `settled`. This catch only prevents an unhandled rejection.
     void settled.catch(() => {});
     return { txHash, nonce, settled };
@@ -357,22 +376,34 @@ export class L1TxQueue {
     const nonce =
       this.lastSentNonce !== undefined && pendingNonce <= this.lastSentNonce ? this.lastSentNonce + 1 : pendingNonce;
     const chainId = this.wallet.chain.id;
-    const serialized = await this.wallet.account.signTransaction({
-      ...request,
-      chainId,
-      nonce,
-      type: 'eip1559',
-    });
-    const signedTxHash = keccak256(serialized);
     const operationIdentity = durableOperationIdentity(identity);
-    await this.submissionJournal.prepare({
+    await this.submissionJournal.reserveSigning({
       operationIdentity,
       signerCommitment: signerCommitment(this.address),
       chainId,
       nonce,
-      signedTxHash,
-      signedTx: Buffer.from(hexToBytes(serialized)),
+      requestDigest: durableRequestDigest(request, chainId, nonce),
     });
+    let serialized: `0x${string}`;
+    try {
+      serialized = await this.wallet.account.signTransaction({
+        ...request,
+        chainId,
+        nonce,
+        type: 'eip1559',
+      });
+      const signedTxHash = keccak256(serialized);
+      await this.submissionJournal.recordPrepared(
+        operationIdentity,
+        signedTxHash,
+        Buffer.from(hexToBytes(serialized)),
+      );
+    } catch (error) {
+      this.ambiguousBroadcastResult = true;
+      await this.submissionJournal.recordAmbiguous(operationIdentity);
+      throw new DurableSubmissionAmbiguityError(error);
+    }
+    const signedTxHash = keccak256(serialized);
     try {
       await this.submissionHooks?.afterPrepared?.();
       await this.submissionJournal.beginSend(operationIdentity);
@@ -395,7 +426,7 @@ export class L1TxQueue {
         maxFeePerGas: request.maxFeePerGas?.toString(),
         maxPriorityFeePerGas: request.maxPriorityFeePerGas?.toString(),
       });
-      return { txHash, nonce, sentAtBlock };
+      return { txHash, nonce, sentAtBlock, operationIdentity };
     } catch (error) {
       this.ambiguousBroadcastResult = true;
       try {
@@ -565,4 +596,15 @@ export function createL1TxQueue(options: {
     submissionJournal,
     forbiddenOperationIds,
   });
+}
+
+function durableRequestDigest(request: TransactionRequestEIP1559, chainId: number, nonce: number): string {
+  const canonical = JSON.stringify(
+    { ...request, chainId, nonce, type: 'eip1559' },
+    (_key, value: unknown) => (typeof value === 'bigint' ? value.toString(10) : value),
+  );
+  return `sha256:${createHash('sha256')
+    .update('oxide-relayer/generic-signing-request/v1\0')
+    .update(canonical)
+    .digest('hex')}`;
 }

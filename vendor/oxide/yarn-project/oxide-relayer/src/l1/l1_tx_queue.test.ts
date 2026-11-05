@@ -22,6 +22,7 @@ import type {
   DurableGenericSubmission,
   DurableSubmissionJournal,
   GenericSubmissionState,
+  GenericSigningReservation,
 } from './submission_journal.js';
 
 const ADDRESS: Address = '0x00000000000000000000000000000000000000aa';
@@ -33,12 +34,24 @@ class MemorySubmissionJournal implements DurableSubmissionJournal {
   readonly rows = new Map<string, DurableGenericSubmission>();
 
   async assertNoUnresolved(): Promise<void> {
-    if ([...this.rows.values()].some(row => row.state !== 'accepted')) throw new Error('unresolved');
+    if (
+      [...this.rows.values()].some(
+        row => !['confirmed', 'reverted', 'dropped_or_replaced'].includes(row.state),
+      )
+    ) {
+      throw new Error('unresolved');
+    }
   }
 
-  async prepare(record: Omit<DurableGenericSubmission, 'state' | 'response'>): Promise<void> {
+  async reserveSigning(record: GenericSigningReservation): Promise<void> {
     if (this.rows.has(record.operationIdentity)) throw new Error('already journaled');
-    this.rows.set(record.operationIdentity, { ...record, state: 'prepared' });
+    this.rows.set(record.operationIdentity, { ...record, state: 'signing' });
+  }
+
+  async recordPrepared(operationIdentity: string, signedTxHash: string, signedTx: Buffer): Promise<void> {
+    const row = this.require(operationIdentity);
+    if (row.state !== 'signing') throw new Error('expected signing');
+    this.rows.set(operationIdentity, { ...row, state: 'prepared', signedTxHash, signedTx });
   }
 
   async beginSend(operationIdentity: string): Promise<void> {
@@ -51,6 +64,14 @@ class MemorySubmissionJournal implements DurableSubmissionJournal {
 
   async recordAccepted(operationIdentity: string): Promise<void> {
     this.transition(operationIdentity, 'response_received', 'accepted');
+  }
+
+  async recordTerminal(
+    operationIdentity: string,
+    state: 'confirmed' | 'reverted' | 'dropped_or_replaced',
+    response?: string,
+  ): Promise<void> {
+    this.transition(operationIdentity, 'accepted', state, response);
   }
 
   async recordAmbiguous(operationIdentity: string, response?: string): Promise<void> {

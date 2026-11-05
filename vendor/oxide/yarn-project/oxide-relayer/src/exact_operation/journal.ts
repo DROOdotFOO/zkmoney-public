@@ -37,7 +37,7 @@ export type ExactOperationState =
 export interface ExactOperationRecord {
   state: ExactOperationState;
   operationId: string;
-  approvalDigest: string;
+  approvalCommitment: string;
   signedTx?: Buffer;
   signedTxHash?: string;
   l1TxHash?: string;
@@ -86,14 +86,14 @@ export class ExactOperationJournal {
   }
 
   async consumeApproval(
-    approvalDigest: string,
+    approvalCommitment: string,
     operationId: string,
     witness: ExactApprovalClaimReceipt,
   ): Promise<void> {
     await this.transaction(async () => {
       const existing = await this.db.get<{ operation_id: string }>(
         'SELECT operation_id FROM exact_operations WHERE approval_digest = ? OR operation_id = ? LIMIT 1',
-        approvalDigest,
+        approvalCommitment,
         operationId,
       );
       if (existing) {
@@ -104,7 +104,7 @@ export class ExactOperationJournal {
           (approval_digest, operation_id, state, witness_key, witness_version_id,
            witness_checksum_sha256, witness_retain_until, witness_body, created_at, updated_at)
          VALUES (?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?)`,
-        approvalDigest,
+        approvalCommitment,
         operationId,
         witness.key,
         witness.versionId,
@@ -118,7 +118,7 @@ export class ExactOperationJournal {
   }
 
   async findConsumption(
-    approvalDigest: string,
+    approvalCommitment: string,
     operationId: string,
   ): Promise<ExactApprovalClaimReceipt | undefined> {
     const row = await this.db.get<{
@@ -130,7 +130,7 @@ export class ExactOperationJournal {
     }>(
       `SELECT witness_key, witness_version_id, witness_checksum_sha256, witness_retain_until, witness_body
        FROM exact_operations WHERE approval_digest = ? OR operation_id = ? LIMIT 1`,
-      approvalDigest,
+      approvalCommitment,
       operationId,
     );
     return row === undefined
@@ -237,7 +237,7 @@ export class ExactOperationJournal {
     return {
       state: row.state,
       operationId: row.operation_id,
-      approvalDigest: row.approval_digest,
+      approvalCommitment: row.approval_digest,
       witness: {
         key: row.witness_key,
         versionId: row.witness_version_id,
@@ -356,7 +356,7 @@ export async function auditExactOperationJournal(filename: string): Promise<Exac
     return rows.map(row => ({
       state: row.state,
       operationId: row.operation_id,
-      approvalDigest: row.approval_digest,
+      approvalCommitment: row.approval_digest,
       ...(row.signed_tx === null ? {} : { signedTx: row.signed_tx }),
       ...(row.signed_tx_hash === null ? {} : { signedTxHash: row.signed_tx_hash }),
       ...(row.l1_tx_hash === null ? {} : { l1TxHash: row.l1_tx_hash }),

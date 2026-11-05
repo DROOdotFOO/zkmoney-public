@@ -17,7 +17,8 @@ const approval: ExactOperationApproval = {
     host: 'relayer-1',
     sourceCommit: 'a'.repeat(40),
     imageDigest: `sha256:${'11'.repeat(32)}`,
-    schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v1+lease-v1',
+    signerAddress: `0x${'10'.repeat(20)}`,
+    schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v2+lease-v1',
     stateInventoryDigest: `sha256:${'22'.repeat(32)}`,
     canonicalStateDigest: `sha256:${'33'.repeat(32)}`,
   },
@@ -68,6 +69,7 @@ const approval: ExactOperationApproval = {
     maximumTotalFee: '10000000',
   },
 };
+const approvalCommitment = `sha256:${'ca'.repeat(32)}` as const;
 
 class MemoryClaimStore implements ExactApprovalClaimStore {
   readonly claims = new Map<string, { checksumSha256: string; retainUntil: Date; versionId: string }>();
@@ -111,9 +113,11 @@ class MemoryClaimStore implements ExactApprovalClaimStore {
 describe('external exact-operation approval consumption', () => {
   it('uses one conditional claim and permanently refuses a collision', async () => {
     const store = new MemoryClaimStore();
-    const first = await consumeExactApprovalExternally(approval, store);
-    expect(first.key).toBe(exactApprovalClaimKey(approval));
-    await expect(consumeExactApprovalExternally(approval, store)).rejects.toBeInstanceOf(
+    const first = await consumeExactApprovalExternally(approval, approvalCommitment, store);
+    expect(first.key).toBe(exactApprovalClaimKey(approval, approvalCommitment));
+    await expect(
+      consumeExactApprovalExternally(approval, approvalCommitment, store),
+    ).rejects.toBeInstanceOf(
       ExactApprovalClaimCollisionError,
     );
   });
@@ -121,7 +125,9 @@ describe('external exact-operation approval consumption', () => {
   it('fails before eligibility when the authority is unavailable', async () => {
     const store = new MemoryClaimStore();
     store.unavailable = true;
-    await expect(consumeExactApprovalExternally(approval, store)).rejects.toThrow('unavailable');
+    await expect(consumeExactApprovalExternally(approval, approvalCommitment, store)).rejects.toThrow(
+      'unavailable',
+    );
   });
 
   it('uses S3 If-None-Match rather than a read-then-write claim', async () => {
@@ -136,7 +142,9 @@ describe('external exact-operation approval consumption', () => {
       { bucket: 'oxide-approval-witness', region: 'us-east-1', expectedOwner: '123456789012' },
       { client: { send } as unknown as S3Client },
     );
-    await expect(consumeExactApprovalExternally(approval, store)).rejects.toBeInstanceOf(
+    await expect(
+      consumeExactApprovalExternally(approval, approvalCommitment, store),
+    ).rejects.toBeInstanceOf(
       ExactApprovalClaimCollisionError,
     );
     expect(send).toHaveBeenCalledTimes(2);
@@ -149,10 +157,12 @@ describe('external exact-operation approval consumption', () => {
         return {
           IsTruncated: false,
           Versions: [
-            { Key: exactApprovalClaimKey(approval), VersionId: 'retained-version' },
-            { Key: exactApprovalClaimKey(approval), VersionId: 'new-version' },
+            { Key: exactApprovalClaimKey(approval, approvalCommitment), VersionId: 'retained-version' },
+            { Key: exactApprovalClaimKey(approval, approvalCommitment), VersionId: 'new-version' },
           ],
-          DeleteMarkers: [{ Key: exactApprovalClaimKey(approval), VersionId: 'delete-marker' }],
+          DeleteMarkers: [
+            { Key: exactApprovalClaimKey(approval, approvalCommitment), VersionId: 'delete-marker' },
+          ],
         };
       }
       return { ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' } };
@@ -162,17 +172,31 @@ describe('external exact-operation approval consumption', () => {
       { client: { send } as unknown as S3Client },
     );
 
-    await expect(consumeExactApprovalExternally(approval, store)).rejects.toBeInstanceOf(
+    await expect(
+      consumeExactApprovalExternally(approval, approvalCommitment, store),
+    ).rejects.toBeInstanceOf(
       ExactApprovalClaimCollisionError,
     );
   });
 
-  it('keeps recipient linkage out of the object key and body', async () => {
+  it('keeps recipient linkage and approval nonce out of the object key and body', async () => {
     const store = new MemoryClaimStore();
-    const receipt = await consumeExactApprovalExternally(approval, store);
+    const receipt = await consumeExactApprovalExternally(approval, approvalCommitment, store);
     expect(receipt.key).not.toContain(approval.withdrawal.executor);
     expect(receipt.key).not.toContain(approval.withdrawal.recipientCommitment);
+    expect(receipt.key).not.toContain(approval.approvalNonce);
     expect(receipt.body).not.toContain(approval.withdrawal.executor);
     expect(receipt.body).not.toContain(approval.withdrawal.recipientCommitment);
+    expect(receipt.body).not.toContain(approval.approvalNonce);
+    expect(JSON.parse(receipt.body)).toMatchObject({ approvalCommitment });
+  });
+
+  it('uses one operation lock across fresh approval nonces and runtime state', () => {
+    const freshApproval = structuredClone(approval);
+    freshApproval.approvalNonce = `0x${'dd'.repeat(32)}`;
+    freshApproval.runtime.stateInventoryDigest = `sha256:${'ee'.repeat(32)}`;
+    expect(exactApprovalClaimKey(freshApproval, `sha256:${'ff'.repeat(32)}`)).toBe(
+      exactApprovalClaimKey(approval, approvalCommitment),
+    );
   });
 });

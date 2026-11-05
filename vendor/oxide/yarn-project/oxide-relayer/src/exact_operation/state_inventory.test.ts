@@ -30,13 +30,48 @@ async function fixture() {
   ].sort((left, right) => left.path.localeCompare(right.path));
   const canonicalStateDigest = canonicalDigest(artifacts);
   const inventory = {
-    schema: 'oxide-relayer.state-inventory.v1',
+    schema: 'oxide-relayer.state-inventory.v2',
     container: {
-      name: 'oxide-relayer',
+      capAdd: [],
+      capDrop: ['ALL'],
+      command: ['node', '/app/dest/bin/oxide-relayer.js', 'run'],
+      entrypoint: ['/usr/bin/tini', '--'],
+      environment: [
+        {
+          name: 'DISABLE_SUBMISSION',
+          valueSha256: digest(
+            Buffer.from('oxide-relayer-container-environment-v1\0DISABLE_SUBMISSION=true'),
+          ),
+        },
+      ],
       image: `example/relayer@sha256:${'22'.repeat(32)}`,
+      ipcMode: 'private',
+      labels: {
+        'com.docker.compose.project': 'oxide-relayer',
+        'com.docker.compose.service': 'relayer',
+      },
+      mounts: [
+        {
+          destination: '/data',
+          mode: 'rw',
+          propagation: 'rprivate',
+          source: dataDirectory,
+          type: 'bind',
+          readOnly: false,
+        },
+      ],
+      name: 'oxide-relayer',
+      networkMode: 'oxide-relayer',
+      pidMode: '',
+      pidsLimit: 256,
+      privileged: false,
       project: 'oxide-relayer',
+      readOnlyRootfs: true,
+      restartPolicy: { Name: 'unless-stopped', MaximumRetryCount: 0 },
+      securityOptions: ['no-new-privileges:true'],
       service: 'relayer',
-      mounts: [{ destination: '/data', source: dataDirectory, type: 'bind', readOnly: false }],
+      user: '1000:1000',
+      workingDirectory: '/app',
     },
     artifacts,
     canonicalStateDigest,
@@ -56,7 +91,7 @@ describe('state inventory', () => {
     const { dataDirectory, manifest, inventory, input } = await fixture();
     await expect(verifyStateInventory(manifest, dataDirectory)).resolves.toEqual({
       stateInventoryDigest: `sha256:${createHash('sha256')
-        .update('oxide-relayer-state-inventory-v1\0')
+        .update('oxide-relayer-state-inventory-v2\0')
         .update(input)
         .digest('hex')}`,
       canonicalStateDigest: inventory.canonicalStateDigest,

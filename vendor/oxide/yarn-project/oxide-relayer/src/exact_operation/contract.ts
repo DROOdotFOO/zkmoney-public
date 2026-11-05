@@ -1,13 +1,14 @@
 import { z } from 'zod';
 
 export const EXACT_DATABASE_SCHEMA_IDENTITY =
-  'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v1+lease-v1' as const;
+  'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v2+lease-v1' as const;
 
 
 export interface ExactOperationRuntimeIdentity {
   host: string;
   sourceCommit: string;
   imageDigest: string;
+  signerAddress: string;
   schemaIdentity: typeof EXACT_DATABASE_SCHEMA_IDENTITY;
   stateInventoryDigest: string;
   canonicalStateDigest: string;
@@ -83,6 +84,7 @@ const exactOperationRuntimeIdentitySchema: z.ZodType<ExactOperationRuntimeIdenti
   host: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
   sourceCommit: z.string().regex(/^[0-9a-f]{40}$/),
   imageDigest: sha256,
+  signerAddress: lowercaseHex(20),
   schemaIdentity: z.literal(EXACT_DATABASE_SCHEMA_IDENTITY),
   stateInventoryDigest: sha256,
   canonicalStateDigest: sha256,

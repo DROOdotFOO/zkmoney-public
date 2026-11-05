@@ -15,7 +15,7 @@ import { chainFor, getL1PublicClient, l1Transport } from '../l1/client.js';
 import { GenericSubmissionJournal } from '../l1/submission_journal.js';
 import { WithdrawalCompletion } from '../l1_operations/withdrawal_completion.js';
 import { loadSigner } from '../signers/index.js';
-import { assertExactApprovalToken } from './approval.js';
+import { assertExactApprovalToken, exactApprovalTokenCommitment } from './approval.js';
 import { assertExactOperationMatches, parseExactOperationApproval } from './contract.js';
 import { ExactL1Execution } from './execution.js';
 import { configuredWitnessAuthority, loadWitnessCredentials } from './generic_quarantine.js';
@@ -49,6 +49,7 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
   const approvalToken = material.approvalToken;
   const authority = await readFile(EXACT_APPROVAL_AUTHORITY_PATH, 'utf8');
   assertExactApprovalToken(approval, approvalToken, authority);
+  const approvalCommitment = exactApprovalTokenCommitment(approvalToken);
 
   const lease = await RuntimeLease.acquire(EXACT_RUNTIME_LEASE_PATH, 'exact-operation');
   let journal: ExactOperationJournal | undefined;
@@ -121,7 +122,7 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
     const claimStore = new S3ExactApprovalClaimStore(configuredWitness, {
       credentials: await loadWitnessCredentials(),
     });
-    return await relayExactOperation({ approval, journal, execution, claimStore });
+    return await relayExactOperation({ approval, approvalCommitment, journal, execution, claimStore });
   } finally {
     await journal?.close();
     await genericSubmissionJournal?.close();

@@ -66,12 +66,16 @@ root-owned authority in the immutable image is not caller-selectable. Approval s
 source commit, immutable image digest, singleton host, schema identity, complete state-inventory digest, canonical
 state digest, Portal, exact operation, and an S3 Object Lock witness authority.
 
-Before TEE or transaction signing, the runtime creates the witness claim with S3 `If-None-Match: *`, SHA-256
-checksum, and `COMPLIANCE` retention through `9999-12-31T23:59:59Z`. It verifies the exact returned object version
-and retention before continuing. A collision permanently consumes the approval. Authority unavailability,
-read-after-write failure, deletion markers, incomplete listings, local-journal rollback, or any witness/journal
-inconsistency fails closed. Witness object keys and canonical bodies contain operation identity but no recipient
-address, recipient commitment, or private linkage. The local receipt remains in the mode-0600 exact journal.
+Before TEE or transaction signing, the runtime creates one operation-scoped witness claim with S3
+`If-None-Match: *`, SHA-256 checksum, and `COMPLIANCE` retention through `9999-12-31T23:59:59Z`.
+The key is stable across fresh approvals and runtime-state changes for the same chain, deployment,
+Portal, rollup, and operation ID. The canonical body binds an opaque commitment to the verified
+approval signature, including its nonce and runtime identity, without storing the nonce, token,
+recipient address, recipient commitment, or a recomputable descriptor digest. The runtime verifies
+the exact returned object version and retention before continuing. Authority unavailability,
+collision, read-after-write failure, deletion markers, incomplete listings, local-journal rollback,
+or any witness/journal inconsistency fails closed. The local receipt remains in the mode-0600 exact
+journal.
 
 Runtime identity comes from fixed image/runtime paths. The complete inventory manifest binds every declared bind
 mount, named volume, tmpfs, Compose project identity, canonical SQLite/WAL/SHM file, historical database, approved
@@ -80,11 +84,14 @@ unknown files, symlinks, hard links, missing canonical files, or changed canonic
 must independently enforce one host and one immutable image digest with a read-only root filesystem and no `/app`
 mount. Approval material never enters inventory, environment files, generated Compose, argv, or logs.
 
-Every generic L1 send now has the same durable ambiguity contract as exact mode: build and sign once, persist and
-fsync operation identity, signer commitment, chain ID, nonce, signed hash, protected signed bytes, and `prepared`;
-transition to `sending`; call `eth_sendRawTransaction` once; persist the exact response; then mark accepted. A crash
-before send leaves `prepared`; disconnect, timeout, malformed response, or a crash after response receipt leaves a
-durable unresolved state. Restart never rebuilds, re-signs, resends, or advances that operation.
+Every generic L1 send now has the same durable ambiguity contract as exact mode. Before asking the
+account to sign, it fsyncs a `signing` reservation containing operation identity, signer commitment,
+chain ID, nonce, and canonical request digest. Signing failure or a crash during signing is permanently
+ambiguous. After signing, it fsyncs the signed hash and protected bytes, transitions to `sending`,
+calls `eth_sendRawTransaction` once, persists the exact response, and marks the send accepted. Accepted
+is still unresolved until a mined success, mined revert, or proved drop/replacement is durably recorded.
+A restart never rebuilds, re-signs, resends, advances the operation nonce, or treats an accepted but
+nonterminal transaction as a clean handoff.
 
 Cutover is fail closed:
 
@@ -93,17 +100,19 @@ Cutover is fail closed:
    the clean-handoff marker while holding the shared lease.
 3. Inventory and hash every reachable state artifact without copying, compacting, migrating, filtering, or rewriting
    it. Bind `stateInventoryDigest` and `canonicalStateDigest` into approval and witness evidence.
-4. Confirm host, source, image, schema, deployment, source event, operation, economics, witness authority, and
-   inventory. `relay-exact` consumes the external claim before any signature.
+4. Confirm host, source, image, schema, expected signer address, deployment, source event, operation,
+   economics, witness authority, and inventory. The keystore-derived account must match the signed
+   signer identity before `relay-exact` consumes the external claim or requests any signature.
 5. Enforce independent hard limits:
    `TEE_FINALIZATION_SIGNATURE_REQUESTS_MAX=1`, `L1_TRANSACTION_SIGNINGS_MAX=1`, and
    `ETH_SEND_RAW_TRANSACTION_CALLS_MAX=1`. The exact journal persists signed bytes and the pre-send boundary.
 6. Any ambiguous exact send blocks all submission for the signer and chain. Exact success remains permanently
    quarantined from generic submission; duplicate safety never relies on a destination revert.
-7. `authorize-generic-restore --bundle-fd 3` accepts a separate signed, non-persisted restore approval bound to
-   confirmed terminal evidence, the immutable witness claim set, and current state digests. It writes only a
-   mode-0600 evidence digest marker. Generic startup independently rechecks both witness and local journal, and
-   keeps every exact operation excluded.
+7. `authorize-generic-restore --bundle-fd 3` accepts a separate signed, non-persisted restore approval
+   bound to confirmed terminal evidence, the immutable witness claim set, current state digests, and
+   signer identity. It atomically installs or idempotently accepts a mode-0600 signature-commitment
+   marker. Generic startup independently rechecks both witness and local journal and keeps every exact
+   operation excluded.
 
 While exact mode owns the lease, unrelated L1-operation discovery/submission, FPC funding, and epoch-proof work are
 delayed. Their rows, bytes, and ordering remain unchanged. A pre-send failure has no automatic generic takeover; an

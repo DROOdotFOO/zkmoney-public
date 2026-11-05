@@ -12,6 +12,7 @@ const prepared = {
   signerCommitment: `sha256:${'11'.repeat(32)}`,
   chainId: 1,
   nonce: 7,
+  requestDigest: `sha256:${'33'.repeat(32)}`,
   signedTxHash: `0x${'22'.repeat(32)}`,
   signedTx: Buffer.from('private signed bytes'),
 };
@@ -26,10 +27,16 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 
+async function reserveAndPrepare(journal: GenericSubmissionJournal): Promise<void> {
+  const { signedTxHash, signedTx, ...reservation } = prepared;
+  await journal.reserveSigning(reservation);
+  await journal.recordPrepared(prepared.operationIdentity, signedTxHash, signedTx);
+}
+
 describe('generic submission journal', () => {
   it('fsyncs private signed bytes before send and remains owner-only', async () => {
     const journal = await openJournal();
-    await journal.prepare(prepared);
+    await reserveAndPrepare(journal);
     await expect(journal.read(prepared.operationIdentity)).resolves.toMatchObject({
       ...prepared,
       state: 'prepared',
@@ -41,7 +48,7 @@ describe('generic submission journal', () => {
 
   it('persists the exact RPC response before accepting the send', async () => {
     const journal = await openJournal();
-    await journal.prepare(prepared);
+    await reserveAndPrepare(journal);
     await journal.beginSend(prepared.operationIdentity);
     const response = JSON.stringify({ txHash: prepared.signedTxHash });
     await journal.recordResponse(prepared.operationIdentity, response);
@@ -50,6 +57,8 @@ describe('generic submission journal', () => {
       response,
     });
     await journal.recordAccepted(prepared.operationIdentity);
+    await expect(journal.assertNoUnresolved()).rejects.toThrow('unresolved outcome');
+    await journal.recordTerminal(prepared.operationIdentity, 'confirmed');
     await expect(journal.assertNoUnresolved()).resolves.toBeUndefined();
     await journal.close();
   });
@@ -57,7 +66,7 @@ describe('generic submission journal', () => {
   it('makes send ambiguity durable across restart', async () => {
     const journal = await openJournal();
     const path = journal.path;
-    await journal.prepare(prepared);
+    await reserveAndPrepare(journal);
     await journal.beginSend(prepared.operationIdentity);
     await journal.recordAmbiguous(prepared.operationIdentity, 'disconnect');
     await journal.close();
@@ -72,11 +81,28 @@ describe('generic submission journal', () => {
 
   it('refuses a second signing identity after accepted submission', async () => {
     const journal = await openJournal();
-    await journal.prepare(prepared);
+    const { signedTxHash, signedTx, ...reservation } = prepared;
+    await journal.reserveSigning(reservation);
+    await journal.recordPrepared(prepared.operationIdentity, signedTxHash, signedTx);
     await journal.beginSend(prepared.operationIdentity);
     await journal.recordResponse(prepared.operationIdentity, '{}');
     await journal.recordAccepted(prepared.operationIdentity);
-    await expect(journal.prepare(prepared)).rejects.toThrow('already journaled');
+    await expect(journal.reserveSigning(reservation)).rejects.toThrow('already journaled');
     await journal.close();
+  });
+
+  it('makes a crash during signing permanently unresolved without signed bytes', async () => {
+    const journal = await openJournal();
+    const path = journal.path;
+    const { signedTxHash: _hash, signedTx: _bytes, ...reservation } = prepared;
+    await journal.reserveSigning(reservation);
+    await journal.close();
+    const restarted = await GenericSubmissionJournal.open(path);
+    await expect(restarted.assertNoUnresolved()).rejects.toThrow('unresolved outcome');
+    await expect(restarted.read(prepared.operationIdentity)).resolves.toMatchObject({
+      ...reservation,
+      state: 'signing',
+    });
+    await restarted.close();
   });
 });

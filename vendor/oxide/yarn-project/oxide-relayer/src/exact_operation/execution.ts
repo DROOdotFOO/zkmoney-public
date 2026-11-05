@@ -61,6 +61,13 @@ export class ExactL1Execution implements ExactOperationExecution {
     return await this.observer.observe(approval);
   }
 
+  async assertSignerIdentity(approval: ExactOperationApproval): Promise<void> {
+    const account = await this.loadAccount();
+    if (account.address.toLowerCase() !== approval.runtime.signerAddress) {
+      throw new Error('Exact-operation signer does not match the approved runtime identity');
+    }
+  }
+
   async signOnce(approval: ExactOperationApproval): Promise<SignedExactOperation> {
     if (this.executorVersion !== approval.economics.executorVersion) {
       throw new Error('Exact-operation executor version differs from the approved economics');

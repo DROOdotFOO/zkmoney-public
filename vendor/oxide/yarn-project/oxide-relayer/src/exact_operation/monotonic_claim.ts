@@ -9,16 +9,15 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 
-import { exactApprovalDigest } from './approval.js';
+import type { ExactApprovalCommitment } from './approval.js';
 import type { ExactOperationApproval } from './contract.js';
 
-const CLAIM_DOMAIN = 'oxide-relayer/exact-operation-consumption/v1\0';
-const CLAIM_SCHEMA = 'oxide-relayer.exact-operation-consumption.v1' as const;
+const CLAIM_DOMAIN = 'oxide-relayer/exact-operation-consumption/v2\0';
+const CLAIM_SCHEMA = 'oxide-relayer.exact-operation-consumption.v2' as const;
 
 export interface ExactApprovalClaim {
   schema: typeof CLAIM_SCHEMA;
-  approvalDigest: string;
-  approvalNonce: string;
+  approvalCommitment: ExactApprovalCommitment;
   chainId: string;
   rollupVersion: string;
   deploymentLabel: string;
@@ -27,6 +26,7 @@ export interface ExactApprovalClaim {
   sourceCommit: string;
   imageDigest: string;
   targetHost: string;
+  signerAddress: string;
   schemaIdentity: string;
   stateInventoryDigest: string;
   canonicalStateDigest: string;
@@ -62,11 +62,13 @@ export class ExactApprovalClaimCollisionError extends Error {
   }
 }
 
-export function exactApprovalClaim(approval: ExactOperationApproval): ExactApprovalClaim {
+export function exactApprovalClaim(
+  approval: ExactOperationApproval,
+  approvalCommitment: ExactApprovalCommitment,
+): ExactApprovalClaim {
   return {
     schema: CLAIM_SCHEMA,
-    approvalDigest: exactApprovalDigest(approval),
-    approvalNonce: approval.approvalNonce,
+    approvalCommitment,
     chainId: approval.deployment.chainId,
     rollupVersion: approval.deployment.rollupVersion,
     deploymentLabel: approval.deployment.label,
@@ -74,6 +76,7 @@ export function exactApprovalClaim(approval: ExactOperationApproval): ExactAppro
     operationId: approval.operation.id,
     sourceCommit: approval.runtime.sourceCommit,
     imageDigest: approval.runtime.imageDigest,
+    signerAddress: approval.runtime.signerAddress,
     targetHost: approval.runtime.host,
     schemaIdentity: approval.runtime.schemaIdentity,
     stateInventoryDigest: approval.runtime.stateInventoryDigest,
@@ -81,21 +84,17 @@ export function exactApprovalClaim(approval: ExactOperationApproval): ExactAppro
   };
 }
 
-export function exactApprovalClaimKey(approval: ExactOperationApproval): string {
-  const claim = exactApprovalClaim(approval);
+export function exactApprovalClaimKey(
+  approval: ExactOperationApproval,
+  approvalCommitment: ExactApprovalCommitment,
+): string {
+  const claim = exactApprovalClaim(approval, approvalCommitment);
   const identity = canonicalJson({
-    approvalNonce: claim.approvalNonce,
     chainId: claim.chainId,
     deploymentLabel: claim.deploymentLabel,
-    imageDigest: claim.imageDigest,
     operationId: claim.operationId,
     portal: claim.portal,
     rollupVersion: claim.rollupVersion,
-    schemaIdentity: claim.schemaIdentity,
-    sourceCommit: claim.sourceCommit,
-    stateInventoryDigest: claim.stateInventoryDigest,
-    canonicalStateDigest: claim.canonicalStateDigest,
-    targetHost: claim.targetHost,
   });
   const digest = createHash('sha256').update(CLAIM_DOMAIN).update(identity).digest('hex');
   return `${approval.witness.prefix}/exact-operation-consumption/${digest}.json`;
@@ -103,13 +102,14 @@ export function exactApprovalClaimKey(approval: ExactOperationApproval): string 
 
 export async function consumeExactApprovalExternally(
   approval: ExactOperationApproval,
+  approvalCommitment: ExactApprovalCommitment,
   store: ExactApprovalClaimStore,
 ): Promise<ExactApprovalClaimReceipt> {
   await store.assertComplianceRetention();
-  const body = canonicalJson(exactApprovalClaim(approval));
+  const body = canonicalJson(exactApprovalClaim(approval, approvalCommitment));
   const checksumSha256 = createHash('sha256').update(body).digest('base64');
   const retainUntil = new Date(approval.witness.retainUntil);
-  const key = exactApprovalClaimKey(approval);
+  const key = exactApprovalClaimKey(approval, approvalCommitment);
   const { versionId } = await store.createIfAbsent({ key, body, checksumSha256, retainUntil });
   await store.verify({ key, versionId, checksumSha256, retainUntil });
   return {
@@ -337,8 +337,7 @@ function parseExactApprovalClaim(body: string): ExactApprovalClaim {
   const record = value as Record<string, unknown>;
   const keys: Array<keyof ExactApprovalClaim> = [
     'schema',
-    'approvalDigest',
-    'approvalNonce',
+    'approvalCommitment',
     'chainId',
     'rollupVersion',
     'deploymentLabel',
@@ -347,6 +346,7 @@ function parseExactApprovalClaim(body: string): ExactApprovalClaim {
     'sourceCommit',
     'imageDigest',
     'targetHost',
+    'signerAddress',
     'schemaIdentity',
     'stateInventoryDigest',
     'canonicalStateDigest',

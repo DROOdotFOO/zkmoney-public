@@ -4,41 +4,61 @@ import path from 'node:path';
 import { type Database, open } from 'sqlite';
 import sqlite3Driver, { type Database as Sqlite3Database, type Statement as Sqlite3Statement } from 'sqlite3';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const META_TABLE_SQL = `CREATE TABLE submission_journal_meta (schema_version INTEGER NOT NULL)`;
 const SUBMISSIONS_TABLE_SQL = `CREATE TABLE submissions (
   operation_identity TEXT PRIMARY KEY,
   signer_commitment TEXT NOT NULL,
   chain_id INTEGER NOT NULL,
   nonce INTEGER NOT NULL,
-  signed_tx_hash TEXT NOT NULL UNIQUE,
-  signed_tx BLOB NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('prepared', 'sending', 'response_received', 'accepted', 'ambiguous')),
+  request_digest TEXT NOT NULL,
+  signed_tx_hash TEXT UNIQUE,
+  signed_tx BLOB,
+  state TEXT NOT NULL CHECK (state IN ('signing', 'prepared', 'sending', 'response_received', 'accepted', 'confirmed', 'reverted', 'dropped_or_replaced', 'ambiguous')),
   response TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 )`;
 
 type SqliteDatabase = Database<Sqlite3Database, Sqlite3Statement>;
-export type GenericSubmissionState = 'prepared' | 'sending' | 'response_received' | 'accepted' | 'ambiguous';
+export type GenericSubmissionState =
+  | 'signing'
+  | 'prepared'
+  | 'sending'
+  | 'response_received'
+  | 'accepted'
+  | 'confirmed'
+  | 'reverted'
+  | 'dropped_or_replaced'
+  | 'ambiguous';
 
-export interface DurableGenericSubmission {
+export interface GenericSigningReservation {
   operationIdentity: string;
   signerCommitment: string;
   chainId: number;
   nonce: number;
-  signedTxHash: string;
-  signedTx: Buffer;
+  requestDigest: string;
+}
+
+export interface DurableGenericSubmission extends GenericSigningReservation {
+  signedTxHash?: string;
+  signedTx?: Buffer;
   state: GenericSubmissionState;
   response?: string;
 }
 
 export interface DurableSubmissionJournal {
   assertNoUnresolved(): Promise<void>;
-  prepare(record: Omit<DurableGenericSubmission, 'state' | 'response'>): Promise<void>;
+  reserveSigning(record: GenericSigningReservation): Promise<void>;
+  recordPrepared(operationIdentity: string, signedTxHash: string, signedTx: Buffer): Promise<void>;
   beginSend(operationIdentity: string): Promise<void>;
   recordResponse(operationIdentity: string, response: string): Promise<void>;
   recordAccepted(operationIdentity: string): Promise<void>;
+  recordTerminal(
+    operationIdentity: string,
+    state: 'confirmed' | 'reverted' | 'dropped_or_replaced',
+    response?: string,
+  ): Promise<void>;
   recordAmbiguous(operationIdentity: string, response?: string): Promise<void>;
   read(operationIdentity: string): Promise<DurableGenericSubmission | undefined>;
 }
@@ -48,6 +68,7 @@ export class GenericSubmissionJournal implements DurableSubmissionJournal {
     readonly path: string,
     private readonly db: SqliteDatabase,
   ) {}
+  private transactions: Promise<void> = Promise.resolve();
 
   static async open(filename: string): Promise<GenericSubmissionJournal> {
     const resolved = path.resolve(filename);
@@ -82,36 +103,49 @@ export class GenericSubmissionJournal implements DurableSubmissionJournal {
 
   async assertNoUnresolved(): Promise<void> {
     const unresolved = await this.db.get<{ operation_identity: string; state: GenericSubmissionState }>(
-      "SELECT operation_identity, state FROM submissions WHERE state != 'accepted' ORDER BY created_at LIMIT 1",
+      "SELECT operation_identity, state FROM submissions WHERE state NOT IN ('confirmed', 'reverted', 'dropped_or_replaced') ORDER BY created_at LIMIT 1",
     );
     if (unresolved) {
       throw new Error('A durable L1 submission has an unresolved outcome; signing and submission are blocked');
     }
   }
 
-  async prepare(record: Omit<DurableGenericSubmission, 'state' | 'response'>): Promise<void> {
+  async reserveSigning(record: GenericSigningReservation): Promise<void> {
     await this.transaction(async () => {
       const existing = await this.db.get<{ state: GenericSubmissionState }>(
-        'SELECT state FROM submissions WHERE operation_identity = ? OR signed_tx_hash = ? LIMIT 1',
+        'SELECT state FROM submissions WHERE operation_identity = ? LIMIT 1',
         record.operationIdentity,
-        record.signedTxHash,
       );
       if (existing) {
-        throw new Error('The durable L1 operation identity or signed transaction was already journaled');
+        throw new Error('The durable L1 operation identity was already journaled');
       }
       const now = new Date().toISOString();
       await this.db.run(
         `INSERT INTO submissions
-          (operation_identity, signer_commitment, chain_id, nonce, signed_tx_hash, signed_tx, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, ?)`,
+          (operation_identity, signer_commitment, chain_id, nonce, request_digest, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'signing', ?, ?)`,
         record.operationIdentity,
         record.signerCommitment,
         record.chainId,
         record.nonce,
-        record.signedTxHash,
-        record.signedTx,
+        record.requestDigest,
         now,
         now,
+      );
+    });
+  }
+
+  async recordPrepared(operationIdentity: string, signedTxHash: string, signedTx: Buffer): Promise<void> {
+    await this.transaction(async () => {
+      await this.requireState(operationIdentity, 'signing');
+      await this.db.run(
+        `UPDATE submissions
+         SET state = 'prepared', signed_tx_hash = ?, signed_tx = ?, updated_at = ?
+         WHERE operation_identity = ?`,
+        signedTxHash,
+        signedTx,
+        new Date().toISOString(),
+        operationIdentity,
       );
     });
   }
@@ -136,11 +170,28 @@ export class GenericSubmissionJournal implements DurableSubmissionJournal {
     await this.transition(operationIdentity, 'response_received', 'accepted');
   }
 
+  async recordTerminal(
+    operationIdentity: string,
+    state: 'confirmed' | 'reverted' | 'dropped_or_replaced',
+    response?: string,
+  ): Promise<void> {
+    await this.transaction(async () => {
+      await this.requireState(operationIdentity, 'accepted');
+      await this.db.run(
+        'UPDATE submissions SET state = ?, response = COALESCE(?, response), updated_at = ? WHERE operation_identity = ?',
+        state,
+        response ?? null,
+        new Date().toISOString(),
+        operationIdentity,
+      );
+    });
+  }
+
   async recordAmbiguous(operationIdentity: string, response?: string): Promise<void> {
     await this.transaction(async () => {
       const state = await this.state(operationIdentity);
-      if (state === 'accepted') {
-        throw new Error('An accepted durable L1 submission cannot become ambiguous');
+      if (state === 'confirmed' || state === 'reverted' || state === 'dropped_or_replaced') {
+        throw new Error('A terminal durable L1 submission cannot become ambiguous');
       }
       await this.db.run(
         "UPDATE submissions SET state = 'ambiguous', response = ?, updated_at = ? WHERE operation_identity = ?",
@@ -157,12 +208,14 @@ export class GenericSubmissionJournal implements DurableSubmissionJournal {
       signer_commitment: string;
       chain_id: number;
       nonce: number;
-      signed_tx_hash: string;
-      signed_tx: Buffer;
+      request_digest: string;
+      signed_tx_hash: string | null;
+      signed_tx: Buffer | null;
       state: GenericSubmissionState;
       response: string | null;
     }>(
-      `SELECT operation_identity, signer_commitment, chain_id, nonce, signed_tx_hash, signed_tx, state, response
+      `SELECT operation_identity, signer_commitment, chain_id, nonce, request_digest,
+              signed_tx_hash, signed_tx, state, response
        FROM submissions WHERE operation_identity = ?`,
       operationIdentity,
     );
@@ -173,14 +226,16 @@ export class GenericSubmissionJournal implements DurableSubmissionJournal {
           signerCommitment: row.signer_commitment,
           chainId: row.chain_id,
           nonce: row.nonce,
-          signedTxHash: row.signed_tx_hash,
-          signedTx: row.signed_tx,
+          requestDigest: row.request_digest,
+          ...(row.signed_tx_hash === null ? {} : { signedTxHash: row.signed_tx_hash }),
+          ...(row.signed_tx === null ? {} : { signedTx: row.signed_tx }),
           state: row.state,
           ...(row.response === null ? {} : { response: row.response }),
         };
   }
 
   async close(): Promise<void> {
+    await this.transactions;
     await this.db.close();
   }
 
@@ -216,18 +271,22 @@ export class GenericSubmissionJournal implements DurableSubmissionJournal {
   }
 
   private async transaction(action: () => Promise<void>): Promise<void> {
-    await this.db.exec('BEGIN IMMEDIATE');
-    try {
-      await action();
-      await this.db.exec('COMMIT');
-    } catch (error) {
+    const result = this.transactions.then(async () => {
+      await this.db.exec('BEGIN IMMEDIATE');
       try {
-        await this.db.exec('ROLLBACK');
-      } catch (rollbackError) {
-        throw new AggregateError([error, rollbackError], 'Generic submission journal transaction rollback failed');
+        await action();
+        await this.db.exec('COMMIT');
+      } catch (error) {
+        try {
+          await this.db.exec('ROLLBACK');
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], 'Generic submission journal transaction rollback failed');
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
+    this.transactions = result.catch(() => {});
+    await result;
   }
 }
 

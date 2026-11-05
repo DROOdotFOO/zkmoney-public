@@ -20,7 +20,8 @@ const approval: ExactOperationApproval = {
     host: 'ovh-ubuntu1',
     sourceCommit: '0123456789abcdef0123456789abcdef01234567',
     imageDigest: `sha256:${'11'.repeat(32)}`,
-    schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v1+lease-v1',
+    signerAddress: `0x${'10'.repeat(20)}`,
+    schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v2+lease-v1',
     stateInventoryDigest: `sha256:${'22'.repeat(32)}`,
     canonicalStateDigest: `sha256:${'33'.repeat(32)}`,
   },
@@ -71,13 +72,19 @@ const approval: ExactOperationApproval = {
     maximumTotalFee: '30000000000000000',
   },
 };
+const approvalCommitment = `sha256:${'cc'.repeat(32)}` as const;
 
 class RecordingExecution implements ExactOperationExecution {
   signingCount = 0;
+  signerCheckCount = 0;
   sendCount = 0;
 
-  async observe() {
-    return structuredClone(approval);
+  async observe(input: ExactOperationApproval) {
+    return structuredClone(input);
+  }
+
+  async assertSignerIdentity() {
+    this.signerCheckCount++;
   }
 
   async signOnce() {
@@ -141,6 +148,23 @@ async function fileSha256(path: string): Promise<string> {
 
 
 describe('relayExactOperation', () => {
+  it('fails a signer mismatch before witness consumption or signing', async () => {
+    const state = await journal();
+    const execution = new RecordingExecution();
+    execution.assertSignerIdentity = async () => {
+      execution.signerCheckCount++;
+      throw new Error('signer mismatch');
+    };
+    const claimStore = new RecordingClaimStore();
+    await expect(
+      relayExactOperation({ approval, approvalCommitment, journal: state, execution, claimStore }),
+    ).rejects.toThrow('signer mismatch');
+    expect(execution.signerCheckCount).toBe(1);
+    expect(execution.signingCount).toBe(0);
+    expect(claimStore.claim).toBeUndefined();
+    await state.close();
+  });
+
   it('signs and submits one exact matching operation once', async () => {
     const state = await journal();
     const execution = new RecordingExecution();
@@ -159,10 +183,14 @@ describe('relayExactOperation', () => {
     const rowsBefore = await generic.all('SELECT * FROM obligations ORDER BY kind');
     const before = await Promise.all([fileSha256(unrelatedState), fileSha256(unrelatedWal)]);
     const claimStore = new RecordingClaimStore();
-    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).resolves.toEqual({
+    await expect(
+      relayExactOperation({ approval, approvalCommitment, journal: state, execution, claimStore }),
+    ).resolves.toEqual({
       l1TxHash: `0x${'aa'.repeat(32)}`,
     });
-    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).rejects.toThrow(
+    await expect(
+      relayExactOperation({ approval, approvalCommitment, journal: state, execution, claimStore }),
+    ).rejects.toThrow(
       /already consumed/,
     );
     expect(execution.signingCount).toBe(1);
@@ -180,11 +208,19 @@ describe('relayExactOperation', () => {
     let state = await ExactOperationJournal.open(path);
     const execution = new RecordingExecution();
     const claimStore = new RecordingClaimStore();
-    await relayExactOperation({ approval, journal: state, execution, claimStore });
+    await relayExactOperation({ approval, approvalCommitment, journal: state, execution, claimStore });
     await state.close();
     await rm(path);
     state = await ExactOperationJournal.open(path);
-    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).rejects.toThrow('collision');
+    await expect(
+      relayExactOperation({
+        approval: { ...approval, approvalNonce: `0x${'dd'.repeat(32)}` },
+        approvalCommitment: `sha256:${'ee'.repeat(32)}`,
+        journal: state,
+        execution,
+        claimStore,
+      }),
+    ).rejects.toThrow('collision');
     expect(execution.signingCount).toBe(1);
     expect(execution.sendCount).toBe(1);
     await state.close();
@@ -194,9 +230,11 @@ describe('relayExactOperation', () => {
     const state = await journal();
     const execution = new RecordingExecution();
     const claimStore = new RecordingClaimStore();
-    await relayExactOperation({ approval, journal: state, execution, claimStore });
+    await relayExactOperation({ approval, approvalCommitment, journal: state, execution, claimStore });
     claimStore.claim = undefined;
-    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).rejects.toThrow();
+    await expect(
+      relayExactOperation({ approval, approvalCommitment, journal: state, execution, claimStore }),
+    ).rejects.toThrow();
     expect(execution.signingCount).toBe(1);
     expect(execution.sendCount).toBe(1);
     await state.close();
@@ -211,10 +249,14 @@ describe('relayExactOperation', () => {
     };
 
     const claimStore = new RecordingClaimStore();
-    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).rejects.toThrow(
+    await expect(
+      relayExactOperation({ approval, approvalCommitment, journal: state, execution, claimStore }),
+    ).rejects.toThrow(
       /no second send is permitted/,
     );
-    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).rejects.toThrow(
+    await expect(
+      relayExactOperation({ approval, approvalCommitment, journal: state, execution, claimStore }),
+    ).rejects.toThrow(
       /already consumed/,
     );
     expect(execution.signingCount).toBe(1);
