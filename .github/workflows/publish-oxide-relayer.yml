@@ -295,6 +295,8 @@ jobs:
             rm -rf "$destination/dest"
             cp -a vendor/oxide/yarn-project/oxide-relayer/dest "$destination/dest"
             "$RELEASE_REAL_COREPACK" pnpm --dir "$destination" rebuild --pending
+            sqlite_dir="$destination/node_modules/.pnpm/sqlite3@5.1.7/node_modules/sqlite3"
+            (cd "$sqlite_dir" && ./node_modules/.bin/node-gyp rebuild)
             node -e 'require(process.argv[1])' "$destination/node_modules/sqlite3"
             exit 0
           fi
