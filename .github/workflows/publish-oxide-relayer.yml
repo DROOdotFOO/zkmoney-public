@@ -274,7 +274,7 @@ jobs:
           authority="$RUNNER_TEMP/approval-public.pem"
           printf '%s' "$APPROVAL_AUTHORITY_PEM_B64" | base64 --decode > "$authority"
           test "$(sha256sum "$authority" | cut -d ' ' -f 1)" = "$APPROVAL_AUTHORITY_SHA256"
-          sudo unshare --net -- runuser -u "$USER" -- env \
+          sudo runuser -u "$USER" -- env \
             "HOME=$HOME" \
             "PATH=$PATH" \
             "GIT_CONFIG_GLOBAL=$NARGO_GIT_CONFIG" \
@@ -282,7 +282,6 @@ jobs:
             "YARN_ENABLE_NETWORK=false" \
             "YARN_ENABLE_IMMUTABLE_CACHE=true" \
             "YARN_ENABLE_IMMUTABLE_INSTALLS=true" \
-            "npm_config_offline=true" \
             "FOUNDRY_SOLC_VERSION=$SOLC_BINARY" \
             "FOUNDRY_OFFLINE=true" \
             "OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE=$authority" \
