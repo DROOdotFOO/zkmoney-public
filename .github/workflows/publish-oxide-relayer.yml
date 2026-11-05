@@ -252,7 +252,7 @@ jobs:
             "FOUNDRY_SOLC_VERSION=$SOLC_BINARY" \
             "FOUNDRY_OFFLINE=true" \
             "OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE=$authority" \
-            pnpm prepare:relayer-image
+            bash -euc 'pnpm build-contracts; pnpm prepare:relayer-image'
           test "$(cat .relayer-image/source-commit)" = "$SOURCE_COMMIT"
           test "$(sha256sum .relayer-image/approval-authority.pem | cut -d ' ' -f 1)" = "$APPROVAL_AUTHORITY_SHA256"
           test "$(tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$RELEASE_YARN_OFFLINE_CACHE" -cf - . | sha256sum | cut -d ' ' -f 1)" = "$RELEASE_YARN_OFFLINE_CACHE_SHA256"
