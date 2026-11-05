@@ -52,7 +52,11 @@ export function createCliProgram(
         .requiredOption('--bundle-fd <fd>', 'inherited descriptor containing the signed one-run approval', integerFd)
         .allowExcessArguments(false)
         .action(async options => {
-          await runExact(exactConfigFromEnvironment(options));
+          try {
+            await runExact(exactConfigFromEnvironment(options));
+          } catch {
+            throw new Error('relay-exact failed closed; sensitive failure details suppressed');
+          }
         }),
     );
   }

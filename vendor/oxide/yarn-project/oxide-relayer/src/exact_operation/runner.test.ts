@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from '@jest/globals';
+import { open } from 'sqlite';
+import sqlite3Driver from 'sqlite3';
 
 import type { ExactOperationApproval } from './contract.js';
 import { ExactOperationJournal } from './journal.js';
@@ -102,10 +104,19 @@ describe('relayExactOperation', () => {
   it('signs and submits one exact matching operation once', async () => {
     const state = await journal();
     const execution = new RecordingExecution();
-    const unrelatedState = join(directories.at(-1)!, 'generic.sqlite3');
+    const unrelatedState = join(directories.at(-1)!, `oxide-relayer-0x${'11'.repeat(20)}.sqlite3`);
+    const generic = await open({ filename: unrelatedState, driver: sqlite3Driver.Database });
+    await generic.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA wal_autocheckpoint = 0;
+      CREATE TABLE obligations (kind TEXT PRIMARY KEY, status TEXT NOT NULL, evidence BLOB NOT NULL);
+      INSERT INTO obligations VALUES
+        ('unrelated-backlog', 'pending', X'01'),
+        ('historical', 'due', X'02'),
+        ('retryable', 'deferred', X'03');
+    `);
     const unrelatedWal = `${unrelatedState}-wal`;
-    await writeFile(unrelatedState, Buffer.from('generic SQLite state'));
-    await writeFile(unrelatedWal, Buffer.from('generic WAL state'));
+    const rowsBefore = await generic.all('SELECT * FROM obligations ORDER BY kind');
     const before = await Promise.all([fileSha256(unrelatedState), fileSha256(unrelatedWal)]);
     await expect(relayExactOperation({ approval, journal: state, execution })).resolves.toEqual({
       l1TxHash: `0x${'aa'.repeat(32)}`,
@@ -113,7 +124,9 @@ describe('relayExactOperation', () => {
     await expect(relayExactOperation({ approval, journal: state, execution })).rejects.toThrow(/already consumed/);
     expect(execution.signingCount).toBe(1);
     expect(execution.sendCount).toBe(1);
+    await expect(generic.all('SELECT * FROM obligations ORDER BY kind')).resolves.toEqual(rowsBefore);
     await expect(Promise.all([fileSha256(unrelatedState), fileSha256(unrelatedWal)])).resolves.toEqual(before);
+    await generic.close();
     await state.close();
   });
 

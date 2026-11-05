@@ -68,6 +68,8 @@ export class L1TxQueue {
   private broadcasts: Promise<void> = Promise.resolve();
   /** Lower bound when the read RPC has not seen the last broadcast. */
   private lastSentNonce: number | undefined;
+  /** A send call failed after it may have reached the RPC. Exact-operation handoff is permanently forbidden. */
+  private ambiguousBroadcastResult = false;
 
   constructor(options: {
     client: PublicClient;
@@ -121,6 +123,9 @@ export class L1TxQueue {
       this.#rejectQueued(new Error('L1 submission batcher stopped before queued work could run'));
     }
     await this.worker;
+    if (this.ambiguousBroadcastResult) {
+      throw new Error('An L1 broadcast has an unknown result; exact-operation handoff is forbidden');
+    }
   }
 
   #startWorker(): void {
@@ -312,11 +317,18 @@ export class L1TxQueue {
     ]);
     const nonce =
       this.lastSentNonce !== undefined && pendingNonce <= this.lastSentNonce ? this.lastSentNonce + 1 : pendingNonce;
-    const txHash = await this.wallet.sendTransaction({
-      ...request,
-      nonce,
-      type: 'eip1559',
-    });
+    let txHash: Hash;
+    try {
+      txHash = await this.wallet.sendTransaction({
+        ...request,
+        nonce,
+        type: 'eip1559',
+      });
+    } catch (error) {
+      // The transport may have accepted the transaction before returning an error.
+      this.ambiguousBroadcastResult = true;
+      throw error;
+    }
     this.lastSentNonce = nonce;
     this.log.debug('Sent L1 transaction', {
       event: 'l1_tx_sent',

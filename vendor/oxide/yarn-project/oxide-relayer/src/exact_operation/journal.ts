@@ -5,6 +5,17 @@ import { type Database, open } from 'sqlite';
 import sqlite3Driver, { type Database as Sqlite3Database, type Statement as Sqlite3Statement } from 'sqlite3';
 
 const SCHEMA_VERSION = 1;
+const META_TABLE_SQL = `CREATE TABLE exact_operation_meta (schema_version INTEGER NOT NULL)`;
+const OPERATIONS_TABLE_SQL = `CREATE TABLE exact_operations (
+  approval_digest TEXT PRIMARY KEY,
+  operation_id TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL CHECK (state IN ('approved', 'signing', 'signed', 'send_started', 'sent', 'confirmed', 'failed', 'ambiguous')),
+  signed_tx BLOB,
+  signed_tx_hash TEXT,
+  l1_tx_hash TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)`;
 
 type SqliteDatabase = Database<Sqlite3Database, Sqlite3Statement>;
 
@@ -283,14 +294,37 @@ async function assertEmptyOrExactJournalFile(filename: string): Promise<void> {
 }
 
 async function assertEmptyOrExactJournal(db: SqliteDatabase): Promise<void> {
-  const tables = await db.all<{ name: string }[]>(
-    `SELECT name FROM sqlite_master
-     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-     ORDER BY name`,
+  const objects = await db.all<{ type: string; name: string; sql: string | null }[]>(
+    `SELECT type, name, sql FROM sqlite_master
+     WHERE name NOT LIKE 'sqlite_%'
+     ORDER BY type, name`,
   );
-  if (tables.length > 0 && !tables.some(table => table.name === 'exact_operation_meta')) {
-    throw new Error('Existing SQLite file is not an exact-operation journal');
+  if (objects.length === 0) {
+    return;
   }
+  const expected = new Map([
+    ['exact_operation_meta', normalizeSql(META_TABLE_SQL)],
+    ['exact_operations', normalizeSql(OPERATIONS_TABLE_SQL)],
+  ]);
+  if (
+    objects.length !== expected.size ||
+    objects.some(
+      object =>
+        object.type !== 'table' ||
+        object.sql === null ||
+        expected.get(object.name) !== normalizeSql(object.sql),
+    )
+  ) {
+    throw new Error('Existing SQLite file is not the canonical exact-operation journal schema');
+  }
+  const versions = await db.all<{ schema_version: number }[]>('SELECT schema_version FROM exact_operation_meta');
+  if (versions.length !== 1 || versions[0]?.schema_version !== SCHEMA_VERSION) {
+    throw new Error('Existing exact-operation journal has an unrecognized schema version');
+  }
+}
+
+function normalizeSql(sql: string): string {
+  return sql.replace(/\s+/g, ' ').trim();
 }
 
 async function initialize(db: SqliteDatabase): Promise<void> {
@@ -300,18 +334,9 @@ async function initialize(db: SqliteDatabase): Promise<void> {
   if (!meta) {
     await db.exec(`
       BEGIN IMMEDIATE;
-      CREATE TABLE exact_operation_meta (schema_version INTEGER NOT NULL);
+      ${META_TABLE_SQL};
       INSERT INTO exact_operation_meta (schema_version) VALUES (${SCHEMA_VERSION});
-      CREATE TABLE exact_operations (
-        approval_digest TEXT PRIMARY KEY,
-        operation_id TEXT NOT NULL UNIQUE,
-        state TEXT NOT NULL CHECK (state IN ('approved', 'signing', 'signed', 'send_started', 'sent', 'confirmed', 'failed', 'ambiguous')),
-        signed_tx BLOB,
-        signed_tx_hash TEXT,
-        l1_tx_hash TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
+      ${OPERATIONS_TABLE_SQL};
       COMMIT;
     `);
     return;

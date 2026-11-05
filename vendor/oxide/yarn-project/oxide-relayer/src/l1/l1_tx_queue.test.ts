@@ -189,15 +189,18 @@ describe('L1TxQueue', () => {
     await expect(isPending(first.settled)).resolves.toBe(true);
   });
 
-  it('continues after a broadcast failure without consuming its nonce', async () => {
+  it('continues the current batch after a broadcast failure but forbids clean handoff', async () => {
     chain.broadcastFailures.push(new Error('boom'));
-    await enqueue(makeQueue(), async send => {
+    const queue = makeQueue();
+    await enqueue(queue, async send => {
       const first = send({ ...REQUEST, ...GAS });
       const second = send({ ...REQUEST, ...GAS });
       await expect(first).rejects.toThrow('boom');
       await expect(second).resolves.toMatchObject({ nonce: 0 });
     });
     expect(chain.client.sendTransaction).toHaveBeenCalledTimes(2);
+    await expect(queue.stop()).rejects.toThrow('exact-operation handoff is forbidden');
+    queues = queues.filter(candidate => candidate !== queue);
   });
 
   it('keeps the last broadcast as a lower bound when the RPC gives a stale pending count', async () => {
@@ -403,6 +406,14 @@ describe('L1TxQueue', () => {
     await expect(failed).rejects.toThrow('prepare failed');
     await expect(succeeded).resolves.toMatchObject({ nonce: 0 });
   });
+  it('forbids a clean handoff after a broadcast result is unknown', async () => {
+    chain.broadcastFailures.push(new Error('transport response lost'));
+    const queue = makeQueue();
+    await expect(send(queue)).rejects.toThrow('transport response lost');
+    await expect(queue.stop()).rejects.toThrow('exact-operation handoff is forbidden');
+    queues = queues.filter(candidate => candidate !== queue);
+  });
+
 
   it('stops a held queue and rejects queued and new work', async () => {
     const queue = makeQueue();

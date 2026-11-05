@@ -26,8 +26,21 @@ describe('RuntimeLease', () => {
     await generic.close({ cleanHandoff: true });
 
     const exact = await RuntimeLease.acquire(path, 'exact-operation');
+    await exact.activateExactHandoff();
     await exact.close();
   });
+  it('preserves clean handoff until exact runtime identity passes', async () => {
+    const path = await leasePath();
+    const generic = await RuntimeLease.acquire(path, 'generic');
+    await generic.close({ cleanHandoff: true });
+
+    const rejectedIdentity = await RuntimeLease.acquire(path, 'exact-operation');
+    await rejectedIdentity.close();
+    const correctedIdentity = await RuntimeLease.acquire(path, 'exact-operation');
+    await correctedIdentity.activateExactHandoff();
+    await correctedIdentity.close();
+  });
+
 
   it('refuses exact-operation startup without a clean generic handoff', async () => {
     const path = await leasePath();

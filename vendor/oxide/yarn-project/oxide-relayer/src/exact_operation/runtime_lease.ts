@@ -4,11 +4,12 @@ import path from 'node:path';
 
 import { type Database, open } from 'sqlite';
 import sqlite3Driver, { type Database as Sqlite3Database, type Statement as Sqlite3Statement } from 'sqlite3';
+import { EXACT_RUNTIME_LEASE_PATH } from './paths.js';
 
 type SqliteDatabase = Database<Sqlite3Database, Sqlite3Statement>;
 export type RuntimeKind = 'generic' | 'exact-operation';
-export function runtimeLeasePath(sqlitePath: string): string {
-  return `${sqlitePath}.runtime-lease.sqlite3`;
+export function runtimeLeasePath(): string {
+  return EXACT_RUNTIME_LEASE_PATH;
 }
 export function cleanHandoffPath(leasePath: string): string {
   return `${leasePath}.clean-handoff.json`;
@@ -18,12 +19,15 @@ export function cleanHandoffPath(leasePath: string): string {
 
 export class RuntimeLease {
   private closed = false;
+  private exactHandoffActivated: boolean;
 
   private constructor(
     readonly path: string,
     readonly kind: RuntimeKind,
     private readonly db: SqliteDatabase,
-  ) {}
+  ) {
+    this.exactHandoffActivated = kind === 'generic';
+  }
 
   static async acquire(filename: string, kind: RuntimeKind): Promise<RuntimeLease> {
     const resolved = path.resolve(filename);
@@ -50,26 +54,11 @@ export class RuntimeLease {
       await db.exec('BEGIN EXCLUSIVE');
       const handoffPath = cleanHandoffPath(resolved);
       if (kind === 'exact-operation') {
-        try {
-          await assertSecureFile(handoffPath, 'clean generic handoff');
-          const handoff = JSON.parse(await readFile(handoffPath, 'utf8')) as {
-            schema?: unknown;
-            kind?: unknown;
-            clean?: unknown;
-          };
-          if (handoff.schema !== 1 || handoff.kind !== 'generic' || handoff.clean !== true) {
-            throw new Error('invalid clean generic handoff marker');
-          }
-        } catch (cause) {
-          throw new Error('Exact-operation runtime requires a clean generic handoff', { cause });
-        }
+        await assertCleanHandoff(handoffPath);
+      } else {
+        await removeFile(handoffPath);
+        await setLeaseKind(db, kind);
       }
-      await removeFile(handoffPath);
-      await db.run(
-        `INSERT INTO runtime_lease (singleton, kind) VALUES (1, ?)
-         ON CONFLICT(singleton) DO UPDATE SET kind = excluded.kind`,
-        kind,
-      );
       await chmod(resolved, 0o600);
       return new RuntimeLease(resolved, kind, db);
     } catch (error) {
@@ -79,6 +68,17 @@ export class RuntimeLease {
       }
       throw error;
     }
+  }
+
+  async activateExactHandoff(): Promise<void> {
+    if (this.kind !== 'exact-operation' || this.exactHandoffActivated) {
+      throw new Error('Exact-operation handoff activation is not available');
+    }
+    const handoffPath = cleanHandoffPath(this.path);
+    await assertCleanHandoff(handoffPath);
+    await removeFile(handoffPath);
+    await setLeaseKind(this.db, this.kind);
+    this.exactHandoffActivated = true;
   }
 
   async close({ cleanHandoff = false }: { cleanHandoff?: boolean } = {}): Promise<void> {
@@ -134,6 +134,30 @@ async function assertSecureFile(filename: string, label: string): Promise<void> 
   ) {
     throw new Error(`${label} must be one owner-only regular file`);
   }
+}
+
+async function assertCleanHandoff(filename: string): Promise<void> {
+  try {
+    await assertSecureFile(filename, 'clean generic handoff');
+    const handoff = JSON.parse(await readFile(filename, 'utf8')) as {
+      schema?: unknown;
+      kind?: unknown;
+      clean?: unknown;
+    };
+    if (handoff.schema !== 1 || handoff.kind !== 'generic' || handoff.clean !== true) {
+      throw new Error('invalid clean generic handoff marker');
+    }
+  } catch (cause) {
+    throw new Error('Exact-operation runtime requires a clean generic handoff', { cause });
+  }
+}
+
+async function setLeaseKind(db: SqliteDatabase, kind: RuntimeKind): Promise<void> {
+  await db.run(
+    `INSERT INTO runtime_lease (singleton, kind) VALUES (1, ?)
+     ON CONFLICT(singleton) DO UPDATE SET kind = excluded.kind`,
+    kind,
+  );
 }
 
 async function removeFile(filename: string): Promise<void> {

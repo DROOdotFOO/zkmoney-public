@@ -51,6 +51,7 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
   try {
     const runtime = await loadExactRuntimeIdentity();
     assertExactOperationMatches(approval, { ...approval, runtime });
+    await lease.activateExactHandoff();
     // Fixed journal schema validation precedes manifest, enclave and signer work.
     journal = await ExactOperationJournal.open(EXACT_JOURNAL_PATH);
     const node = createNodeClient({ url: config.aztecNodeUrl, apiKey: config.aztecNodeApiKey });

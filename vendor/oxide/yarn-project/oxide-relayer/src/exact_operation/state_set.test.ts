@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -33,6 +33,14 @@ describe('exactStateSetDigest', () => {
     await writeFile(`${database}-wal`, 'changed');
     await expect(exactStateSetDigest(directory)).resolves.not.toBe(before);
   });
+  it('rejects symlinked generic state instead of omitting it', async () => {
+    const directory = await stateDirectory();
+    const target = join(directory, 'state-target');
+    await writeFile(target, 'database');
+    await symlink(target, join(directory, `oxide-relayer-0x${'11'.repeat(20)}.sqlite3`));
+    await expect(exactStateSetDigest(directory)).rejects.toThrow('is not a regular file');
+  });
+
 
   it('rejects startup without generic state', async () => {
     await expect(exactStateSetDigest(await stateDirectory())).rejects.toThrow(/No generic/);

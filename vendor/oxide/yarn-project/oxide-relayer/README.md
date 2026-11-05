@@ -62,29 +62,43 @@ resulting operation ID. The source block must be at or below the proven L2 tip, 
 transaction effect, and an Outbox witness must exist. Recipient plus amount is not an operation identity.
 
 The approval and Ed25519 approval signature are accepted only in a strict inherited `--bundle-fd`. The authority
-public key is baked into the immutable image; it is not caller-selectable. The signed approval binds the source
-commit, immutable image digest, singleton host, generic-state-set digest, Portal, and operation ID. Runtime reads
-host, source commit and state bytes independently from fixed image/runtime paths before network or signer access.
-Never place approval material in inventory, environment files, generated Compose, command arguments, or logs.
-RPC, manifest, Portal, node, and signer references use the ordinary reviewed environment configuration.
+public key is root-owned in the immutable image; it is not caller-selectable by the runtime. The signed approval binds
+the source commit, immutable image digest, singleton host, generic-state-set digest, Portal, and operation ID.
+Runtime reads host, source commit and state bytes independently from fixed image/runtime paths before network or
+signer access. The trusted launcher must independently enforce the singleton host and launch the exact immutable
+digest with a read-only root filesystem and no `/app` mount; a container cannot derive its own registry digest.
+Never place approval material in inventory, environment files, generated Compose, command arguments, or logs. The
+exact CLI reduces every failure to a static stderr message so RPC request bodies, calldata, recipient commitments and
+signed bytes cannot cross the log boundary. RPC, manifest, Portal, node, and signer references use the ordinary
+reviewed environment configuration.
 
-The exact journal and shared lease have fixed `/data` paths. CLI callers cannot select a fresh journal or lease.
-Existing paths must be owner-only regular files under a canonical owner-only directory; symlinks and unrelated
-SQLite schemas are rejected before initialization.
+The exact journal and one global shared lease have fixed `/data` paths independent of the configurable generic state
+path. CLI callers cannot select a fresh journal or lease. Existing paths must be owner-only regular files under a
+canonical owner-only directory; symlinks and noncanonical SQLite schemas, including added views, indexes or triggers,
+are rejected before initialization.
 
 Cutover is fail closed:
 
 1. Freeze intake outside the relayer.
 2. Gracefully stop the generic runtime. Shutdown waits for every signed L1 submission monitor to reach a terminal
-   outcome. Only then does it write the clean-handoff marker while still holding the shared lease.
-3. Preserve and hash every generic SQLite, WAL, and cursor artifact. The hash set is the approved
-   `stateSetDigest`; do not copy, filter, migrate, or rewrite the database.
+   outcome. A transport error after a broadcast may have been accepted and permanently forbids a clean handoff. Only
+   an unambiguous shutdown writes the clean-handoff marker while still holding the global shared lease.
+3. Preserve and hash every generic SQLite, WAL, and cursor artifact. Symlinks are rejected. The hash set is the
+   approved `stateSetDigest`; do not copy, filter, migrate, or rewrite the database.
 4. Confirm the exact singleton host, source commit, launched image digest, journal schema, deployment, source
-   evidence, operation and economics. Start `relay-exact`; acquiring its fixed lease consumes the clean-handoff
-   marker, recomputes generic state bytes and verifies the fixed runtime identity against the signed approval.
+   evidence, operation and economics. Start `relay-exact`; it locks the fixed lease, recomputes generic state bytes,
+   verifies the fixed runtime identity against the signed approval, and only then consumes the clean-handoff marker.
 5. The exact journal records `signing`, signed transaction bytes, and `send_started` durably before the only send.
-   A signing, send, or receipt ambiguity locks the approval and evidence permanently. There is no second send.
+   A signing, send, or receipt ambiguity locks the approval and evidence permanently in that journal. There is no
+   source-level retry or second send.
 6. Restore the generic runtime only under separate approval. Its startup does not consume or alter the exact journal.
+
+This mode is not releasable until approval consumption has an external monotonic anchor. The local journal and
+handoff marker fail closed across ordinary restarts, but a privileged rollback or replacement of the durable volume
+can restore an older valid journal and approval. The repository has no reviewed online approval-consumption service,
+HSM monotonic counter, or equivalent non-rollbackable authority. Do not publish an image or deploy this mode until
+that boundary is selected, implemented, and independently reviewed.
+
 
 While the exact runtime owns the lease, unrelated L1-operation discovery/submission, FPC funding, and epoch-proof
 work are all delayed. Their SQLite rows and ordering remain unchanged. Account for that whole pause before cutover;

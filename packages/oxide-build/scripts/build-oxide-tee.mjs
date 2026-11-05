@@ -104,6 +104,7 @@ const PACKAGES = [
 ]
 
 const BUILD_RELAYER = process.argv.includes("--relayer")
+const CLEAN_BUILD = process.argv.includes("--clean")
 // Topological order, on top of PACKAGES: the relayer imports all three.
 const RELAYER_PACKAGES = ["noir-contracts.js", "telemetry", "watcher-lib", "oxide-relayer"]
 
@@ -307,6 +308,12 @@ function buildPackage(pkg) {
   }
 }
 
+if (CLEAN_BUILD) {
+  for (const pkg of new Set([...BUILT_PACKAGES, ...(BUILD_RELAYER ? RELAYER_PACKAGES : [])])) {
+    rmSync(resolve(YARN_PROJECT, pkg, "dest"), { recursive: true, force: true })
+  }
+}
+
 for (const pkg of BUILT_PACKAGES) buildPackage(pkg)
 
 // --- Relayer (--relayer) ------------------------------------------------------
@@ -321,6 +328,10 @@ const BOUND_CONTRACTS = [
 ]
 const COMPILED_CONTRACTS = resolve(REPO_ROOT, "packages/contracts/src/artifacts/target")
 const NOIR_CONTRACTS_JS = resolve(YARN_PROJECT, "noir-contracts.js")
+if (CLEAN_BUILD && BUILD_RELAYER) {
+  rmSync(resolve(NOIR_CONTRACTS_JS, "src"), { recursive: true, force: true })
+  rmSync(resolve(NOIR_CONTRACTS_JS, "artifacts"), { recursive: true, force: true })
+}
 
 // Types each artifact JSON as a NoirCompiledContract, as generate-types.sh does, so tsc does not
 // infer the multi-MB literal.

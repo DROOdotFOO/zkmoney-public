@@ -2,8 +2,8 @@ ARG NODE_IMAGE=node:24.15.0-bookworm-slim
 FROM ${NODE_IMAGE}
 
 WORKDIR /app
-COPY --chown=node:node .relayer-image/ ./
-RUN mkdir -p /run/oxide-relayer && chown node:node /run/oxide-relayer
+COPY --chown=root:root .relayer-image/ ./
+RUN mkdir -p /run/oxide-relayer
 
 
 USER node

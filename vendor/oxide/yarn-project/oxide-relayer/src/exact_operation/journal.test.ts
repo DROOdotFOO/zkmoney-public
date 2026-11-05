@@ -70,12 +70,28 @@ describe('ExactOperationJournal', () => {
     await generic.close();
     await chmod(path, 0o600);
 
-    await expect(ExactOperationJournal.open(path)).rejects.toThrow(/not an exact-operation journal/);
+    await expect(ExactOperationJournal.open(path)).rejects.toThrow(/not the canonical exact-operation journal schema/);
     const reopened = await open({ filename: path, driver: sqlite3Driver.Database });
     const tables = await reopened.all<{ name: string }[]>(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`,
     );
     await reopened.close();
     expect(tables.map(table => table.name)).toEqual(['relayer_operation']);
+  });
+  it('rejects triggers added to an otherwise canonical journal', async () => {
+    const path = await journalPath();
+    const journal = await ExactOperationJournal.open(path);
+    await journal.close();
+    const modified = await open({ filename: path, driver: sqlite3Driver.Database });
+    await modified.exec(`
+      CREATE TRIGGER erase_ambiguous AFTER UPDATE OF state ON exact_operations
+      WHEN NEW.state = 'ambiguous'
+      BEGIN
+        DELETE FROM exact_operations WHERE operation_id = NEW.operation_id;
+      END
+    `);
+    await modified.close();
+
+    await expect(ExactOperationJournal.open(path)).rejects.toThrow(/not the canonical exact-operation journal schema/);
   });
 });

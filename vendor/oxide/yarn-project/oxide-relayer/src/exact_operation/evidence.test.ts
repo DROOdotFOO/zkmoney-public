@@ -129,6 +129,12 @@ describe('deriveExactOperationObservation', () => {
       ),
     ).toThrow(/operation.id/);
   });
+  it('fails when the finalized source event block identity changes', () => {
+    expect(() =>
+      deriveExactOperationObservation(expected(), evidence({ sourceBlockHash: `0x${'ab'.repeat(32)}` })),
+    ).toThrow(/operation.sourceBlockHash/);
+  });
+
 
   it('fails before finality', () => {
     expect(() => deriveExactOperationObservation(expected(), evidence({ provenBlockNumber: 1233n }))).toThrow(/not proven/);

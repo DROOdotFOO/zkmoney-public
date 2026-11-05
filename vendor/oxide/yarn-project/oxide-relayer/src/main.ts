@@ -53,7 +53,7 @@ export interface RunRelayerOptions {
 const TELEMETRY_STOP_MS = 5_000;
 
 export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}): Promise<void> {
-  const lease = await RuntimeLease.acquire(runtimeLeasePath(config.state.sqlitePath), 'generic');
+  const lease = await RuntimeLease.acquire(runtimeLeasePath(), 'generic');
   let cleanHandoff = false;
   try {
     await runRelayerWithLease(config, opts);
