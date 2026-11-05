@@ -239,7 +239,7 @@ jobs:
           test "$(corepack pnpm --version)" = "9.14.4"
           pnpm fetch --prod --frozen-lockfile
           prewarm="$RUNNER_TEMP/oxide-relayer-production-deploy"
-          pnpm --filter @oxide/oxide-relayer deploy --prod "$prewarm"
+          npm_config_ignore_scripts=true pnpm --filter @oxide/oxide-relayer deploy --prod "$prewarm"
           rm -rf "$prewarm"
           l1_contracts="$GITHUB_WORKSPACE/vendor/oxide/l1-contracts"
           test "$(sha256sum "$l1_contracts/yarn.lock" | cut -d ' ' -f 1)" = "$RELEASE_YARN_LOCK_SHA256"
@@ -296,10 +296,17 @@ jobs:
           authority="$RUNNER_TEMP/approval-public.pem"
           printf '%s' "$APPROVAL_AUTHORITY_PEM_B64" | base64 --decode > "$authority"
           test "$(sha256sum "$authority" | cut -d ' ' -f 1)" = "$APPROVAL_AUTHORITY_SHA256"
-          sudo runuser -u "$USER" -- env \
+          node_root="$(dirname "$(dirname "$(command -v node)")")"
+          store_dir="$(pnpm store path)"
+          test -f "$node_root/include/node/node.h"
+          sudo unshare --net -- runuser -u "$USER" -- env \
             "HOME=$HOME" \
             "PATH=$PATH" \
-            "npm_config_ignore_scripts=true" \
+            "PNPM_HOME=$PNPM_HOME" \
+            "pnpm_config_store_dir=$store_dir" \
+            "npm_config_offline=true" \
+            "npm_config_nodedir=$node_root" \
+            "npm_config_build_from_source=true" \
             "GIT_CONFIG_GLOBAL=$NARGO_GIT_CONFIG" \
             "GIT_ALLOW_PROTOCOL=file" \
             "YARN_ENABLE_NETWORK=false" \
