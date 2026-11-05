@@ -1,5 +1,5 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { lstat, open as openFile, readFile, rename } from 'node:fs/promises';
+import { lstat, open as openFile, readFile, rename, unlink } from 'node:fs/promises';
 
 import { hostname } from 'node:os';
 import { z } from 'zod';
@@ -276,8 +276,36 @@ async function writeRestoreMarker(marker: RestoreMarker): Promise<void> {
   }
 }
 async function recoverRestoreMarkerWrite(): Promise<void> {
-  const pending = await readRestoreMarker(RESTORE_MARKER_TEMP_PATH);
-  if (!pending) return;
+  let metadata;
+  try {
+    metadata = await lstat(RESTORE_MARKER_TEMP_PATH);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1 ||
+    metadata.uid !== process.getuid?.() ||
+    (metadata.mode & 0o777) !== 0o600
+  ) {
+    throw new Error('Interrupted generic restore marker is not one owner-only regular file');
+  }
+  const input = await readFile(RESTORE_MARKER_TEMP_PATH, 'utf8');
+  try {
+    const value = JSON.parse(input) as RestoreMarker;
+    if (`${canonicalJson(value)}\n` !== input) throw new Error('not canonical');
+  } catch {
+    await unlink(RESTORE_MARKER_TEMP_PATH);
+    const directory = await openFile(EXACT_DATA_DIRECTORY, 'r');
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+    return;
+  }
   await rename(RESTORE_MARKER_TEMP_PATH, RESTORE_MARKER_PATH);
   const directory = await openFile(EXACT_DATA_DIRECTORY, 'r');
   try {

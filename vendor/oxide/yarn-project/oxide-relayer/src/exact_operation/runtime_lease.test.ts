@@ -56,6 +56,17 @@ describe('RuntimeLease', () => {
     await exact.activateExactHandoff();
     await exact.close();
   });
+  it('replaces a torn handoff temp only while the generic lease is held', async () => {
+    const path = await leasePath();
+    const generic = await RuntimeLease.acquire(path, 'generic');
+    await writeFile(`${cleanHandoffPath(path)}.tmp`, '', { mode: 0o600 });
+    await generic.close({ cleanHandoff: true });
+
+    const exact = await RuntimeLease.acquire(path, 'exact-operation');
+    await exact.activateExactHandoff();
+    await exact.close();
+  });
+
 
 
 

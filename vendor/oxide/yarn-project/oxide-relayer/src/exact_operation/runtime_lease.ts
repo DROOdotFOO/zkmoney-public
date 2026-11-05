@@ -117,12 +117,19 @@ export class RuntimeLease {
 }
 async function recoverCleanHandoffWrite(temporary: string, marker: string): Promise<void> {
   try {
-    await lstat(temporary);
+    await assertSecureFile(temporary, 'interrupted clean handoff');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
-  await assertCleanHandoff(temporary);
+  const input = await readFile(temporary, 'utf8');
+  try {
+    const handoff = JSON.parse(input) as { schema?: unknown; kind?: unknown; clean?: unknown };
+    if (handoff.schema !== 1 || handoff.kind !== 'generic' || handoff.clean !== true) throw new Error('malformed');
+  } catch {
+    await removeFile(temporary);
+    return;
+  }
   await rename(temporary, marker);
   await syncParent(marker);
 }

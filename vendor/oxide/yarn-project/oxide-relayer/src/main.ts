@@ -12,6 +12,7 @@ import { initTelemetry } from '@oxide/telemetry';
 import { OFAC_SDN_LIST_URL, OfacSdnList } from '@oxide/watcher-lib/sanctions';
 
 import { type PublicClient, zeroAddress } from 'viem';
+import { unlink, writeFile } from 'node:fs/promises';
 
 import { type RunConfig, redactRunConfig } from './cli/config.js';
 import {
@@ -54,6 +55,7 @@ export interface RunRelayerOptions {
 
 /** Bounded final telemetry flush on shutdown, so a hung exporter cannot block exit. */
 const TELEMETRY_STOP_MS = 5_000;
+const GENERIC_READY_PATH = '/tmp/oxide-relayer-generic-ready';
 
 export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}): Promise<void> {
   const lease = await RuntimeLease.acquire(runtimeLeasePath(), 'generic');
@@ -66,6 +68,7 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
   }
 }
 async function runRelayerWithLease(config: RunConfig, opts: RunRelayerOptions): Promise<void> {
+  await removeGenericReadyMarker();
   const log = createLogger('oxide-relayer');
   log.info(`oxide-relayer version ${relayerVersion()}`);
   log.info('Starting relayer', { config: redactRunConfig(config) });
@@ -340,8 +343,14 @@ async function runRelayerWithLease(config: RunConfig, opts: RunRelayerOptions): 
     }
 
     manifestRefresher?.start();
+    await writeFile(
+      GENERIC_READY_PATH,
+      `${JSON.stringify({ schema: 'oxide-relayer.generic-ready.v1', pid: process.pid })}\n`,
+      { mode: 0o400 },
+    );
     await waitForShutdown(opts.shutdownSignal);
   } finally {
+    await removeGenericReadyMarker();
     await manifestRefresher?.stop();
     // Stop the L1 tx queue together with the workers. A worker run can wait on a queue hold that only the queue stop
     // ends.
@@ -367,6 +376,14 @@ async function runRelayerWithLease(config: RunConfig, opts: RunRelayerOptions): 
     }
   }
 }
+async function removeGenericReadyMarker(): Promise<void> {
+  try {
+    await unlink(GENERIC_READY_PATH);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
 
 /** The hostname of an L1 RPC URL, for logs that must not leak the provider API key the URL embeds. */
 function rpcHost(url: string): string {
