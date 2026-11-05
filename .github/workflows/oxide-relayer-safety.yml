@@ -74,10 +74,10 @@ jobs:
             echo "$HOME/.aztec/current/node_modules/.bin"
             echo "$HOME/.aztec/current/internal-bin"
           } >> "$GITHUB_PATH"
-      - name: Build and stage reviewed runtime
+      - name: Build reviewed source
         run: |
-          openssl genpkey -algorithm ED25519 -out "$RUNNER_TEMP/approval-private.pem"
-          openssl pkey -in "$RUNNER_TEMP/approval-private.pem" -pubout -out "$RUNNER_TEMP/approval-public.pem"
-          OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE="$RUNNER_TEMP/approval-public.pem" pnpm prepare:relayer-image
+          pnpm build:relayer -- --clean
+          node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js relay-exact --help
+          node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js authorize-generic-restore --help
       - name: Run complete source tests
         run: pnpm --filter @oxide/oxide-relayer test
