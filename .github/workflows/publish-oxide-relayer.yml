@@ -215,6 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(corepack pnpm --version)" = "9.14.4"
+          pnpm fetch --prod --frozen-lockfile
           prewarm="$RUNNER_TEMP/oxide-relayer-production-deploy"
           pnpm --filter @oxide/oxide-relayer deploy --prod "$prewarm"
           rm -rf "$prewarm"
@@ -281,7 +282,7 @@ jobs:
             "YARN_ENABLE_NETWORK=false" \
             "YARN_ENABLE_IMMUTABLE_CACHE=true" \
             "YARN_ENABLE_IMMUTABLE_INSTALLS=true" \
-            "PNPM_CONFIG_OFFLINE=true" \
+            "npm_config_offline=true" \
             "FOUNDRY_SOLC_VERSION=$SOLC_BINARY" \
             "FOUNDRY_OFFLINE=true" \
             "OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE=$authority" \
