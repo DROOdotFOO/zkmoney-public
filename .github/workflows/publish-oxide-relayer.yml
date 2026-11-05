@@ -98,6 +98,7 @@ jobs:
             echo "$HOME/.aztec/bin"
             echo "$HOME/.aztec/current/bin"
             echo "$HOME/.aztec/current/node_modules/.bin"
+            echo "$HOME/.aztec/current/internal-bin"
           } >> "$GITHUB_PATH"
 
       - name: Materialize reviewed Nargo dependency mirrors
