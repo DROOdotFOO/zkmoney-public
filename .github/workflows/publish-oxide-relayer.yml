@@ -80,16 +80,21 @@ jobs:
         run: |
           set -euo pipefail
           node_root="$(dirname "$(dirname "$(command -v node)")")"
+          store_dir="$(pnpm store path)"
           test -f "$node_root/include/node/node.h"
           sudo unshare --net -- runuser -u "$USER" -- env \
             "HOME=$HOME" \
             "PATH=$PATH" \
             "npm_config_nodedir=$node_root" \
+            "PNPM_HOME=$PNPM_HOME" \
+            "pnpm_config_store_dir=$store_dir" \
             "npm_config_build_from_source=true" \
             pnpm rebuild sqlite3
           sudo unshare --net -- runuser -u "$USER" -- env \
             "HOME=$HOME" \
             "PATH=$PATH" \
+            "PNPM_HOME=$PNPM_HOME" \
+            "pnpm_config_store_dir=$store_dir" \
             pnpm --filter @oxide/oxide-relayer exec node -e 'require("sqlite3")'
 
       - name: Set up exact Foundry
