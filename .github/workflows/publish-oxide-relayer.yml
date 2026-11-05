@@ -199,6 +199,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(corepack pnpm --version)" = "9.14.4"
           l1_contracts="$GITHUB_WORKSPACE/vendor/oxide/l1-contracts"
           test "$(sha256sum "$l1_contracts/yarn.lock" | cut -d ' ' -f 1)" = "$RELEASE_YARN_LOCK_SHA256"
           yarn_version="$(cd "$l1_contracts" && corepack yarn --version)"
