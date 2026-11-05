@@ -27,8 +27,8 @@ env:
   AZTEC_INSTALLER_SHA256: d1f1fc919a70e1404626c952a389f27d36c1459297d94c09168c66e37d2a89d4
   NARGO_DEPENDENCY_LOCK_SHA256: a8e71695e77ce7e785627eb23f45b0e676c6ff85c4ac54910b8b2c79b8bd7cd9
   SOLIDITY_DEPENDENCY_LOCK_SHA256: 99a1c9ea55c84b5e7279dad95a6e7ded68518b971941f363963a9d0a39f82219
-  YARN_VERSION: 4.5.2
-  YARN_LOCK_SHA256: 5a7ea8ae4343cee282adeacf25866b47f64780be2f604a5fa95675a98597ec73
+  RELEASE_YARN_VERSION: 4.5.2
+  RELEASE_YARN_LOCK_SHA256: 5a7ea8ae4343cee282adeacf25866b47f64780be2f604a5fa95675a98597ec73
   SOLC_VERSION: 0.8.30
   SOLC_URL: https://github.com/argotorg/solidity/releases/download/v0.8.30/solc-static-linux
   SOLC_SHA256: f3e987dc6ecebd4bd350c48edcbc320b46cf9e3109bd3fc3d88f1acaf4c428f7
@@ -200,9 +200,9 @@ jobs:
         run: |
           set -euo pipefail
           l1_contracts="$GITHUB_WORKSPACE/vendor/oxide/l1-contracts"
-          test "$(sha256sum "$l1_contracts/yarn.lock" | cut -d ' ' -f 1)" = "$YARN_LOCK_SHA256"
+          test "$(sha256sum "$l1_contracts/yarn.lock" | cut -d ' ' -f 1)" = "$RELEASE_YARN_LOCK_SHA256"
           yarn_version="$(cd "$l1_contracts" && corepack yarn --version)"
-          test "$yarn_version" = "$YARN_VERSION"
+          test "$yarn_version" = "$RELEASE_YARN_VERSION"
           (
             cd "$l1_contracts"
             YARN_ENABLE_IMMUTABLE_INSTALLS=true corepack yarn install --immutable
@@ -217,8 +217,8 @@ jobs:
           "$solc_binary" --version | grep -F "Version: $SOLC_VERSION"
           offline_inputs="$RUNNER_TEMP/offline-build-inputs.json"
           jq -n \
-            --arg yarnVersion "$YARN_VERSION" \
-            --arg yarnLockSha256 "$YARN_LOCK_SHA256" \
+            --arg yarnVersion "$RELEASE_YARN_VERSION" \
+            --arg yarnLockSha256 "$RELEASE_YARN_LOCK_SHA256" \
             --arg yarnCacheSha256 "$yarn_cache_sha256" \
             --arg solcVersion "$SOLC_VERSION" \
             --arg solcUrl "$SOLC_URL" \
@@ -228,8 +228,8 @@ jobs:
             > "$offline_inputs"
           test -z "$(git status --porcelain --untracked-files=no)"
           {
-            printf 'YARN_OFFLINE_CACHE=%s\n' "$yarn_cache"
-            printf 'YARN_OFFLINE_CACHE_SHA256=%s\n' "$yarn_cache_sha256"
+            printf 'RELEASE_YARN_OFFLINE_CACHE=%s\n' "$yarn_cache"
+            printf 'RELEASE_YARN_OFFLINE_CACHE_SHA256=%s\n' "$yarn_cache_sha256"
             printf 'SOLC_BINARY=%s\n' "$solc_binary"
             printf 'OFFLINE_BUILD_INPUTS=%s\n' "$offline_inputs"
           } >> "$GITHUB_ENV"
@@ -254,7 +254,7 @@ jobs:
             pnpm prepare:relayer-image
           test "$(cat .relayer-image/source-commit)" = "$SOURCE_COMMIT"
           test "$(sha256sum .relayer-image/approval-authority.pem | cut -d ' ' -f 1)" = "$APPROVAL_AUTHORITY_SHA256"
-          test "$(tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$YARN_OFFLINE_CACHE" -cf - . | sha256sum | cut -d ' ' -f 1)" = "$YARN_OFFLINE_CACHE_SHA256"
+          test "$(tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$RELEASE_YARN_OFFLINE_CACHE" -cf - . | sha256sum | cut -d ' ' -f 1)" = "$RELEASE_YARN_OFFLINE_CACHE_SHA256"
           test "$(sha256sum "$SOLC_BINARY" | cut -d ' ' -f 1)" = "$SOLC_SHA256"
           test -z "$(git status --porcelain --untracked-files=no)"
 
@@ -740,8 +740,8 @@ jobs:
             --arg offlineBuildInputsSha256 "$(sha256sum release-evidence/offline-build-inputs.json | cut -d ' ' -f 1)" \
             --slurpfile offlineBuildInputs release-evidence/offline-build-inputs.json \
             --slurpfile buildMaterials release-evidence/build-materials.json \
-            --arg yarnVersion "$YARN_VERSION" \
-            --arg yarnLockSha256 "$YARN_LOCK_SHA256" \
+            --arg yarnVersion "$RELEASE_YARN_VERSION" \
+            --arg yarnLockSha256 "$RELEASE_YARN_LOCK_SHA256" \
             --arg solcVersion "$SOLC_VERSION" \
             --arg solcUrl "$SOLC_URL" \
             --arg solcSha256 "$SOLC_SHA256" \
