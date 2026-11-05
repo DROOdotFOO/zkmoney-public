@@ -19,6 +19,7 @@ env:
   APPROVAL_AUTHORITY_PEM_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQXVmMTNWdlAxUWZoU2dSM1d2d2dvMmJXbkMyNkhCSEZVMmtwTkoxQkRmQTg9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=
   APPROVAL_AUTHORITY_SHA256: 3ceda4bf55e4c1b17765a28fc01e824765d4c02ef852749a76eb5d877c1cf137
   NODE_BUILD_VERSION: 24.22.2
+  NODE_NATIVE_BUILD_IMAGE: node:24.15.0-bookworm@sha256:f22d6a1f082c02f292e86929b5b0442ac2e5eaf438a5dea9b1566601c3e05940
   NODE_RUNTIME_IMAGE: node:24.15.0-bookworm-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
   NODE_RUNTIME_DIGEST: sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
   FOUNDRY_VERSION: v1.9.0
@@ -216,6 +217,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(corepack pnpm --version)" = "9.14.4"
+          docker pull "$NODE_NATIVE_BUILD_IMAGE"
           pnpm fetch --prod --frozen-lockfile
           prewarm="$RUNNER_TEMP/oxide-relayer-production-deploy"
           npm_config_ignore_scripts=true pnpm --filter @oxide/oxide-relayer deploy --prod "$prewarm"
@@ -257,9 +259,10 @@ jobs:
             --arg solcVersion "$SOLC_VERSION" \
             --arg solcUrl "$SOLC_URL" \
             --arg solcSha256 "$SOLC_SHA256" \
+            --arg nodeNativeBuildImage "$NODE_NATIVE_BUILD_IMAGE" \
             --arg crsBaseUrl "$crs_base_url" \
             --slurpfile solidityDependencies "$SOLIDITY_DEPENDENCY_RESOLUTIONS" \
-            '{yarn:{version:$yarnVersion,lockSha256:$yarnLockSha256,cacheSha256:$yarnCacheSha256},solc:{version:$solcVersion,url:$solcUrl,sha256:$solcSha256},crs:[{name:"bn254_g1_compressed.dat",url:($crsBaseUrl+"/g1_compressed.dat"),bytes:16777216,sha256:"1d03ebeb73e1a6d426e44a2ccc88b04125ca185ab9d1679817380502a723fa80"},{name:"bn254_g2.dat",url:($crsBaseUrl+"/g2.dat"),bytes:128,sha256:"01797bfc4de5a96f0e516a9ea4537d18786dc30cb991aca4274c95822b69c32f"},{name:"grumpkin_g1_v2.flat.dat",url:($crsBaseUrl+"/grumpkin_g1_v2.dat"),bytes:4194304,sha256:"64236c9455e75aeea77a94587ea607eed2e978d2609a421d66bf10bb9698b8fd"}],solidityDependencies:$solidityDependencies[0]}' \
+            '{yarn:{version:$yarnVersion,lockSha256:$yarnLockSha256,cacheSha256:$yarnCacheSha256},solc:{version:$solcVersion,url:$solcUrl,sha256:$solcSha256},nodeNativeBuildImage:$nodeNativeBuildImage,crs:[{name:"bn254_g1_compressed.dat",url:($crsBaseUrl+"/g1_compressed.dat"),bytes:16777216,sha256:"1d03ebeb73e1a6d426e44a2ccc88b04125ca185ab9d1679817380502a723fa80"},{name:"bn254_g2.dat",url:($crsBaseUrl+"/g2.dat"),bytes:128,sha256:"01797bfc4de5a96f0e516a9ea4537d18786dc30cb991aca4274c95822b69c32f"},{name:"grumpkin_g1_v2.flat.dat",url:($crsBaseUrl+"/grumpkin_g1_v2.dat"),bytes:4194304,sha256:"64236c9455e75aeea77a94587ea607eed2e978d2609a421d66bf10bb9698b8fd"}],solidityDependencies:$solidityDependencies[0]}' \
             > "$offline_inputs"
           test -z "$(git status --porcelain --untracked-files=no)"
           {
@@ -318,7 +321,15 @@ jobs:
             copy_runtime_asset watcher-lib dest
             "$RELEASE_REAL_COREPACK" pnpm --dir "$destination" rebuild --pending
             sqlite_dir="$destination/node_modules/.pnpm/sqlite3@5.1.7/node_modules/sqlite3"
-            (cd "$sqlite_dir" && ./node_modules/.bin/node-gyp rebuild)
+            docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+              --user "$(id -u):$(id -g)" \
+              --env HOME=/tmp \
+              --env npm_config_build_from_source=true \
+              --env npm_config_nodedir=/usr/local \
+              --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+              --workdir "$sqlite_dir" \
+              "$NODE_NATIVE_BUILD_IMAGE" \
+              ./node_modules/.bin/node-gyp rebuild
             node -e 'require(process.argv[1])' "$destination/node_modules/sqlite3"
             exit 0
           fi
@@ -331,6 +342,8 @@ jobs:
             "PNPM_HOME=$PNPM_HOME" \
             "RELEASE_REAL_COREPACK=$real_corepack" \
             "RELEASE_PREWARM_DEPLOY=$RELEASE_PREWARM_DEPLOY" \
+            "GITHUB_WORKSPACE=$GITHUB_WORKSPACE" \
+            "NODE_NATIVE_BUILD_IMAGE=$NODE_NATIVE_BUILD_IMAGE" \
             "pnpm_config_store_dir=$store_dir" \
             "npm_config_offline=true" \
             "npm_config_nodedir=$node_root" \
@@ -378,13 +391,14 @@ jobs:
             --arg aztecBinarySha256 "$(sha256sum "$(readlink -f "$(command -v aztec)")" | cut -d ' ' -f 1)" \
             --arg aztecInstallerSha256 "$AZTEC_INSTALLER_SHA256" \
             --arg runtimeBase "$NODE_RUNTIME_IMAGE" \
+            --arg nativeBuildBase "$NODE_NATIVE_BUILD_IMAGE" \
             --arg nargoDependencyLockSha256 "$(sha256sum release-materials/nargo-dependencies.lock | cut -d ' ' -f 1)" \
             --arg nargoDependencyResolutionsSha256 "$(sha256sum release-materials/nargo-dependency-resolutions.json | cut -d ' ' -f 1)" \
             --arg solidityDependencyLockSha256 "$(sha256sum release-materials/solidity-dependencies.lock | cut -d ' ' -f 1)" \
             --arg solidityDependencyResolutionsSha256 "$(sha256sum release-materials/solidity-dependency-resolutions.json | cut -d ' ' -f 1)" \
             --arg offlineBuildInputsSha256 "$(sha256sum release-materials/offline-build-inputs.json | cut -d ' ' -f 1)" \
             --arg dockerVersion "$(docker version --format '{{.Client.Version}}/{{.Server.Version}}')" \
-            '{sourceCommit:$sourceCommit,sourceArchiveSha256:$sourceArchiveSha256,stagedFilesystemSha256:$stagedFilesystemSha256,nodeVersion:$nodeVersion,nodeBinarySha256:$nodeBinarySha256,pnpmVersion:$pnpmVersion,forgeVersion:$forgeVersion,nargoVersion:$nargoVersion,nargoBinarySha256:$nargoBinarySha256,nargoDependencyLockSha256:$nargoDependencyLockSha256,nargoDependencyResolutionsSha256:$nargoDependencyResolutionsSha256,solidityDependencyLockSha256:$solidityDependencyLockSha256,solidityDependencyResolutionsSha256:$solidityDependencyResolutionsSha256,offlineBuildInputsSha256:$offlineBuildInputsSha256,aztecVersion:$aztecVersion,aztecBinarySha256:$aztecBinarySha256,aztecInstallerSha256:$aztecInstallerSha256,runtimeBase:$runtimeBase,dockerVersion:$dockerVersion}' \
+            '{sourceCommit:$sourceCommit,sourceArchiveSha256:$sourceArchiveSha256,stagedFilesystemSha256:$stagedFilesystemSha256,nodeVersion:$nodeVersion,nodeBinarySha256:$nodeBinarySha256,pnpmVersion:$pnpmVersion,forgeVersion:$forgeVersion,nargoVersion:$nargoVersion,nargoBinarySha256:$nargoBinarySha256,nargoDependencyLockSha256:$nargoDependencyLockSha256,nargoDependencyResolutionsSha256:$nargoDependencyResolutionsSha256,solidityDependencyLockSha256:$solidityDependencyLockSha256,solidityDependencyResolutionsSha256:$solidityDependencyResolutionsSha256,offlineBuildInputsSha256:$offlineBuildInputsSha256,aztecVersion:$aztecVersion,aztecBinarySha256:$aztecBinarySha256,aztecInstallerSha256:$aztecInstallerSha256,nativeBuildBase:$nativeBuildBase,runtimeBase:$runtimeBase,dockerVersion:$dockerVersion}' \
             > release-materials/build-materials.json
           (cd release-materials && sha256sum build-materials.json nargo-dependencies.lock nargo-dependency-resolutions.json solidity-dependencies.lock solidity-dependency-resolutions.json offline-build-inputs.json "zkmoney-public-${SOURCE_TAG}.tar.gz" > SHA256SUMS)
 
