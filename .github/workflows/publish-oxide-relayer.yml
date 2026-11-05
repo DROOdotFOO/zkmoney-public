@@ -231,6 +231,19 @@ jobs:
           test "$(sha256sum "$solc_binary" | cut -d ' ' -f 1)" = "$SOLC_SHA256"
           chmod 0555 "$solc_binary"
           "$solc_binary" --version | grep -F "Version: $SOLC_VERSION"
+          crs_base_url="https://crs.aztec-cdn.foundation"
+          crs_dir="$HOME/.bb-crs"
+          mkdir -p "$crs_dir"
+          curl -fsSL --range 0-16777215 "$crs_base_url/g1_compressed.dat" -o "$crs_dir/bn254_g1_compressed.dat"
+          curl -fsSL --range 0-127 "$crs_base_url/g2.dat" -o "$crs_dir/bn254_g2.dat"
+          curl -fsSL --range 0-4194303 "$crs_base_url/grumpkin_g1_v2.dat" -o "$crs_dir/grumpkin_g1_v2.flat.dat"
+          test "$(stat -c %s "$crs_dir/bn254_g1_compressed.dat")" = "16777216"
+          test "$(stat -c %s "$crs_dir/bn254_g2.dat")" = "128"
+          test "$(stat -c %s "$crs_dir/grumpkin_g1_v2.flat.dat")" = "4194304"
+          test "$(sha256sum "$crs_dir/bn254_g1_compressed.dat" | cut -d ' ' -f 1)" = "1d03ebeb73e1a6d426e44a2ccc88b04125ca185ab9d1679817380502a723fa80"
+          test "$(sha256sum "$crs_dir/bn254_g2.dat" | cut -d ' ' -f 1)" = "01797bfc4de5a96f0e516a9ea4537d18786dc30cb991aca4274c95822b69c32f"
+          test "$(sha256sum "$crs_dir/grumpkin_g1_v2.flat.dat" | cut -d ' ' -f 1)" = "64236c9455e75aeea77a94587ea607eed2e978d2609a421d66bf10bb9698b8fd"
+          chmod 0444 "$crs_dir"/*.dat
           offline_inputs="$RUNNER_TEMP/offline-build-inputs.json"
           jq -n \
             --arg yarnVersion "$RELEASE_YARN_VERSION" \
@@ -239,8 +252,9 @@ jobs:
             --arg solcVersion "$SOLC_VERSION" \
             --arg solcUrl "$SOLC_URL" \
             --arg solcSha256 "$SOLC_SHA256" \
+            --arg crsBaseUrl "$crs_base_url" \
             --slurpfile solidityDependencies "$SOLIDITY_DEPENDENCY_RESOLUTIONS" \
-            '{yarn:{version:$yarnVersion,lockSha256:$yarnLockSha256,cacheSha256:$yarnCacheSha256},solc:{version:$solcVersion,url:$solcUrl,sha256:$solcSha256},solidityDependencies:$solidityDependencies[0]}' \
+            '{yarn:{version:$yarnVersion,lockSha256:$yarnLockSha256,cacheSha256:$yarnCacheSha256},solc:{version:$solcVersion,url:$solcUrl,sha256:$solcSha256},crs:[{name:"bn254_g1_compressed.dat",url:($crsBaseUrl+"/g1_compressed.dat"),bytes:16777216,sha256:"1d03ebeb73e1a6d426e44a2ccc88b04125ca185ab9d1679817380502a723fa80"},{name:"bn254_g2.dat",url:($crsBaseUrl+"/g2.dat"),bytes:128,sha256:"01797bfc4de5a96f0e516a9ea4537d18786dc30cb991aca4274c95822b69c32f"},{name:"grumpkin_g1_v2.flat.dat",url:($crsBaseUrl+"/grumpkin_g1_v2.dat"),bytes:4194304,sha256:"64236c9455e75aeea77a94587ea607eed2e978d2609a421d66bf10bb9698b8fd"}],solidityDependencies:$solidityDependencies[0]}' \
             > "$offline_inputs"
           test -z "$(git status --porcelain --untracked-files=no)"
           {
