@@ -294,6 +294,16 @@ jobs:
             cp -a "$RELEASE_PREWARM_DEPLOY/." "$destination/"
             rm -rf "$destination/dest"
             cp -a vendor/oxide/yarn-project/oxide-relayer/dest "$destination/dest"
+            rm -rf \
+              "$destination/node_modules/@oxide/l1-contracts/dest" \
+              "$destination/node_modules/@oxide/noir-contracts.js/artifacts" \
+              "$destination/node_modules/@oxide/noir-contracts.js/dest" \
+              "$destination/node_modules/@oxide/oxide-client/dest" \
+              "$destination/node_modules/@oxide/oxide-lib/dest" \
+              "$destination/node_modules/@oxide/oxide-lib-tee/dest" \
+              "$destination/node_modules/@oxide/refund-proof/dest" \
+              "$destination/node_modules/@oxide/telemetry/dest" \
+              "$destination/node_modules/@oxide/watcher-lib/dest"
             "$RELEASE_REAL_COREPACK" pnpm --dir "$destination" rebuild --pending
             sqlite_dir="$destination/node_modules/.pnpm/sqlite3@5.1.7/node_modules/sqlite3"
             (cd "$sqlite_dir" && ./node_modules/.bin/node-gyp rebuild)
