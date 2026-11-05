@@ -12,17 +12,21 @@ import { createPublicClient } from 'viem';
 import type { SignerConfig } from '../cli/config.js';
 import { resolveDeploymentEnvManifest } from '../config/deployment_env_manifest.js';
 import { chainFor, getL1PublicClient, l1Transport } from '../l1/client.js';
+import { GenericSubmissionJournal } from '../l1/submission_journal.js';
 import { WithdrawalCompletion } from '../l1_operations/withdrawal_completion.js';
 import { loadSigner } from '../signers/index.js';
 import { assertExactApprovalToken } from './approval.js';
 import { assertExactOperationMatches, parseExactOperationApproval } from './contract.js';
 import { ExactL1Execution } from './execution.js';
+import { configuredWitnessAuthority, loadWitnessCredentials } from './generic_quarantine.js';
 import { ExactOperationJournal } from './journal.js';
+import { S3ExactApprovalClaimStore } from './monotonic_claim.js';
 import { ExactOperationObserver } from './observer.js';
 import {
   EXACT_APPROVAL_AUTHORITY_PATH,
   EXACT_JOURNAL_PATH,
   EXACT_RUNTIME_LEASE_PATH,
+  GENERIC_SUBMISSION_JOURNAL_PATH,
 } from './paths.js';
 import { loadExactRuntimeIdentity } from './runtime_identity.js';
 import { relayExactOperation } from './runner.js';
@@ -48,12 +52,15 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
 
   const lease = await RuntimeLease.acquire(EXACT_RUNTIME_LEASE_PATH, 'exact-operation');
   let journal: ExactOperationJournal | undefined;
+  let genericSubmissionJournal: GenericSubmissionJournal | undefined;
   try {
     const runtime = await loadExactRuntimeIdentity();
     assertExactOperationMatches(approval, { ...approval, runtime });
     await lease.activateExactHandoff();
     // Fixed journal schema validation precedes manifest, enclave and signer work.
     journal = await ExactOperationJournal.open(EXACT_JOURNAL_PATH);
+    genericSubmissionJournal = await GenericSubmissionJournal.open(GENERIC_SUBMISSION_JOURNAL_PATH);
+    await genericSubmissionJournal.assertNoUnresolved();
     const node = createNodeClient({ url: config.aztecNodeUrl, apiKey: config.aztecNodeApiKey });
     const manifest = await resolveDeploymentEnvManifest({
       deploymentEnvManifestUrl: config.deploymentEnvManifestUrl,
@@ -102,12 +109,26 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
           ),
       ));
     const execution = new ExactL1Execution(observer, loadCompletion, publicClient, loadAccount, Number(chainId), executorVersion);
-    return await relayExactOperation({ approval, journal, execution });
+    const configuredWitness = configuredWitnessAuthority();
+    if (
+      approval.witness.bucket !== configuredWitness.bucket ||
+      approval.witness.region !== configuredWitness.region ||
+      approval.witness.expectedOwner !== configuredWitness.expectedOwner ||
+      approval.witness.prefix !== configuredWitness.prefix
+    ) {
+      throw new Error('Approved witness authority does not match reviewed runtime configuration');
+    }
+    const claimStore = new S3ExactApprovalClaimStore(configuredWitness, {
+      credentials: await loadWitnessCredentials(),
+    });
+    return await relayExactOperation({ approval, journal, execution, claimStore });
   } finally {
     await journal?.close();
+    await genericSubmissionJournal?.close();
     await lease.close();
   }
 }
+
 
 async function readApprovalMaterial(bundleFd: number): Promise<{
   approval: unknown;

@@ -1,6 +1,9 @@
 import { startAnvil } from '@aztec-labs/ethereum/test';
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   type Address,
   type PublicActions,
@@ -18,6 +21,7 @@ import { foundry } from 'viem/chains';
 
 import { l1Transport } from './client.js';
 import { L1TxQueue, type SentL1Tx } from './l1_tx_queue.js';
+import { GenericSubmissionJournal } from './submission_journal.js';
 
 /** Anvil's first dev account, funded at genesis. */
 const ACCOUNT = privateKeyToAccount('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
@@ -32,6 +36,8 @@ describe('L1 submission broadcasts against anvil', () => {
   let l1TxQueue: L1TxQueue;
   /** Every send of the current test, so the teardown can wait for the monitors that still read. */
   let sent: SentL1Tx[];
+  let journal: GenericSubmissionJournal;
+  let directory: string;
 
   beforeAll(async () => {
     ({ rpcUrl: url, stop: stopAnvil } = await startAnvil({ port: 0 }));
@@ -44,11 +50,14 @@ describe('L1 submission broadcasts against anvil', () => {
     await stopAnvil?.();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     sent = [];
+    directory = await realpath(await mkdtemp(join(tmpdir(), 'oxide-l1-queue-anvil-')));
+    journal = await GenericSubmissionJournal.open(join(directory, 'submission.sqlite3'));
     l1TxQueue = new L1TxQueue({
       client: createPublicClient({ chain: foundry, transport: l1Transport(url) }),
       wallet: createWalletClient({ chain: foundry, account: ACCOUNT, transport: l1Transport(url) }),
+      submissionJournal: journal,
       blockWindow: BLOCK_WINDOW,
       pollIntervalMs: 50,
     });
@@ -59,6 +68,8 @@ describe('L1 submission broadcasts against anvil', () => {
     await l1TxQueue.stop();
     await chain.mine({ blocks: BLOCK_WINDOW + 3 });
     await Promise.allSettled(sent.map(tx => tx.settled));
+    await journal.close();
+    await rm(directory, { recursive: true, force: true });
   });
 
   function senderNonce(): Promise<number> {
@@ -73,7 +84,13 @@ describe('L1 submission broadcasts against anvil', () => {
       { gas: 21_000n, maxFeePerGas: 4_000_000_000n, maxPriorityFeePerGas: 300_000_000n },
     ];
 
-    const batch = await l1TxQueue.enqueue(send => Promise.all(gases.map(gas => send({ ...REQUEST, ...gas }))));
+    const batch = await l1TxQueue.enqueue(send =>
+      Promise.all(
+        gases.map((gas, index) =>
+          send({ ...REQUEST, ...gas }, { kind: 'l1-operation', id: `anvil-batch-${index}` }),
+        ),
+      ),
+    );
     sent.push(...batch);
 
     expect(batch.map(tx => tx.nonce)).toEqual([before, before + 1, before + 2]);

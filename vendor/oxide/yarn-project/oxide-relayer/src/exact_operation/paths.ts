@@ -1,6 +1,10 @@
 export const EXACT_DATA_DIRECTORY = '/data';
 export const EXACT_JOURNAL_PATH = '/data/exact-operation.sqlite3';
 export const EXACT_RUNTIME_LEASE_PATH = '/data/oxide-relayer.runtime-lease.sqlite3';
+export const GENERIC_SUBMISSION_JOURNAL_PATH = '/data/generic-submission.sqlite3';
 export const EXACT_APPROVAL_AUTHORITY_PATH = '/app/approval-authority.pem';
 export const EXACT_SOURCE_COMMIT_PATH = '/app/source-commit';
 export const EXACT_RUNTIME_IDENTITY_PATH = '/run/oxide-relayer/runtime-identity.json';
+export const EXACT_STATE_INVENTORY_PATH = '/run/oxide-relayer/state-inventory.json';
+export const EXACT_WITNESS_ACCESS_KEY_ID_PATH = '/run/secrets/oxide-relayer/witness_access_key_id';
+export const EXACT_WITNESS_SECRET_ACCESS_KEY_PATH = '/run/secrets/oxide-relayer/witness_secret_access_key';

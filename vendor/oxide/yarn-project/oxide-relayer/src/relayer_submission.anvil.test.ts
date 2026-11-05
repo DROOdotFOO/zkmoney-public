@@ -2,8 +2,11 @@ import { startAnvil } from '@aztec-labs/ethereum/test';
 import { sleep } from '@aztec-labs/foundation/sleep';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from '@jest/globals';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   type Address,
   type Hex,
@@ -24,6 +27,7 @@ import { foundry } from 'viem/chains';
 
 import { l1Transport } from './l1/client.js';
 import { L1TxQueue, type SendL1Tx, type SentL1Tx } from './l1/l1_tx_queue.js';
+import { GenericSubmissionJournal } from './l1/submission_journal.js';
 
 const ACCOUNT = privateKeyToAccount('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
 const SUCCESS_TARGET = '0x1111111111111111111111111111111111111111' as Address;
@@ -243,6 +247,9 @@ describe('Relayer submission through Protect', () => {
   let relay: TestProtectRelay;
   let batcher: L1TxQueue;
   let sent: SentL1Tx[] = [];
+  let journal: GenericSubmissionJournal;
+  let journalDirectory: string;
+  let operationSequence = 0;
 
   beforeAll(async () => {
     ({ rpcUrl: anvilUrl, stop: stopAnvil } = await startAnvil({ port: 0 }));
@@ -255,6 +262,8 @@ describe('Relayer submission through Protect', () => {
 
     relay = new TestProtectRelay(anvilUrl);
     await relay.start();
+    journalDirectory = await realpath(await mkdtemp(join(tmpdir(), 'oxide-protect-submission-')));
+    journal = await GenericSubmissionJournal.open(join(journalDirectory, 'submission.sqlite3'));
     batcher = new L1TxQueue({
       client: createPublicClient({ chain: foundry, transport: l1Transport(anvilUrl) }),
       wallet: createWalletClient({
@@ -265,6 +274,7 @@ describe('Relayer submission through Protect', () => {
       blockWindow: BLOCK_RANGE,
       protectTxStatusUrl: relay.statusUrl,
       pollIntervalMs: 25,
+      submissionJournal: journal,
     });
   }, 30_000);
 
@@ -277,13 +287,19 @@ describe('Relayer submission through Protect', () => {
   });
 
   afterAll(async () => {
+    await journal?.close();
+    if (journalDirectory) await rm(journalDirectory, { recursive: true, force: true });
     await relay?.stop();
     await stopAnvil?.();
   });
 
   it('does not let a rejected L1 operation transaction time out later L1 actions', async () => {
     const before = await chain.getTransactionCount({ address: ACCOUNT.address, blockTag: 'latest' });
-    const submit = (sender: SendL1Tx, to: Address) => sender({ to, data: '0x', gas: 100_000n, ...GAS_PRICE });
+    const submit = (sender: SendL1Tx, to: Address) =>
+      sender(
+        { to, data: '0x', gas: 100_000n, ...GAS_PRICE },
+        { kind: 'l1-operation', id: `protect-${operationSequence++}-${to}` },
+      );
     // The batcher sends in arrival order: the operations enqueued first get the first nonces.
     const operationBatch = batcher.enqueue(sender =>
       Promise.all([
@@ -367,6 +383,9 @@ describe('Relayer submission through the read RPC', () => {
   let chain: TestClient & PublicClient;
   let batcher: L1TxQueue;
   let sent: SentL1Tx[] = [];
+  let journal: GenericSubmissionJournal;
+  let journalDirectory: string;
+  let operationSequence = 0;
 
   beforeAll(async () => {
     const { rpcUrl: anvilUrl, stop } = await startAnvil({ port: 0 });
@@ -376,11 +395,14 @@ describe('Relayer submission through the read RPC', () => {
     ) as unknown as TestClient & PublicClient;
     // Mining off: a submitted tx stays pending until the test mines a block.
     await chain.setAutomine(false);
+    journalDirectory = await realpath(await mkdtemp(join(tmpdir(), 'oxide-public-submission-')));
+    journal = await GenericSubmissionJournal.open(join(journalDirectory, 'submission.sqlite3'));
     batcher = new L1TxQueue({
       client: createPublicClient({ chain: foundry, transport: l1Transport(anvilUrl) }),
       wallet: createWalletClient({ chain: foundry, account: ACCOUNT, transport: l1Transport(anvilUrl) }),
       blockWindow: BLOCK_RANGE,
       pollIntervalMs: 25,
+      submissionJournal: journal,
     });
   }, 30_000);
 
@@ -393,11 +415,17 @@ describe('Relayer submission through the read RPC', () => {
   });
 
   afterAll(async () => {
+    await journal?.close();
+    if (journalDirectory) await rm(journalDirectory, { recursive: true, force: true });
     await stopAnvil?.();
   });
 
   it('holds the next batch past the block window and the local expiry until the pending transaction lands', async () => {
-    const submit = (sender: SendL1Tx, to: Address) => sender({ to, data: '0x', gas: 100_000n, ...GAS_PRICE });
+    const submit = (sender: SendL1Tx, to: Address) =>
+      sender(
+        { to, data: '0x', gas: 100_000n, ...GAS_PRICE },
+        { kind: 'l1-operation', id: `public-${operationSequence++}-${to}` },
+      );
     const [first, second] = await batcher.enqueue(sender =>
       Promise.all([submit(sender, SUCCESS_TARGET), submit(sender, LATER_OPERATION_TARGETS[0])]),
     );

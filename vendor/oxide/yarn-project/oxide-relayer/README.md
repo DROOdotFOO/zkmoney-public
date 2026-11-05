@@ -61,50 +61,54 @@ the exact Portal deployment, source transaction hash and block, the single Broad
 resulting operation ID. The source block must be at or below the proven L2 tip, the withdrawal must verify against the
 transaction effect, and an Outbox witness must exist. Recipient plus amount is not an operation identity.
 
-The approval and Ed25519 approval signature are accepted only in a strict inherited `--bundle-fd`. The authority
-public key is root-owned in the immutable image; it is not caller-selectable by the runtime. The signed approval binds
-the source commit, immutable image digest, singleton host, generic-state-set digest, Portal, and operation ID.
-Runtime reads host, source commit and state bytes independently from fixed image/runtime paths before network or
-signer access. The trusted launcher must independently enforce the singleton host and launch the exact immutable
-digest with a read-only root filesystem and no `/app` mount; a container cannot derive its own registry digest.
-Never place approval material in inventory, environment files, generated Compose, command arguments, or logs. The
-exact CLI reduces every failure to a static stderr message so RPC request bodies, calldata, recipient commitments and
-signed bytes cannot cross the log boundary. RPC, manifest, Portal, node, and signer references use the ordinary
-reviewed environment configuration.
+The approval and Ed25519 approval signature are accepted only through a strict inherited `--bundle-fd`. The
+root-owned authority in the immutable image is not caller-selectable. Approval schema v2 binds an approval nonce,
+source commit, immutable image digest, singleton host, schema identity, complete state-inventory digest, canonical
+state digest, Portal, exact operation, and an S3 Object Lock witness authority.
 
-The exact journal and one global shared lease have fixed `/data` paths. Exact-compatible generic shutdown writes a
-handoff only when the generic state template is exactly `/data/oxide-relayer-{portal}.sqlite3`; custom state paths
-remain supported for ordinary generic operation but can never authorize exact cutover. CLI callers cannot select a
-fresh exact journal or lease. Existing paths must be owner-only regular files under a canonical owner-only directory;
-symlinks and noncanonical SQLite schemas, including added views, indexes or triggers, are rejected before
-initialization.
+Before TEE or transaction signing, the runtime creates the witness claim with S3 `If-None-Match: *`, SHA-256
+checksum, and `COMPLIANCE` retention through `9999-12-31T23:59:59Z`. It verifies the exact returned object version
+and retention before continuing. A collision permanently consumes the approval. Authority unavailability,
+read-after-write failure, deletion markers, incomplete listings, local-journal rollback, or any witness/journal
+inconsistency fails closed. Witness object keys and canonical bodies contain operation identity but no recipient
+address, recipient commitment, or private linkage. The local receipt remains in the mode-0600 exact journal.
+
+Runtime identity comes from fixed image/runtime paths. The complete inventory manifest binds every declared bind
+mount, named volume, tmpfs, Compose project identity, canonical SQLite/WAL/SHM file, historical database, approved
+exporter ledger, exact journal, generic ambiguity journal, signer nonce record, and control artifact. Unknown mounts,
+unknown files, symlinks, hard links, missing canonical files, or changed canonical bytes are rejected. The launcher
+must independently enforce one host and one immutable image digest with a read-only root filesystem and no `/app`
+mount. Approval material never enters inventory, environment files, generated Compose, argv, or logs.
+
+Every generic L1 send now has the same durable ambiguity contract as exact mode: build and sign once, persist and
+fsync operation identity, signer commitment, chain ID, nonce, signed hash, protected signed bytes, and `prepared`;
+transition to `sending`; call `eth_sendRawTransaction` once; persist the exact response; then mark accepted. A crash
+before send leaves `prepared`; disconnect, timeout, malformed response, or a crash after response receipt leaves a
+durable unresolved state. Restart never rebuilds, re-signs, resends, or advances that operation.
 
 Cutover is fail closed:
 
 1. Freeze intake outside the relayer.
-2. Gracefully stop the generic runtime. Shutdown waits for every signed L1 submission monitor to reach a terminal
-   outcome. A transport error after a broadcast may have been accepted and permanently forbids a clean handoff. Only
-   an unambiguous shutdown writes the clean-handoff marker while still holding the global shared lease.
-3. Preserve and hash every generic SQLite, WAL, and cursor artifact. Symlinks are rejected. The hash set is the
-   approved `stateSetDigest`; do not copy, filter, migrate, or rewrite the database.
-4. Confirm the exact singleton host, source commit, launched image digest, journal schema, deployment, source
-   evidence, operation and economics. Start `relay-exact`; it locks the fixed lease, recomputes generic state bytes,
-   verifies the fixed runtime identity against the signed approval, and only then consumes the clean-handoff marker.
-5. The exact journal records `signing`, signed transaction bytes, and `send_started` durably before the only send.
-   A signing, send, or receipt ambiguity locks the approval and evidence permanently in that journal. There is no
-   source-level retry or second send.
-6. Restore the generic runtime only under separate approval. Its startup does not consume or alter the exact journal.
+2. Gracefully stop the generic runtime. Shutdown must prove no active signing, send, or durable ambiguity and write
+   the clean-handoff marker while holding the shared lease.
+3. Inventory and hash every reachable state artifact without copying, compacting, migrating, filtering, or rewriting
+   it. Bind `stateInventoryDigest` and `canonicalStateDigest` into approval and witness evidence.
+4. Confirm host, source, image, schema, deployment, source event, operation, economics, witness authority, and
+   inventory. `relay-exact` consumes the external claim before any signature.
+5. Enforce independent hard limits:
+   `TEE_FINALIZATION_SIGNATURE_REQUESTS_MAX=1`, `L1_TRANSACTION_SIGNINGS_MAX=1`, and
+   `ETH_SEND_RAW_TRANSACTION_CALLS_MAX=1`. The exact journal persists signed bytes and the pre-send boundary.
+6. Any ambiguous exact send blocks all submission for the signer and chain. Exact success remains permanently
+   quarantined from generic submission; duplicate safety never relies on a destination revert.
+7. `authorize-generic-restore --bundle-fd 3` accepts a separate signed, non-persisted restore approval bound to
+   confirmed terminal evidence, the immutable witness claim set, and current state digests. It writes only a
+   mode-0600 evidence digest marker. Generic startup independently rechecks both witness and local journal, and
+   keeps every exact operation excluded.
 
-This mode is not releasable until approval consumption has an external monotonic anchor. The local journal and
-handoff marker fail closed across ordinary restarts, but a privileged rollback or replacement of the durable volume
-can restore an older valid journal and approval. The repository has no reviewed online approval-consumption service,
-HSM monotonic counter, or equivalent non-rollbackable authority. Do not publish an image or deploy this mode until
-that boundary is selected, implemented, and independently reviewed.
+While exact mode owns the lease, unrelated L1-operation discovery/submission, FPC funding, and epoch-proof work are
+delayed. Their rows, bytes, and ordering remain unchanged. A pre-send failure has no automatic generic takeover; an
+ambiguous send is not restorable by this path and requires separately reviewed reconciliation.
 
-
-While the exact runtime owns the lease, unrelated L1-operation discovery/submission, FPC funding, and epoch-proof
-work are all delayed. Their SQLite rows and ordering remain unchanged. Account for that whole pause before cutover;
-do not use this mode if those obligations cannot be delayed safely.
 
 ## User flows
 

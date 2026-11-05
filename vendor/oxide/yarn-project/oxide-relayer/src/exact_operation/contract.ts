@@ -1,10 +1,16 @@
 import { z } from 'zod';
 
+export const EXACT_DATABASE_SCHEMA_IDENTITY =
+  'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v1+lease-v1' as const;
+
+
 export interface ExactOperationRuntimeIdentity {
   host: string;
   sourceCommit: string;
   imageDigest: string;
-  stateSetDigest: string;
+  schemaIdentity: typeof EXACT_DATABASE_SCHEMA_IDENTITY;
+  stateInventoryDigest: string;
+  canonicalStateDigest: string;
 }
 
 export interface ExactDeploymentIdentity {
@@ -15,6 +21,15 @@ export interface ExactDeploymentIdentity {
   l2Token: string;
   broadcaster: string;
   operationExecutor: string;
+}
+
+export interface ExactWitnessAuthority {
+  bucket: string;
+  region: string;
+  expectedOwner: string;
+  prefix: string;
+  retentionMode: 'COMPLIANCE';
+  retainUntil: '9999-12-31T23:59:59.000Z';
 }
 
 export interface ExactOperationIdentity {
@@ -50,8 +65,10 @@ export interface ExactOperationEconomics {
 }
 
 export interface ExactOperationApproval {
-  schema: 'oxide-relayer.exact-operation.v1';
+  schema: 'oxide-relayer.exact-operation.v2';
+  approvalNonce: string;
   runtime: ExactOperationRuntimeIdentity;
+  witness: ExactWitnessAuthority;
   deployment: ExactDeploymentIdentity;
   operation: ExactOperationIdentity;
   withdrawal: ExactWithdrawalIdentity;
@@ -66,13 +83,24 @@ const exactOperationRuntimeIdentitySchema: z.ZodType<ExactOperationRuntimeIdenti
   host: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
   sourceCommit: z.string().regex(/^[0-9a-f]{40}$/),
   imageDigest: sha256,
-  stateSetDigest: sha256,
+  schemaIdentity: z.literal(EXACT_DATABASE_SCHEMA_IDENTITY),
+  stateInventoryDigest: sha256,
+  canonicalStateDigest: sha256,
 });
 
 
 const exactOperationApprovalSchema: z.ZodType<ExactOperationApproval> = z.strictObject({
-  schema: z.literal('oxide-relayer.exact-operation.v1'),
+  schema: z.literal('oxide-relayer.exact-operation.v2'),
+  approvalNonce: lowercaseHex(32),
   runtime: exactOperationRuntimeIdentitySchema,
+  witness: z.strictObject({
+    bucket: z.string().regex(/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/),
+    region: z.string().regex(/^[a-z0-9-]+$/),
+    expectedOwner: z.string().regex(/^[0-9]{12}$/),
+    prefix: z.string().regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/),
+    retentionMode: z.literal('COMPLIANCE'),
+    retainUntil: z.literal('9999-12-31T23:59:59.000Z'),
+  }),
   deployment: z.strictObject({
     label: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
     chainId: positiveDecimal,

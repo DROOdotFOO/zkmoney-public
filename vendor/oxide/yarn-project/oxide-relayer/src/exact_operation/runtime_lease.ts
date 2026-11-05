@@ -7,6 +7,8 @@ import sqlite3Driver, { type Database as Sqlite3Database, type Statement as Sqli
 import { EXACT_RUNTIME_LEASE_PATH } from './paths.js';
 
 type SqliteDatabase = Database<Sqlite3Database, Sqlite3Statement>;
+const RUNTIME_LEASE_TABLE_SQL =
+  'CREATE TABLE runtime_lease (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), kind TEXT NOT NULL)';
 export type RuntimeKind = 'generic' | 'exact-operation';
 export function runtimeLeasePath(): string {
   return EXACT_RUNTIME_LEASE_PATH;
@@ -32,6 +34,14 @@ export class RuntimeLease {
   static async acquire(filename: string, kind: RuntimeKind): Promise<RuntimeLease> {
     const resolved = path.resolve(filename);
     await assertSecureLeasePath(resolved);
+    try {
+      await assertEmptyOrExactLeaseFile(resolved);
+    } catch (error) {
+      if (isBusy(error)) {
+        throw new Error(`Oxide runtime lease ${filename} is already held`, { cause: error });
+      }
+      throw error;
+    }
     // sqlite3 is a CJS native addon whose runtime constructor is on the default export.
     // eslint-disable-next-line import-x/no-named-as-default-member
     const mode =
@@ -48,9 +58,8 @@ export class RuntimeLease {
       await db.exec('PRAGMA busy_timeout = 0');
       await db.exec('PRAGMA journal_mode = DELETE');
       await db.exec('PRAGMA synchronous = FULL');
-      await db.exec(
-        'CREATE TABLE IF NOT EXISTS runtime_lease (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), kind TEXT NOT NULL)',
-      );
+      await assertEmptyOrExactLease(db);
+      await db.exec(RUNTIME_LEASE_TABLE_SQL.replace('CREATE TABLE ', 'CREATE TABLE IF NOT EXISTS '));
       await db.exec('BEGIN EXCLUSIVE');
       const handoffPath = cleanHandoffPath(resolved);
       if (kind === 'exact-operation') {
@@ -134,6 +143,42 @@ async function assertSecureFile(filename: string, label: string): Promise<void> 
   ) {
     throw new Error(`${label} must be one owner-only regular file`);
   }
+}
+
+async function assertEmptyOrExactLeaseFile(filename: string): Promise<void> {
+  const mode = sqlite3Driver.OPEN_READONLY | sqlite3Driver.OPEN_FULLMUTEX | sqlite3Driver.OPEN_URI;
+  const db = await open({
+    filename: `file:${filename}?mode=ro&nofollow=1`,
+    driver: sqlite3Driver.Database,
+    mode,
+  });
+  try {
+    await assertEmptyOrExactLease(db);
+  } finally {
+    await db.close();
+  }
+}
+
+async function assertEmptyOrExactLease(db: SqliteDatabase): Promise<void> {
+  const objects = await db.all<{ type: string; name: string; sql: string | null }[]>(
+    `SELECT type, name, sql FROM sqlite_master
+     WHERE name NOT LIKE 'sqlite_%'
+     ORDER BY type, name`,
+  );
+  if (objects.length === 0) return;
+  if (
+    objects.length !== 1 ||
+    objects[0]?.type !== 'table' ||
+    objects[0]?.name !== 'runtime_lease' ||
+    objects[0]?.sql === null ||
+    normalizeSql(objects[0].sql) !== normalizeSql(RUNTIME_LEASE_TABLE_SQL)
+  ) {
+    throw new Error('Existing SQLite file is not the canonical runtime lease schema');
+  }
+}
+
+function normalizeSql(sql: string): string {
+  return sql.replace(/\s+/g, ' ').trim();
 }
 
 async function assertCleanHandoff(filename: string): Promise<void> {

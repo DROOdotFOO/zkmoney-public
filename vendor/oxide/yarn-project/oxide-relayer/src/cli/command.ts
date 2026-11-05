@@ -29,6 +29,7 @@ import { parseCsv, parseEthAddresses } from './parse.js';
 export function createCliProgram(
   run: (config: RunConfig) => Promise<void> | void,
   runExact?: (config: RunExactOperationConfig) => Promise<unknown> | void,
+  authorizeRestore?: (bundleFd: number) => Promise<unknown> | void,
 ): Command {
   const program = new Command();
   program
@@ -56,6 +57,21 @@ export function createCliProgram(
             await runExact(exactConfigFromEnvironment(options));
           } catch {
             throw new Error('relay-exact failed closed; sensitive failure details suppressed');
+          }
+        }),
+    );
+  }
+  if (authorizeRestore) {
+    program.addCommand(
+      new Command('authorize-generic-restore')
+        .description('consume one signed restore approval without starting generic workers')
+        .requiredOption('--bundle-fd <fd>', 'inherited descriptor containing the signed one-run restore approval', integerFd)
+        .allowExcessArguments(false)
+        .action(async options => {
+          try {
+            await authorizeRestore(options.bundleFd);
+          } catch {
+            throw new Error('generic restore authorization failed closed; sensitive failure details suppressed');
           }
         }),
     );

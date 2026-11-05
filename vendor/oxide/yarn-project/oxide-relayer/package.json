@@ -11,11 +11,12 @@
   "scripts": {
     "build": "rm -rf dest && tsc -p tsconfig.json",
     "start": "node ./dest/bin/oxide-relayer.js run",
-    "lint": "../node_modules/.bin/eslint --cache ./src",
-    "lint:fix": "../node_modules/.bin/eslint --cache --fix ./src",
-    "test": "NODE_NO_WARNINGS=1 node --experimental-vm-modules ../node_modules/.bin/jest --runInBand"
+    "lint": "eslint --cache ./src",
+    "lint:fix": "eslint --cache --fix ./src",
+    "test": "NODE_NO_WARNINGS=1 NODE_OPTIONS=--experimental-vm-modules jest --runInBand"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1045.0",
     "@aztec-labs/aztec.js": "6.0.0",
     "@aztec-labs/constants": "6.0.0",
     "@aztec-labs/ethereum": "6.0.0",

@@ -97,7 +97,7 @@ describe('BatchPublisher', () => {
 
     await publisher.publish(portal, [claim], FEES);
 
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: l1Portal.toString(), gas: GAS, ...FEES }));
+    expect(send.mock.calls[0][0]).toEqual(expect.objectContaining({ to: l1Portal.toString(), gas: GAS, ...FEES }));
   });
 
   it('simulates and sends each batch on its own portal, with that portal subsidy', async () => {

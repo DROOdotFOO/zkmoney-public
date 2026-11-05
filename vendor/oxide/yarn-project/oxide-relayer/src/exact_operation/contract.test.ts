@@ -8,12 +8,23 @@ import {
 import { approvedSigningChainId } from './execution.js';
 
 const approval: ExactOperationApproval = {
-  schema: 'oxide-relayer.exact-operation.v1',
+  schema: 'oxide-relayer.exact-operation.v2',
+  approvalNonce: `0x${'aa'.repeat(32)}`,
   runtime: {
     host: 'ovh-ubuntu1',
     sourceCommit: '0123456789abcdef0123456789abcdef01234567',
     imageDigest: `sha256:${'11'.repeat(32)}`,
-    stateSetDigest: `sha256:${'22'.repeat(32)}`,
+    schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v1+lease-v1',
+    stateInventoryDigest: `sha256:${'22'.repeat(32)}`,
+    canonicalStateDigest: `sha256:${'33'.repeat(32)}`,
+  },
+  witness: {
+    bucket: 'oxide-approval-witness',
+    region: 'us-east-1',
+    expectedOwner: '123456789012',
+    prefix: 'oxide-relayer/production',
+    retentionMode: 'COMPLIANCE',
+    retainUntil: '9999-12-31T23:59:59.000Z',
   },
   deployment: {
     label: 'dep-v6',

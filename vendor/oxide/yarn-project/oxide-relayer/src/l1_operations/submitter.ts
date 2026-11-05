@@ -25,7 +25,13 @@ import { type FeeValuesEIP1559, type Hex, type PublicClient, type TransactionRec
 
 import { CauseTransitions } from '../cause_transitions.js';
 import type { L1OperationsSubmissionConfig } from '../cli/config.js';
-import { type L1TxQueue, type SendL1Tx, type SentL1Tx, isAboveMaxFeePerGas } from '../l1/l1_tx_queue.js';
+import {
+  DurableSubmissionAmbiguityError,
+  type L1TxQueue,
+  type SendL1Tx,
+  type SentL1Tx,
+  isAboveMaxFeePerGas,
+} from '../l1/l1_tx_queue.js';
 import { type PriceOracle, readTokenUnitsPerEth } from '../price_oracle/price_oracle.js';
 import type { RelayerDeferReason, RelayerTelemetry } from '../relayer_telemetry.js';
 import type { PendingL1Operation, PendingL1OperationReason, StateStore } from '../state/types.js';
@@ -386,8 +392,14 @@ export class L1OperationSubmitter {
   ): Promise<void> {
     let sent: SentL1Tx;
     try {
-      sent = await send({ to: this.deps.executor.toString(), data, gas: gasLimit, ...feeValues });
+      sent = await send(
+        { to: this.deps.executor.toString(), data, gas: gasLimit, ...feeValues },
+        { kind: 'l1-operation', id: operation.operationId },
+      );
     } catch (err) {
+      if (err instanceof DurableSubmissionAmbiguityError) {
+        throw err;
+      }
       this.log.warn('L1 operation broadcast failed; deferring', {
         event: 'l1_operation_deferred',
         cause: 'broadcast_failed',

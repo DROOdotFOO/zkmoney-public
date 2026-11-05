@@ -3,13 +3,19 @@ import path from 'node:path';
 
 import { type Database, open } from 'sqlite';
 import sqlite3Driver, { type Database as Sqlite3Database, type Statement as Sqlite3Statement } from 'sqlite3';
+import type { ExactApprovalClaimReceipt } from './monotonic_claim.js';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const META_TABLE_SQL = `CREATE TABLE exact_operation_meta (schema_version INTEGER NOT NULL)`;
 const OPERATIONS_TABLE_SQL = `CREATE TABLE exact_operations (
   approval_digest TEXT PRIMARY KEY,
   operation_id TEXT NOT NULL UNIQUE,
   state TEXT NOT NULL CHECK (state IN ('approved', 'signing', 'signed', 'send_started', 'sent', 'confirmed', 'failed', 'ambiguous')),
+  witness_key TEXT NOT NULL,
+  witness_version_id TEXT NOT NULL,
+  witness_checksum_sha256 TEXT NOT NULL,
+  witness_retain_until TEXT NOT NULL,
+  witness_body TEXT NOT NULL,
   signed_tx BLOB,
   signed_tx_hash TEXT,
   l1_tx_hash TEXT,
@@ -35,6 +41,7 @@ export interface ExactOperationRecord {
   signedTx?: Buffer;
   signedTxHash?: string;
   l1TxHash?: string;
+  witness: ExactApprovalClaimReceipt;
 }
 
 
@@ -78,7 +85,11 @@ export class ExactOperationJournal {
     }
   }
 
-  async consumeApproval(approvalDigest: string, operationId: string): Promise<void> {
+  async consumeApproval(
+    approvalDigest: string,
+    operationId: string,
+    witness: ExactApprovalClaimReceipt,
+  ): Promise<void> {
     await this.transaction(async () => {
       const existing = await this.db.get<{ operation_id: string }>(
         'SELECT operation_id FROM exact_operations WHERE approval_digest = ? OR operation_id = ? LIMIT 1',
@@ -90,14 +101,47 @@ export class ExactOperationJournal {
       }
       await this.db.run(
         `INSERT INTO exact_operations
-          (approval_digest, operation_id, state, created_at, updated_at)
-         VALUES (?, ?, 'approved', ?, ?)`,
+          (approval_digest, operation_id, state, witness_key, witness_version_id,
+           witness_checksum_sha256, witness_retain_until, witness_body, created_at, updated_at)
+         VALUES (?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?)`,
         approvalDigest,
         operationId,
+        witness.key,
+        witness.versionId,
+        witness.checksumSha256,
+        witness.retainUntil,
+        witness.body,
         new Date().toISOString(),
         new Date().toISOString(),
       );
     });
+  }
+
+  async findConsumption(
+    approvalDigest: string,
+    operationId: string,
+  ): Promise<ExactApprovalClaimReceipt | undefined> {
+    const row = await this.db.get<{
+      witness_key: string;
+      witness_version_id: string;
+      witness_checksum_sha256: string;
+      witness_retain_until: string;
+      witness_body: string;
+    }>(
+      `SELECT witness_key, witness_version_id, witness_checksum_sha256, witness_retain_until, witness_body
+       FROM exact_operations WHERE approval_digest = ? OR operation_id = ? LIMIT 1`,
+      approvalDigest,
+      operationId,
+    );
+    return row === undefined
+      ? undefined
+      : {
+          key: row.witness_key,
+          versionId: row.witness_version_id,
+          checksumSha256: row.witness_checksum_sha256,
+          retainUntil: row.witness_retain_until,
+          body: row.witness_body,
+        };
   }
 
 
@@ -172,11 +216,18 @@ export class ExactOperationJournal {
       state: ExactOperationState;
       operation_id: string;
       approval_digest: string;
+      witness_key: string;
+      witness_version_id: string;
+      witness_checksum_sha256: string;
+      witness_retain_until: string;
+      witness_body: string;
       signed_tx: Buffer | null;
       signed_tx_hash: string | null;
       l1_tx_hash: string | null;
     }>(
-      `SELECT state, operation_id, approval_digest, signed_tx, signed_tx_hash, l1_tx_hash
+      `SELECT state, operation_id, approval_digest, witness_key, witness_version_id,
+              witness_checksum_sha256, witness_retain_until, witness_body,
+              signed_tx, signed_tx_hash, l1_tx_hash
        FROM exact_operations WHERE operation_id = ?`,
       operationId,
     );
@@ -187,6 +238,13 @@ export class ExactOperationJournal {
       state: row.state,
       operationId: row.operation_id,
       approvalDigest: row.approval_digest,
+      witness: {
+        key: row.witness_key,
+        versionId: row.witness_version_id,
+        checksumSha256: row.witness_checksum_sha256,
+        retainUntil: row.witness_retain_until,
+        body: row.witness_body,
+      },
       ...(row.signed_tx === null ? {} : { signedTx: row.signed_tx }),
       ...(row.signed_tx_hash === null ? {} : { signedTxHash: row.signed_tx_hash }),
       ...(row.l1_tx_hash === null ? {} : { l1TxHash: row.l1_tx_hash }),
@@ -231,17 +289,87 @@ export class ExactOperationJournal {
   }
 
   private async transaction(action: () => Promise<void>): Promise<void> {
-    let committed = false;
     await this.db.exec('BEGIN IMMEDIATE');
     try {
       await action();
       await this.db.exec('COMMIT');
-      committed = true;
-    } finally {
-      if (!committed) {
-        await this.db.exec('ROLLBACK').catch(() => undefined);
+    } catch (error) {
+      try {
+        await this.db.exec('ROLLBACK');
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], 'Exact-operation journal transaction rollback failed');
       }
+      throw error;
     }
+  }
+}
+
+export async function auditExactOperationJournal(filename: string): Promise<ExactOperationRecord[]> {
+  const resolved = path.resolve(filename);
+  await assertSecureParent(resolved);
+  try {
+    const metadata = await lstat(resolved);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.nlink !== 1 ||
+      metadata.uid !== process.getuid?.() ||
+      (metadata.mode & 0o777) !== 0o600
+    ) {
+      throw new Error('Exact-operation journal must be one owner-only regular file');
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const mode = sqlite3Driver.OPEN_READONLY | sqlite3Driver.OPEN_FULLMUTEX | sqlite3Driver.OPEN_URI;
+  const db = await open({
+    filename: `file:${resolved}?mode=ro&nofollow=1`,
+    driver: sqlite3Driver.Database,
+    mode,
+  });
+  try {
+    await assertEmptyOrExactJournal(db);
+    const hasSchema = await db.get<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'exact_operations'",
+    );
+    if (!hasSchema) return [];
+    const rows = await db.all<
+      Array<{
+        state: ExactOperationState;
+        operation_id: string;
+        approval_digest: string;
+        signed_tx: Buffer | null;
+        signed_tx_hash: string | null;
+        l1_tx_hash: string | null;
+        witness_key: string;
+        witness_version_id: string;
+        witness_checksum_sha256: string;
+        witness_retain_until: string;
+        witness_body: string;
+      }>
+    >(
+      `SELECT state, operation_id, approval_digest, signed_tx, signed_tx_hash, l1_tx_hash,
+              witness_key, witness_version_id, witness_checksum_sha256, witness_retain_until, witness_body
+       FROM exact_operations ORDER BY operation_id`,
+    );
+    return rows.map(row => ({
+      state: row.state,
+      operationId: row.operation_id,
+      approvalDigest: row.approval_digest,
+      ...(row.signed_tx === null ? {} : { signedTx: row.signed_tx }),
+      ...(row.signed_tx_hash === null ? {} : { signedTxHash: row.signed_tx_hash }),
+      ...(row.l1_tx_hash === null ? {} : { l1TxHash: row.l1_tx_hash }),
+      witness: {
+        key: row.witness_key,
+        versionId: row.witness_version_id,
+        checksumSha256: row.witness_checksum_sha256,
+        retainUntil: row.witness_retain_until,
+        body: row.witness_body,
+      },
+    }));
+  } finally {
+    await db.close();
   }
 }
 

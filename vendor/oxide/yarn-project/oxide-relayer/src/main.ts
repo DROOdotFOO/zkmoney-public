@@ -20,12 +20,15 @@ import {
   resolveDeploymentEnvManifest,
 } from './config/deployment_env_manifest.js';
 import { DeploymentManifestRefresher } from './config/deployment_manifest_refresher.js';
+import { GENERIC_SUBMISSION_JOURNAL_PATH } from './exact_operation/paths.js';
 import { RuntimeLease, runtimeLeasePath } from './exact_operation/runtime_lease.js';
 
 import { FpcFunderCaller } from './fpc_funding/fpc_funder_caller.js';
 import { HistoricalDeploymentSupervisor } from './historical_deployment_supervisor.js';
 import { getL1PublicClient } from './l1/client.js';
 import { assertNotFlashbots } from './l1/flashbots_protect.js';
+import { genericSubmissionQuarantine } from './exact_operation/generic_quarantine.js';
+import { GenericSubmissionJournal } from './l1/submission_journal.js';
 import { createL1TxQueue } from './l1/l1_tx_queue.js';
 import { L1OperationRelayer } from './l1_operations/l1_operation_relayer.js';
 import { L1OperationRouter } from './l1_operations/l1_operation_router.js';
@@ -103,6 +106,10 @@ async function runRelayerWithLease(config: RunConfig, opts: RunRelayerOptions): 
     rollupVersion: publicConfig.rollupVersion,
     ...(config.modes.includes('l1-operations') ? { broadcaster: publicConfig.broadcaster.toString() } : {}),
   });
+  const quarantinedOperationIds = await genericSubmissionQuarantine();
+  const submissionJournal = await GenericSubmissionJournal.open(GENERIC_SUBMISSION_JOURNAL_PATH);
+  await submissionJournal.assertNoUnresolved();
+
 
   const signer =
     config.disableSubmission && !hasSignerKey(config.signer)
@@ -114,8 +121,10 @@ async function runRelayerWithLease(config: RunConfig, opts: RunRelayerOptions): 
     readL1RpcUrl: config.readL1RpcUrl,
     flashbotsBlockRange: config.flashbotsBlockRange,
     disableSubmission: config.disableSubmission,
+    submissionJournal,
     maxFeePerGasCap:
       config.l1MaxFeePerGasGwei === undefined ? undefined : BigInt(Math.trunc(config.l1MaxFeePerGasGwei * 1e9)),
+    forbiddenOperationIds: quarantinedOperationIds,
   });
 
   // Endpoint arrives through the standard OTel env vars set by the deploy; external operators set nothing
@@ -348,6 +357,7 @@ async function runRelayerWithLease(config: RunConfig, opts: RunRelayerOptions): 
     ]);
     const closeResults = await Promise.allSettled(historicalSupervisors.map(supervisor => supervisor.close()));
     await state?.close();
+    await submissionJournal.close();
     sdn?.stop();
     const shutdownFailures = [...stopResults, ...closeResults]
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')

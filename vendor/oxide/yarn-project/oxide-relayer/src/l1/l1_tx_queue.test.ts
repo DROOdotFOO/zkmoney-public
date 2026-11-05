@@ -12,15 +12,73 @@ import {
   type TransactionRequestEIP1559,
   type Transport,
   type WalletClient,
+  keccak256,
+  toHex,
 } from 'viem';
 
 import { LogRecorder } from '../log_recorder.js';
 import { L1TxQueue, type SendL1Tx, type SentL1Tx, isAboveMaxFeePerGas } from './l1_tx_queue.js';
+import type {
+  DurableGenericSubmission,
+  DurableSubmissionJournal,
+  GenericSubmissionState,
+} from './submission_journal.js';
 
 const ADDRESS: Address = '0x00000000000000000000000000000000000000aa';
 const REQUEST = { to: '0x0000000000000000000000000000000000000001', data: '0x' } satisfies TransactionRequestEIP1559;
 const GAS: TransactionRequestEIP1559 = { gas: 21_000n, maxFeePerGas: 10n, maxPriorityFeePerGas: 1n };
 const BLOCK_WINDOW = 5;
+
+class MemorySubmissionJournal implements DurableSubmissionJournal {
+  readonly rows = new Map<string, DurableGenericSubmission>();
+
+  async assertNoUnresolved(): Promise<void> {
+    if ([...this.rows.values()].some(row => row.state !== 'accepted')) throw new Error('unresolved');
+  }
+
+  async prepare(record: Omit<DurableGenericSubmission, 'state' | 'response'>): Promise<void> {
+    if (this.rows.has(record.operationIdentity)) throw new Error('already journaled');
+    this.rows.set(record.operationIdentity, { ...record, state: 'prepared' });
+  }
+
+  async beginSend(operationIdentity: string): Promise<void> {
+    this.transition(operationIdentity, 'prepared', 'sending');
+  }
+
+  async recordResponse(operationIdentity: string, response: string): Promise<void> {
+    this.transition(operationIdentity, 'sending', 'response_received', response);
+  }
+
+  async recordAccepted(operationIdentity: string): Promise<void> {
+    this.transition(operationIdentity, 'response_received', 'accepted');
+  }
+
+  async recordAmbiguous(operationIdentity: string, response?: string): Promise<void> {
+    const row = this.require(operationIdentity);
+    this.rows.set(operationIdentity, { ...row, state: 'ambiguous', ...(response === undefined ? {} : { response }) });
+  }
+
+  async read(operationIdentity: string): Promise<DurableGenericSubmission | undefined> {
+    return this.rows.get(operationIdentity);
+  }
+
+  private transition(
+    operationIdentity: string,
+    expected: GenericSubmissionState,
+    state: GenericSubmissionState,
+    response?: string,
+  ): void {
+    const row = this.require(operationIdentity);
+    if (row.state !== expected) throw new Error(`expected ${expected}`);
+    this.rows.set(operationIdentity, { ...row, state, ...(response === undefined ? {} : { response }) });
+  }
+
+  private require(operationIdentity: string): DurableGenericSubmission {
+    const row = this.rows.get(operationIdentity);
+    if (!row) throw new Error('not journaled');
+    return row;
+  }
+}
 
 /** The chain behind a fake client. A broadcast raises the pending count; the test moves the rest. */
 class FakeChain {
@@ -38,9 +96,18 @@ class FakeChain {
   readonly broadcastFailures: Error[] = [];
   /** Errors for the next block number reads, in order. */
   readonly blockReadFailures: Error[] = [];
+  readonly signed = new Map<Hex, { nonce: number; to?: Hex }>();
 
   readonly client = {
-    account: { address: ADDRESS },
+    chain: { id: 31337 },
+    account: {
+      address: ADDRESS,
+      signTransaction: jest.fn(async ({ nonce, to }: { nonce: number; to?: Hex } & Record<string, unknown>) => {
+        const serialized = keccak256(toHex(`${nonce}:${to ?? ''}`));
+        this.signed.set(serialized, { nonce, to });
+        return serialized;
+      }),
+    },
     getBlockNumber: jest.fn(() => {
       const failure = this.blockReadFailures.shift();
       return failure ? Promise.reject(failure) : Promise.resolve(this.blockNumber);
@@ -48,19 +115,18 @@ class FakeChain {
     getTransactionCount: jest.fn(({ blockTag }: { blockTag: 'pending' | 'latest' }) =>
       Promise.resolve(blockTag === 'pending' ? this.pendingNonce : this.minedNonce),
     ),
-    sendTransaction: jest.fn(async ({ nonce, to }: { nonce: number; to?: Hex } & Record<string, unknown>) => {
+    sendRawTransaction: jest.fn(async ({ serializedTransaction }: { serializedTransaction: Hex }) => {
       this.inFlight++;
       this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
       try {
-        // Without this pause, the ordering tests also pass when broadcasts are not serial.
         await sleep(0);
         const failure = this.broadcastFailures.shift();
-        if (failure) {
-          throw failure;
-        }
-        const hash = `0x${(this.broadcasts.length + 1).toString(16).padStart(64, '0')}` as Hex;
-        this.broadcasts.push({ hash, nonce, to });
-        this.pendingNonce = Math.max(this.pendingNonce, nonce + 1);
+        if (failure) throw failure;
+        const signed = this.signed.get(serializedTransaction);
+        if (!signed) throw new Error('unknown signed transaction');
+        const hash = keccak256(serializedTransaction);
+        this.broadcasts.push({ hash, nonce: signed.nonce, to: signed.to });
+        this.pendingNonce = Math.max(this.pendingNonce, signed.nonce + 1);
         return hash;
       } finally {
         this.inFlight--;
@@ -108,11 +174,13 @@ describe('L1TxQueue', () => {
   let queues: L1TxQueue[];
   let statuses: Map<Hex, { status: string; simError?: string; isRevert?: boolean }>;
 
+  let operationSequence: number;
   beforeEach(() => {
     chain = new FakeChain();
     sent = [];
     queues = [];
     statuses = new Map();
+    operationSequence = 0;
     jest.spyOn(globalThis, 'fetch').mockImplementation(url => {
       const target = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
       return Promise.resolve(Response.json(statuses.get(target.split('/').at(-1) as Hex) ?? { status: 'PENDING' }));
@@ -120,7 +188,7 @@ describe('L1TxQueue', () => {
   });
 
   afterEach(async () => {
-    await Promise.all(queues.map(queue => queue.stop()));
+    await Promise.allSettled(queues.map(queue => queue.stop()));
     // Let every remaining monitor expire, including one with a temporarily unavailable receipt.
     chain.minedNonce = 0;
     chain.blockNumber += 1_000n;
@@ -134,17 +202,25 @@ describe('L1TxQueue', () => {
       wallet: chain.client as unknown as WalletClient<Transport, Chain, LocalAccount>,
       blockWindow: BLOCK_WINDOW,
       pollIntervalMs: 1,
+      submissionJournal: new MemorySubmissionJournal(),
       ...options,
     });
     queues.push(queue);
     return queue;
   }
 
-  function enqueue<T>(queue: L1TxQueue, submit: (send: SendL1Tx) => Promise<T>, options = {}) {
+  function enqueue<T>(
+    queue: L1TxQueue,
+    submit: (send: (request: TransactionRequestEIP1559) => Promise<SentL1Tx>) => Promise<T>,
+    options = {},
+  ) {
     return queue.enqueue(
       send =>
         submit(async request => {
-          const tx = await send(request);
+          const tx = await send(request, {
+            kind: 'l1-operation',
+            id: `test-operation-${operationSequence++}`,
+          });
           sent.push(tx);
           return tx;
         }),
@@ -167,10 +243,11 @@ describe('L1TxQueue', () => {
 
   it('broadcasts with the requested gas and fee caps', async () => {
     const tx = await send(makeQueue(), { gas: 50_000n, maxFeePerGas: 7n, maxPriorityFeePerGas: 3n });
-    expect(chain.client.sendTransaction).toHaveBeenCalledWith({
+    expect(chain.client.account.signTransaction).toHaveBeenCalledWith({
       to: REQUEST.to,
       data: REQUEST.data,
       nonce: 0,
+      chainId: 31337,
       gas: 50_000n,
       maxFeePerGas: 7n,
       maxPriorityFeePerGas: 3n,
@@ -189,18 +266,47 @@ describe('L1TxQueue', () => {
     await expect(isPending(first.settled)).resolves.toBe(true);
   });
 
-  it('continues the current batch after a broadcast failure but forbids clean handoff', async () => {
-    chain.broadcastFailures.push(new Error('boom'));
-    const queue = makeQueue();
+  it('durably blocks every later signing after an unknown send result', async () => {
+    chain.broadcastFailures.push(new Error('disconnect during send'));
+    const journal = new MemorySubmissionJournal();
+    const queue = makeQueue({ submissionJournal: journal });
     await enqueue(queue, async send => {
       const first = send({ ...REQUEST, ...GAS });
       const second = send({ ...REQUEST, ...GAS });
-      await expect(first).rejects.toThrow('boom');
-      await expect(second).resolves.toMatchObject({ nonce: 0 });
+      await expect(first).rejects.toThrow('durably ambiguous');
+      await expect(second).rejects.toThrow('no further signing is permitted');
     });
-    expect(chain.client.sendTransaction).toHaveBeenCalledTimes(2);
-    await expect(queue.stop()).rejects.toThrow('exact-operation handoff is forbidden');
-    queues = queues.filter(candidate => candidate !== queue);
+    expect(chain.client.account.signTransaction).toHaveBeenCalledTimes(1);
+    expect(chain.client.sendRawTransaction).toHaveBeenCalledTimes(1);
+    await expect(journal.assertNoUnresolved()).rejects.toThrow('unresolved');
+    expect(journal.rows.get('l1-operation:test-operation-0')?.state).toBe('ambiguous');
+  });
+
+  it('blocks restart after a crash immediately before send', async () => {
+    const journal = new MemorySubmissionJournal();
+    const queue = makeQueue({
+      submissionJournal: journal,
+      submissionHooks: { afterPrepared: () => Promise.reject(new Error('crash before send')) },
+    });
+    await expect(send(queue)).rejects.toThrow('durably ambiguous');
+    expect(chain.client.account.signTransaction).toHaveBeenCalledTimes(1);
+    expect(chain.client.sendRawTransaction).not.toHaveBeenCalled();
+    expect(journal.rows.get('l1-operation:test-operation-0')?.state).toBe('prepared');
+    await expect(journal.assertNoUnresolved()).rejects.toThrow('unresolved');
+  });
+
+  it('persists the exact response before a crash immediately after send', async () => {
+    const journal = new MemorySubmissionJournal();
+    const queue = makeQueue({
+      submissionJournal: journal,
+      submissionHooks: { afterResponse: () => Promise.reject(new Error('crash after response')) },
+    });
+    await expect(send(queue)).rejects.toThrow('durably ambiguous');
+    const row = journal.rows.get('l1-operation:test-operation-0');
+    expect(row).toMatchObject({ state: 'ambiguous', response: expect.stringContaining('txHash') });
+    expect(chain.client.account.signTransaction).toHaveBeenCalledTimes(1);
+    expect(chain.client.sendRawTransaction).toHaveBeenCalledTimes(1);
+    await expect(journal.assertNoUnresolved()).rejects.toThrow('unresolved');
   });
 
   it('keeps the last broadcast as a lower bound when the RPC gives a stale pending count', async () => {
@@ -409,7 +515,7 @@ describe('L1TxQueue', () => {
   it('forbids a clean handoff after a broadcast result is unknown', async () => {
     chain.broadcastFailures.push(new Error('transport response lost'));
     const queue = makeQueue();
-    await expect(send(queue)).rejects.toThrow('transport response lost');
+    await expect(send(queue)).rejects.toThrow('durably ambiguous');
     await expect(queue.stop()).rejects.toThrow('exact-operation handoff is forbidden');
     queues = queues.filter(candidate => candidate !== queue);
   });
@@ -430,9 +536,26 @@ describe('L1TxQueue', () => {
     expect(() => makeQueue({ blockWindow: 2.5 })).toThrow('invalid L1 block window');
   });
 
+  it('permanently excludes an exact operation even when generic submission is disabled', async () => {
+    const queue = makeQueue({
+      disableSubmission: true,
+      forbiddenOperationIds: new Set(['quarantined-operation']),
+    });
+    await expect(
+      queue.enqueue(send =>
+        send(
+          { ...REQUEST, ...GAS },
+          { kind: 'l1-operation', id: 'quarantined-operation' },
+        ),
+      ),
+    ).rejects.toThrow('permanently quarantined');
+    expect(chain.client.account.signTransaction).not.toHaveBeenCalled();
+    expect(chain.client.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
   it('skips the send with submission disabled and resolves a mined receipt without reading the chain', async () => {
     const tx = await send(makeQueue({ disableSubmission: true }), { gas: 60_000n, maxFeePerGas: 100n });
-    expect(chain.client.sendTransaction).not.toHaveBeenCalled();
+    expect(chain.client.sendRawTransaction).not.toHaveBeenCalled();
     expect(chain.client.getTransactionCount).not.toHaveBeenCalled();
     expect(tx.simulated).toBe(true);
     await expect(tx.settled).resolves.toMatchObject({

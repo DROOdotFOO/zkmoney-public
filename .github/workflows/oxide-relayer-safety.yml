@@ -1,0 +1,42 @@
+name: Oxide relayer safety
+
+on:
+  pull_request:
+    paths:
+      - "vendor/oxide/yarn-project/oxide-relayer/**"
+      - ".github/workflows/oxide-relayer-safety.yml"
+      - "pnpm-lock.yaml"
+  push:
+    branches:
+      - security/exact-operation-relay
+    paths:
+      - "vendor/oxide/yarn-project/oxide-relayer/**"
+      - ".github/workflows/oxide-relayer-safety.yml"
+      - "pnpm-lock.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oxide-relayer-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.14.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - name: Install exact lockfile
+        run: pnpm install --frozen-lockfile
+      - name: Build reviewed source
+        run: pnpm --filter @oxide/oxide-relayer build
+      - name: Run complete source tests
+        run: pnpm --filter @oxide/oxide-relayer test

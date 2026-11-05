@@ -58,8 +58,10 @@ export function deriveExactOperationObservation(
   const finalization = decodeFinalizationData(operation.calldata);
   const migration = decodeMigrationPayload(finalization.userPayload);
   const observation: ExactOperationObservation = {
-    schema: 'oxide-relayer.exact-operation.v1',
+    schema: 'oxide-relayer.exact-operation.v2',
+    approvalNonce: approval.approvalNonce,
     runtime: evidence.runtime,
+    witness: approval.witness,
     deployment: evidence.deployment,
     operation: {
       id: computeL1OperationId(operation, evidence.sourceTxHash),

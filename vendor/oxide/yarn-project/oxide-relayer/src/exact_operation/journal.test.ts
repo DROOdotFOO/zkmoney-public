@@ -9,6 +9,13 @@ import sqlite3Driver from 'sqlite3';
 import { ExactOperationJournal } from './journal.js';
 
 const directories: string[] = [];
+const witness = {
+  key: 'oxide-relayer/exact-operation-consumption/claim.json',
+  versionId: 'version-1',
+  checksumSha256: Buffer.alloc(32, 1).toString('base64'),
+  retainUntil: '9999-12-31T23:59:59.000Z',
+  body: '{}',
+};
 
 async function journalPath(): Promise<string> {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'oxide-exact-operation-')));
@@ -24,11 +31,13 @@ describe('ExactOperationJournal', () => {
   it('consumes an operation approval exactly once across restarts', async () => {
     const path = await journalPath();
     const first = await ExactOperationJournal.open(path);
-    await first.consumeApproval(`0x${'11'.repeat(32)}`, `0x${'22'.repeat(32)}`);
+    await first.consumeApproval(`0x${'11'.repeat(32)}`, `0x${'22'.repeat(32)}`, witness);
     await first.close();
 
     const restarted = await ExactOperationJournal.open(path);
-    await expect(restarted.consumeApproval(`0x${'11'.repeat(32)}`, `0x${'22'.repeat(32)}`)).rejects.toThrow(
+    await expect(
+      restarted.consumeApproval(`0x${'11'.repeat(32)}`, `0x${'22'.repeat(32)}`, witness),
+    ).rejects.toThrow(
       /already consumed/,
     );
     await restarted.close();
@@ -38,7 +47,7 @@ describe('ExactOperationJournal', () => {
     const path = await journalPath();
     const operationId = `0x${'22'.repeat(32)}`;
     const first = await ExactOperationJournal.open(path);
-    await first.consumeApproval(`0x${'11'.repeat(32)}`, operationId);
+    await first.consumeApproval(`0x${'11'.repeat(32)}`, operationId, witness);
     await first.beginSigning(operationId);
     await first.recordSigned(operationId, `0x${'33'.repeat(32)}`, Buffer.from('signed transaction'));
     await first.beginSend(operationId);

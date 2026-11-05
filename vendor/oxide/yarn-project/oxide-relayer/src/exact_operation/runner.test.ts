@@ -9,16 +9,28 @@ import sqlite3Driver from 'sqlite3';
 
 import type { ExactOperationApproval } from './contract.js';
 import { ExactOperationJournal } from './journal.js';
+import type { ExactApprovalClaimStore } from './monotonic_claim.js';
 import { relayExactOperation, type ExactOperationExecution } from './runner.js';
 
 const directories: string[] = [];
 const approval: ExactOperationApproval = {
-  schema: 'oxide-relayer.exact-operation.v1',
+  schema: 'oxide-relayer.exact-operation.v2',
+  approvalNonce: `0x${'aa'.repeat(32)}`,
   runtime: {
     host: 'ovh-ubuntu1',
     sourceCommit: '0123456789abcdef0123456789abcdef01234567',
     imageDigest: `sha256:${'11'.repeat(32)}`,
-    stateSetDigest: `sha256:${'22'.repeat(32)}`,
+    schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v1+lease-v1',
+    stateInventoryDigest: `sha256:${'22'.repeat(32)}`,
+    canonicalStateDigest: `sha256:${'33'.repeat(32)}`,
+  },
+  witness: {
+    bucket: 'oxide-approval-witness',
+    region: 'us-east-1',
+    expectedOwner: '123456789012',
+    prefix: 'oxide-relayer/production',
+    retentionMode: 'COMPLIANCE',
+    retainUntil: '9999-12-31T23:59:59.000Z',
   },
   deployment: {
     label: 'dep-v6',
@@ -86,6 +98,34 @@ class RecordingExecution implements ExactOperationExecution {
   }
 }
 
+class RecordingClaimStore implements ExactApprovalClaimStore {
+  claim:
+    | { key: string; versionId: string; checksumSha256: string; retainUntil: Date }
+    | undefined;
+
+  async assertComplianceRetention(): Promise<void> {}
+
+  async createIfAbsent(args: {
+    key: string;
+    body: string;
+    checksumSha256: string;
+    retainUntil: Date;
+  }): Promise<{ versionId: string }> {
+    if (this.claim) throw new Error('collision');
+    this.claim = { ...args, versionId: 'version-1' };
+    return { versionId: this.claim.versionId };
+  }
+
+  async verify(args: {
+    key: string;
+    versionId: string;
+    checksumSha256: string;
+    retainUntil: Date;
+  }): Promise<void> {
+    expect(this.claim).toMatchObject(args);
+  }
+}
+
 async function journal(): Promise<ExactOperationJournal> {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'oxide-exact-runner-')));
   directories.push(directory);
@@ -118,15 +158,47 @@ describe('relayExactOperation', () => {
     const unrelatedWal = `${unrelatedState}-wal`;
     const rowsBefore = await generic.all('SELECT * FROM obligations ORDER BY kind');
     const before = await Promise.all([fileSha256(unrelatedState), fileSha256(unrelatedWal)]);
-    await expect(relayExactOperation({ approval, journal: state, execution })).resolves.toEqual({
+    const claimStore = new RecordingClaimStore();
+    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).resolves.toEqual({
       l1TxHash: `0x${'aa'.repeat(32)}`,
     });
-    await expect(relayExactOperation({ approval, journal: state, execution })).rejects.toThrow(/already consumed/);
+    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).rejects.toThrow(
+      /already consumed/,
+    );
     expect(execution.signingCount).toBe(1);
     expect(execution.sendCount).toBe(1);
     await expect(generic.all('SELECT * FROM obligations ORDER BY kind')).resolves.toEqual(rowsBefore);
     await expect(Promise.all([fileSha256(unrelatedState), fileSha256(unrelatedWal)])).resolves.toEqual(before);
     await generic.close();
+    await state.close();
+  });
+
+  it('detects local journal rollback from the non-rollbackable claim', async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), 'oxide-exact-rollback-')));
+    directories.push(directory);
+    const path = join(directory, 'journal.sqlite3');
+    let state = await ExactOperationJournal.open(path);
+    const execution = new RecordingExecution();
+    const claimStore = new RecordingClaimStore();
+    await relayExactOperation({ approval, journal: state, execution, claimStore });
+    await state.close();
+    await rm(path);
+    state = await ExactOperationJournal.open(path);
+    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).rejects.toThrow('collision');
+    expect(execution.signingCount).toBe(1);
+    expect(execution.sendCount).toBe(1);
+    await state.close();
+  });
+
+  it('fails before signing when the local journal exists but its witness version is unavailable', async () => {
+    const state = await journal();
+    const execution = new RecordingExecution();
+    const claimStore = new RecordingClaimStore();
+    await relayExactOperation({ approval, journal: state, execution, claimStore });
+    claimStore.claim = undefined;
+    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).rejects.toThrow();
+    expect(execution.signingCount).toBe(1);
+    expect(execution.sendCount).toBe(1);
     await state.close();
   });
 
@@ -138,10 +210,13 @@ describe('relayExactOperation', () => {
       throw new Error('transport result unknown');
     };
 
-    await expect(relayExactOperation({ approval, journal: state, execution })).rejects.toThrow(
+    const claimStore = new RecordingClaimStore();
+    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).rejects.toThrow(
       /no second send is permitted/,
     );
-    await expect(relayExactOperation({ approval, journal: state, execution })).rejects.toThrow(/already consumed/);
+    await expect(relayExactOperation({ approval, journal: state, execution, claimStore })).rejects.toThrow(
+      /already consumed/,
+    );
     expect(execution.signingCount).toBe(1);
     expect(execution.sendCount).toBe(1);
     await expect(state.read(approval.operation.id)).resolves.toMatchObject({ state: 'ambiguous' });

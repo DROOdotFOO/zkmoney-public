@@ -1,8 +1,10 @@
-import { mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from '@jest/globals';
+import { open } from 'sqlite';
+import sqlite3Driver from 'sqlite3';
 
 import { RuntimeLease } from './runtime_lease.js';
 
@@ -48,6 +50,16 @@ describe('RuntimeLease', () => {
     await generic.close();
 
     await expect(RuntimeLease.acquire(path, 'exact-operation')).rejects.toThrow(/clean generic handoff/);
+  });
+
+  it('rejects an unknown existing lease schema before runtime startup', async () => {
+    const path = await leasePath();
+    const database = await open({ filename: path, driver: sqlite3Driver.Database });
+    await database.exec('CREATE TABLE unrelated (value TEXT)');
+    await database.close();
+    await chmod(path, 0o600);
+
+    await expect(RuntimeLease.acquire(path, 'generic')).rejects.toThrow(/canonical runtime lease schema/);
   });
 
   it('rejects a substituted lease symlink', async () => {

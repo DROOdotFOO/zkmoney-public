@@ -5,6 +5,11 @@ import {
   assertExactOperationMatches,
 } from './contract.js';
 import type { ExactOperationJournal } from './journal.js';
+import {
+  type ExactApprovalClaimStore,
+  consumeExactApprovalExternally,
+  verifyExactApprovalClaimReceipt,
+} from './monotonic_claim.js';
 
 export interface SignedExactOperation {
   hash: string;
@@ -26,17 +31,26 @@ export interface RelayExactOperationOptions {
   approval: ExactOperationApproval;
   journal: ExactOperationJournal;
   execution: ExactOperationExecution;
+  claimStore: ExactApprovalClaimStore;
 }
 
 export async function relayExactOperation({
   approval,
   journal,
   execution,
+  claimStore,
 }: RelayExactOperationOptions): Promise<{ l1TxHash: string }> {
   const observation = await execution.observe(approval);
   assertExactOperationMatches(approval, observation);
 
-  await journal.consumeApproval(exactApprovalDigest(approval), approval.operation.id);
+  const approvalDigest = exactApprovalDigest(approval);
+  const existing = await journal.findConsumption(approvalDigest, approval.operation.id);
+  if (existing) {
+    await verifyExactApprovalClaimReceipt(claimStore, existing);
+    throw new Error(`Exact operation ${approval.operation.id} approval was already consumed`);
+  }
+  const witness = await consumeExactApprovalExternally(approval, claimStore);
+  await journal.consumeApproval(approvalDigest, approval.operation.id, witness);
   await journal.beginSigning(approval.operation.id);
 
   let signed: SignedExactOperation;

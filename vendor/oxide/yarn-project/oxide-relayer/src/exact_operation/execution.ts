@@ -25,6 +25,27 @@ import type { ExactOperationApproval, ExactOperationObservation } from './contra
 import type { ExactOperationObserver } from './observer.js';
 import type { ExactOperationExecution, SignedExactOperation } from './runner.js';
 
+export class ExactExecutionLimits {
+  private teeRequests = 0;
+  private l1Signings = 0;
+  private sendCalls = 0;
+
+  async requestTeeSignature<T>(action: () => Promise<T>): Promise<T> {
+    if (++this.teeRequests > 1) throw new Error('TEE finalization signature request limit is one');
+    return await action();
+  }
+
+  async signL1Transaction<T>(action: () => Promise<T>): Promise<T> {
+    if (++this.l1Signings > 1) throw new Error('L1 transaction signing limit is one');
+    return await action();
+  }
+
+  async sendRawTransaction<T>(action: () => Promise<T>): Promise<T> {
+    if (++this.sendCalls > 1) throw new Error('eth_sendRawTransaction call limit is one');
+    return await action();
+  }
+}
+
 export class ExactL1Execution implements ExactOperationExecution {
   constructor(
     private readonly observer: ExactOperationObserver,
@@ -34,6 +55,7 @@ export class ExactL1Execution implements ExactOperationExecution {
     private readonly chainId: number,
     private readonly executorVersion: OperationExecutorVersion,
   ) {}
+  private readonly limits = new ExactExecutionLimits();
 
   async observe(approval: ExactOperationApproval): Promise<ExactOperationObservation> {
     return await this.observer.observe(approval);
@@ -59,7 +81,9 @@ export class ExactL1Execution implements ExactOperationExecution {
       attempts: 0,
       createdAt: new Date(0),
     };
-    const finalizationCalldata = await (await this.loadCompletion()).resolveCalldata(operation);
+    const finalizationCalldata = await this.limits.requestTeeSignature(async () =>
+      (await this.loadCompletion()).resolveCalldata(operation),
+    );
     const quoteBlock = await this.client.getBlock({ blockTag: 'latest' });
     const feeValues = await estimateL1OperationFeeValues(this.client, quoteBlock);
     enforceFeeCeilings(approval, feeValues);
@@ -119,21 +143,25 @@ export class ExactL1Execution implements ExactOperationExecution {
     });
     const nonce = await this.client.getTransactionCount({ address: account.address, blockTag: 'pending' });
     const chainId = approvedSigningChainId(approval, this.chainId);
-    const serialized = await account.signTransaction({
-      type: 'eip1559',
-      chainId,
-      nonce,
-      to: approval.deployment.operationExecutor as Hex,
-      data,
-      value: 0n,
-      gas,
-      ...feeValues,
-    });
+    const serialized = await this.limits.signL1Transaction(() =>
+      account.signTransaction({
+        type: 'eip1559',
+        chainId,
+        nonce,
+        to: approval.deployment.operationExecutor as Hex,
+        data,
+        value: 0n,
+        gas,
+        ...feeValues,
+      }),
+    );
     return { hash: keccak256(serialized), bytes: Buffer.from(hexToBytes(serialized)) };
   }
 
   async sendOnce(signedTransaction: Buffer): Promise<string> {
-    return await this.client.sendRawTransaction({ serializedTransaction: toHex(signedTransaction) });
+    return await this.limits.sendRawTransaction(() =>
+      this.client.sendRawTransaction({ serializedTransaction: toHex(signedTransaction) }),
+    );
   }
 
   async waitForReceipt(txHash: string): Promise<{ status: 'success' | 'reverted' }> {

@@ -6,15 +6,16 @@ import {
   EXACT_DATA_DIRECTORY,
   EXACT_RUNTIME_IDENTITY_PATH,
   EXACT_SOURCE_COMMIT_PATH,
+  EXACT_STATE_INVENTORY_PATH,
 } from './paths.js';
-import { exactStateSetDigest } from './state_set.js';
+import { verifyStateInventory } from './state_inventory.js';
 
 export async function loadExactRuntimeIdentity(): Promise<ExactOperationRuntimeIdentity> {
   await assertFixedIdentityFile(EXACT_RUNTIME_IDENTITY_PATH);
-  const [input, sourceCommit, stateSetDigest] = await Promise.all([
+  const [input, sourceCommit, state] = await Promise.all([
     readFile(EXACT_RUNTIME_IDENTITY_PATH, 'utf8'),
     readFile(EXACT_SOURCE_COMMIT_PATH, 'utf8'),
-    exactStateSetDigest(EXACT_DATA_DIRECTORY),
+    verifyStateInventory(EXACT_STATE_INVENTORY_PATH, EXACT_DATA_DIRECTORY),
   ]);
   let supplied: unknown;
   try {
@@ -27,7 +28,7 @@ export async function loadExactRuntimeIdentity(): Promise<ExactOperationRuntimeI
     ...identity,
     host: hostname(),
     sourceCommit: sourceCommit.trim(),
-    stateSetDigest,
+    ...state,
   };
   if (JSON.stringify(identity) !== JSON.stringify(derived)) {
     throw new Error('Fixed exact-operation runtime identity does not match the running host, source and state bytes');

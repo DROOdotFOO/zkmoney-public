@@ -5,7 +5,7 @@ import { sleep } from '@aztec-labs/foundation/sleep';
 import { OxidePortalAbi } from '@oxide/l1-contracts';
 import { ProverClaim, toProverTipClaim } from '@oxide/l1-contracts/oxide_portal.js';
 
-import { type FeeValuesEIP1559, type Hex, type PublicClient, encodeFunctionData } from 'viem';
+import { type FeeValuesEIP1559, type Hex, type PublicClient, encodeFunctionData, keccak256 } from 'viem';
 
 import type { L1TxQueue, SendL1Tx } from '../../l1/l1_tx_queue.js';
 import { ProverClaimPortalConfig } from '../prover_claim_lib/index.js';
@@ -103,7 +103,10 @@ export class BatchPublisher {
     const gas = await this.options.client.estimateGas({ account, to, data });
 
     this.log.info(`Submitting ${claims.length} prover claim(s) for portal ${portal.context.l1Portal}`);
-    return await send({ to, data, gas, ...feeValues });
+    return await send(
+      { to, data, gas, ...feeValues },
+      { kind: 'prover-claims', id: `${portal.context.l1Portal.toString().toLowerCase()}/${keccak256(data)}` },
+    );
   }
 
   // Wait until the mined tx is `confirmations` blocks deep, re-checking the receipt each time depth is reached so a
