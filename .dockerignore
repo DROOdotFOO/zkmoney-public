@@ -1,0 +1,4 @@
+**
+!.relayer-image/
+!.relayer-image/**
+!Dockerfile.oxide-relayer

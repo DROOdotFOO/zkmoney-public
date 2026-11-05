@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, randomUUID, verify } from 'node:crypto';
+import { createHash, createPublicKey, verify } from 'node:crypto';
 import { lstat, open as openFile, readFile, rename } from 'node:fs/promises';
 
 import { hostname } from 'node:os';
@@ -24,18 +24,21 @@ import {
 import { verifyStateInventory } from './state_inventory.js';
 
 const RESTORE_MARKER_PATH = `${EXACT_DATA_DIRECTORY}/generic-restore.json`;
+const RESTORE_MARKER_TEMP_PATH = `${RESTORE_MARKER_PATH}.tmp`;
 const RESTORE_DOMAIN = 'oxide-relayer/generic-restore-approval/v1\0';
+export const restoreRuntimeIdentitySchema = z.strictObject({
+  host: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+  sourceCommit: z.string().regex(/^[0-9a-f]{40}$/),
+  imageDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  signerAddress: z.string().regex(/^0x[0-9a-f]{40}$/),
+  schemaIdentity: z.literal(EXACT_DATABASE_SCHEMA_IDENTITY),
+  stateInventoryDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  canonicalStateDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+});
 const restoreApprovalSchema = z.strictObject({
   schema: z.literal('oxide-relayer.generic-restore.v1'),
   approvalNonce: z.string().regex(/^0x[0-9a-f]{64}$/),
-  runtime: z.strictObject({
-    host: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
-    sourceCommit: z.string().regex(/^[0-9a-f]{40}$/),
-    imageDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-    schemaIdentity: z.literal(EXACT_DATABASE_SCHEMA_IDENTITY),
-    stateInventoryDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-    canonicalStateDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  }),
+  runtime: restoreRuntimeIdentitySchema,
   witness: z.strictObject({
     bucket: z.string().min(3),
     region: z.string().min(1),
@@ -230,9 +233,9 @@ export async function loadWitnessCredentials(): Promise<{ accessKeyId: string; s
   return { accessKeyId: accessKeyId.trim(), secretAccessKey: secretAccessKey.trim() };
 }
 
-async function readRestoreMarker(): Promise<RestoreMarker | undefined> {
+async function readRestoreMarker(filename = RESTORE_MARKER_PATH): Promise<RestoreMarker | undefined> {
   try {
-    const metadata = await lstat(RESTORE_MARKER_PATH);
+    const metadata = await lstat(filename);
     if (
       !metadata.isFile() ||
       metadata.isSymbolicLink() ||
@@ -242,7 +245,7 @@ async function readRestoreMarker(): Promise<RestoreMarker | undefined> {
     ) {
       throw new Error('Generic restore marker is not one owner-only regular file');
     }
-    const input = await readFile(RESTORE_MARKER_PATH, 'utf8');
+    const input = await readFile(filename, 'utf8');
     const value = JSON.parse(input) as RestoreMarker;
     if (`${canonicalJson(value)}\n` !== input) throw new Error('not canonical');
     return value;
@@ -253,9 +256,10 @@ async function readRestoreMarker(): Promise<RestoreMarker | undefined> {
 }
 
 async function writeRestoreMarker(marker: RestoreMarker): Promise<void> {
+  await recoverRestoreMarkerWrite();
   const existing = await readRestoreMarker();
   if (existing && canonicalJson(existing) === canonicalJson(marker)) return;
-  const temporary = `${RESTORE_MARKER_PATH}.${randomUUID()}.tmp`;
+  const temporary = RESTORE_MARKER_TEMP_PATH;
   const handle = await openFile(temporary, 'wx', 0o600);
   try {
     await handle.writeFile(`${canonicalJson(marker)}\n`);
@@ -271,6 +275,18 @@ async function writeRestoreMarker(marker: RestoreMarker): Promise<void> {
     await directory.close();
   }
 }
+async function recoverRestoreMarkerWrite(): Promise<void> {
+  const pending = await readRestoreMarker(RESTORE_MARKER_TEMP_PATH);
+  if (!pending) return;
+  await rename(RESTORE_MARKER_TEMP_PATH, RESTORE_MARKER_PATH);
+  const directory = await openFile(EXACT_DATA_DIRECTORY, 'r');
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}
+
 
 async function readBundle(fd: number): Promise<{ approval: unknown; approvalToken: string }> {
   const input = await readFile(`/dev/fd/${fd}`, 'utf8');

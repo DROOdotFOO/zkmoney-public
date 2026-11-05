@@ -5,6 +5,7 @@ import type { ExactOperationRecord } from './journal.js';
 import {
   evaluateGenericQuarantine,
   genericRestoreDigests,
+  restoreRuntimeIdentitySchema,
   type RestoreMarker,
   type WitnessClaim,
 } from './generic_quarantine.js';
@@ -40,6 +41,13 @@ const runtime = {
   stateInventoryDigest: `sha256:${'77'.repeat(32)}`,
   canonicalStateDigest: `sha256:${'88'.repeat(32)}`,
 };
+const restoreRuntime = {
+  host: 'relayer-safe',
+  sourceCommit: '55'.repeat(20),
+  imageDigest: `sha256:${'66'.repeat(32)}`,
+  signerAddress: `0x${'10'.repeat(20)}`,
+  ...runtime,
+};
 
 function record(state: ExactOperationRecord['state'] = 'confirmed'): ExactOperationRecord {
   return {
@@ -62,6 +70,15 @@ function marker(records: ExactOperationRecord[]): RestoreMarker {
 }
 
 describe('generic exact-operation quarantine', () => {
+  it('accepts the signer-bound deployment runtime identity', () => {
+    expect(restoreRuntimeIdentitySchema.parse(restoreRuntime)).toEqual(restoreRuntime);
+  });
+
+  it('rejects a restore runtime without the reviewed signer', () => {
+    const { signerAddress: _, ...withoutSigner } = restoreRuntime;
+    expect(() => restoreRuntimeIdentitySchema.parse(withoutSigner)).toThrow();
+  });
+
   it('allows a never-cut-over runtime with no witness or local record', () => {
     expect(evaluateGenericQuarantine({ claims: [], records: [], runtime })).toEqual(new Set());
   });

@@ -210,9 +210,9 @@ describe('L1TxQueue', () => {
 
   afterEach(async () => {
     await Promise.allSettled(queues.map(queue => queue.stop()));
-    // Let every remaining monitor expire, including one with a temporarily unavailable receipt.
-    chain.minedNonce = 0;
-    chain.blockNumber += 1_000n;
+    // Give every public-route monitor authoritative receipts; Protect monitors
+    // that already proved a drop remain rejected.
+    sent.filter(tx => !tx.simulated).forEach(tx => chain.mine(tx));
     await Promise.allSettled(sent.map(tx => tx.settled));
     jest.restoreAllMocks();
   });
@@ -395,9 +395,9 @@ describe('L1TxQueue', () => {
     );
   });
 
-  it('expires only after the chain passes the block bound', async () => {
+  it('expires Protect transactions only after the chain passes the block bound', async () => {
     const fromBlock = chain.blockNumber;
-    const tx = await send(makeQueue());
+    const tx = await send(makeQueue({ protectTxStatusUrl: 'https://protect.example/tx/' }));
     const lastBlock = fromBlock + BigInt(BLOCK_WINDOW + 2);
     chain.blockNumber = lastBlock;
     await sleep(20);
@@ -502,17 +502,19 @@ describe('L1TxQueue', () => {
     await expect(next).resolves.toMatchObject({ nonce: 0 });
   });
 
-  it('holds public transactions past expiry until every nonce is consumed', async () => {
+  it('keeps public transactions nonterminal past local expiry until every nonce is mined', async () => {
     const queue = makeQueue();
     const [first, second] = await Promise.all([send(queue), send(queue)]);
     const next = send(queue);
     chain.blockNumber = 200n;
-    await expect(first.settled).rejects.toThrow('is not in a block');
-    await expect(second.settled).rejects.toThrow('is not in a block');
-    chain.minedNonce = first.nonce + 1;
+    expect(await isPending(first.settled)).toBe(true);
+    expect(await isPending(second.settled)).toBe(true);
+    chain.mine(first);
+    await expect(first.settled).resolves.toMatchObject({ status: 'success' });
     await sleep(10);
     expect(chain.broadcasts).toHaveLength(2);
-    chain.minedNonce = second.nonce + 1;
+    chain.mine(second);
+    await expect(second.settled).resolves.toMatchObject({ status: 'success' });
     await expect(next).resolves.toMatchObject({ nonce: 2 });
   });
 

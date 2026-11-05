@@ -406,9 +406,10 @@ describe('Relayer submission through the read RPC', () => {
     });
   }, 30_000);
 
-  // A monitor stops only when its nonce is used or the chain passes its expiry bound, so the teardown mines past it.
+  // Public-route monitors stop only after authoritative nonce consumption.
   afterEach(async () => {
     await batcher?.stop();
+    await chain.setBlockGasLimit({ gasLimit: 30_000_000n });
     await chain.mine({ blocks: BLOCK_RANGE + 3 });
     await Promise.allSettled(sent.map(transaction => transaction.settled));
     sent = [];
@@ -420,44 +421,48 @@ describe('Relayer submission through the read RPC', () => {
     await stopAnvil?.();
   });
 
-  it('holds the next batch past the block window and the local expiry until the pending transaction lands', async () => {
-    const submit = (sender: SendL1Tx, to: Address) =>
-      sender(
-        { to, data: '0x', gas: 100_000n, ...GAS_PRICE },
-        { kind: 'l1-operation', id: `public-${operationSequence++}-${to}` },
+  it(
+    'keeps public transactions nonterminal and holds the next batch until the pending transactions land',
+    async () => {
+      const submit = (sender: SendL1Tx, to: Address) =>
+        sender(
+          { to, data: '0x', gas: 100_000n, ...GAS_PRICE },
+          { kind: 'l1-operation', id: `public-${operationSequence++}-${to}` },
+        );
+      const [first, second] = await batcher.enqueue(sender =>
+        Promise.all([submit(sender, SUCCESS_TARGET), submit(sender, LATER_OPERATION_TARGETS[0])]),
       );
-    const [first, second] = await batcher.enqueue(sender =>
-      Promise.all([submit(sender, SUCCESS_TARGET), submit(sender, LATER_OPERATION_TARGETS[0])]),
-    );
-    sent = [first, second];
-    const nextBatch = batcher.enqueue(sender => submit(sender, LATE_L1_ACTION_TARGET));
-    const held = Symbol('held');
-    const expectHeld = async () => {
-      await expect(chain.getTransactionCount({ address: ACCOUNT.address, blockTag: 'latest' })).resolves.toBe(
-        first.nonce,
-      );
-      await expect(Promise.race([nextBatch, sleep(200).then(() => held)])).resolves.toBe(held);
-    };
+      sent = [first, second];
+      const nextBatch = batcher.enqueue(sender => submit(sender, LATE_L1_ACTION_TARGET));
+      const held = Symbol('held');
+      const expectHeld = async () => {
+        await expect(chain.getTransactionCount({ address: ACCOUNT.address, blockTag: 'latest' })).resolves.toBe(
+          first.nonce,
+        );
+        await expect(Promise.race([nextBatch, sleep(200).then(() => held)])).resolves.toBe(held);
+      };
 
-    // A block gas limit below the tx's gas leaves it pending while the head moves past the window.
-    await chain.setBlockGasLimit({ gasLimit: 30_000n });
-    await chain.mine({ blocks: BLOCK_RANGE + 3 });
-    await expectHeld();
+      // A block gas limit below the tx's gas leaves it pending while the head moves past the window.
+      await chain.setBlockGasLimit({ gasLimit: 30_000n });
+      await chain.mine({ blocks: BLOCK_RANGE + 3 });
+      await expectHeld();
 
-    // The expiry bound passed while the tx is still pending: the monitor gives up, the batch does not.
-    await expect(first.settled).rejects.toThrow();
-    await expect(second.settled).rejects.toThrow();
-    await expectHeld();
+      // Local block-window expiry is not authoritative for the public mempool.
+      await expect(Promise.race([first.settled, sleep(200).then(() => held)])).resolves.toBe(held);
+      await expect(Promise.race([second.settled, sleep(200).then(() => held)])).resolves.toBe(held);
+      await expectHeld();
 
-    await chain.setBlockGasLimit({ gasLimit: 30_000_000n });
-    await chain.mine({ blocks: 1 });
-    await expect(chain.getTransactionReceipt({ hash: second.txHash })).resolves.toMatchObject({ status: 'success' });
-    const next = await nextBatch;
-    sent.push(next);
-    expect(next.nonce).toBe(second.nonce + 1);
-    await chain.mine({ blocks: 1 });
-    await expect(next.settled).resolves.toMatchObject({ status: 'success' });
-  }, 30_000);
+      await chain.setBlockGasLimit({ gasLimit: 30_000_000n });
+      await chain.mine({ blocks: 1 });
+      await expect(chain.getTransactionReceipt({ hash: second.txHash })).resolves.toMatchObject({ status: 'success' });
+      const next = await nextBatch;
+      sent.push(next);
+      expect(next.nonce).toBe(second.nonce + 1);
+      await chain.mine({ blocks: 1 });
+      await expect(next.settled).resolves.toMatchObject({ status: 'success' });
+    },
+    30_000,
+  );
 });
 
 function makeTargets(start: number, count: number): Address[] {

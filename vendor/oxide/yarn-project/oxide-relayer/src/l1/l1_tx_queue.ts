@@ -32,7 +32,7 @@ const PROTECT_TX_STATUS_TIMEOUT_MS = 5_000;
 export interface SentL1Tx {
   txHash: Hash;
   nonce: number;
-  /** Resolves with a mined receipt, including a revert; rejects on replacement or expiry. */
+  /** Resolves with a mined receipt; rejects on proven replacement or Protect expiry. */
   settled: Promise<TransactionReceipt>;
   /** True when submission is disabled: the tx was not sent and `settled` holds a fake receipt. */
   simulated?: boolean;
@@ -444,9 +444,8 @@ export class L1TxQueue {
   }
 
   /**
-   * Reads the chain until it uses the nonce of the transaction or passes the expiry bound. Protect drops a
-   * transaction after block `sentAtBlock + 1 + blockWindow`, and the last `+ 1` covers a relay that reads one block
-   * ahead of this sender at broadcast.
+   * Reads the chain until it uses the nonce. Protect can also prove a drop after
+   * `sentAtBlock + 1 + blockWindow`; public-mempool expiry is never terminal.
    */
   async #monitor(txHash: Hash, nonce: number, sentAtBlock: bigint): Promise<TransactionReceipt> {
     const lastBlock = sentAtBlock + BigInt(this.blockWindow + 2);
@@ -467,7 +466,7 @@ export class L1TxQueue {
           if (nonceUser !== undefined && nonceUser !== txHash) {
             terminalError = `L1 transaction ${txHash} has no receipt, and a different transaction used its nonce ${nonce}`;
           }
-        } else if (blockNumber > lastBlock) {
+        } else if (this.protectTxStatusUrl && blockNumber > lastBlock) {
           terminalError = `L1 transaction ${txHash} with nonce ${nonce} is not in a block up to block ${lastBlock}`;
         }
       } catch (err) {

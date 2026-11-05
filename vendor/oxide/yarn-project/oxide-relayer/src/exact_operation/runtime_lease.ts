@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { chmod, lstat, open as openFile, readFile, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -100,7 +99,8 @@ export class RuntimeLease {
     }
     if (cleanHandoff) {
       const marker = cleanHandoffPath(this.path);
-      const temporary = `${marker}.${randomUUID()}.tmp`;
+      const temporary = `${marker}.tmp`;
+      await recoverCleanHandoffWrite(temporary, marker);
       const handle = await openFile(temporary, 'wx', 0o600);
       try {
         await handle.writeFile(JSON.stringify({ schema: 1, kind: 'generic', clean: true }));
@@ -115,6 +115,18 @@ export class RuntimeLease {
     await this.db.close();
   }
 }
+async function recoverCleanHandoffWrite(temporary: string, marker: string): Promise<void> {
+  try {
+    await lstat(temporary);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  await assertCleanHandoff(temporary);
+  await rename(temporary, marker);
+  await syncParent(marker);
+}
+
 
 async function assertSecureLeasePath(filename: string): Promise<void> {
   const parent = path.dirname(filename);

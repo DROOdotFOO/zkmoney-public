@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "Dockerfile.oxide-relayer"
+      - ".dockerignore"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
@@ -17,6 +18,7 @@ on:
       - security/exact-operation-relay
     paths:
       - "Dockerfile.oxide-relayer"
+      - ".dockerignore"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
@@ -28,6 +30,7 @@ on:
 
 env:
   AZTEC_VERSION: 6.0.0
+  AZTEC_INSTALLER_SHA256: d1f1fc919a70e1404626c952a389f27d36c1459297d94c09168c66e37d2a89d4
 
 permissions:
   contents: read
@@ -57,14 +60,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.aztec
-          key: aztec-installation-${{ env.AZTEC_VERSION }}
+          key: aztec-installation-${{ env.AZTEC_VERSION }}-${{ env.AZTEC_INSTALLER_SHA256 }}
       - name: Install verified Aztec bootstrap
         if: steps.cache-aztec.outputs.cache-hit != 'true'
-        env:
-          INSTALLER_SHA256: d1f1fc919a70e1404626c952a389f27d36c1459297d94c09168c66e37d2a89d4
         run: |
           curl -fsSL "https://install.aztec.network/${AZTEC_VERSION}" -o "$RUNNER_TEMP/install-aztec"
-          printf '%s  %s\n' "$INSTALLER_SHA256" "$RUNNER_TEMP/install-aztec" | sha256sum -c -
+          printf '%s  %s\n' "$AZTEC_INSTALLER_SHA256" "$RUNNER_TEMP/install-aztec" | sha256sum -c -
           VERSION="$AZTEC_VERSION" bash -i "$RUNNER_TEMP/install-aztec"
       - name: Add Aztec binaries to PATH
         run: |
@@ -74,10 +75,19 @@ jobs:
             echo "$HOME/.aztec/current/node_modules/.bin"
             echo "$HOME/.aztec/current/internal-bin"
           } >> "$GITHUB_PATH"
-      - name: Build reviewed source
+      - name: Build and smoke reviewed image
         run: |
-          pnpm build:relayer -- --clean
-          node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js relay-exact --help
-          node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js authorize-generic-restore --help
+          pnpm build-contracts
+          openssl genpkey -algorithm ED25519 -out "$RUNNER_TEMP/approval-private.pem"
+          openssl pkey -in "$RUNNER_TEMP/approval-private.pem" -pubout -out "$RUNNER_TEMP/approval-public.pem"
+          OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE="$RUNNER_TEMP/approval-public.pem" pnpm prepare:relayer-image
+          image="oxide-relayer-ci:${GITHUB_SHA}"
+          docker build --file Dockerfile.oxide-relayer --tag "$image" .
+          test "$(docker image inspect --format '{{.Config.User}}' "$image")" = node
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")" = '["node","dest/bin/oxide-relayer.js"]'
+          test "$(docker run --rm --entrypoint cat "$image" /app/source-commit)" = "$GITHUB_SHA"
+          docker run --rm --entrypoint test "$image" -r /app/approval-authority.pem
+          docker run --rm "$image" relay-exact --help
+          docker run --rm "$image" authorize-generic-restore --help
       - name: Run complete source tests
         run: pnpm --filter @oxide/oxide-relayer test

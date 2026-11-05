@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from '@jest/globals';
 import { open } from 'sqlite';
 import sqlite3Driver from 'sqlite3';
 
-import { RuntimeLease } from './runtime_lease.js';
+import { RuntimeLease, cleanHandoffPath } from './runtime_lease.js';
 
 const directories: string[] = [];
 
@@ -42,6 +42,21 @@ describe('RuntimeLease', () => {
     await correctedIdentity.activateExactHandoff();
     await correctedIdentity.close();
   });
+  it('recovers a complete interrupted handoff marker write', async () => {
+    const path = await leasePath();
+    const generic = await RuntimeLease.acquire(path, 'generic');
+    await writeFile(
+      `${cleanHandoffPath(path)}.tmp`,
+      JSON.stringify({ schema: 1, kind: 'generic', clean: true }),
+      { mode: 0o600 },
+    );
+    await generic.close({ cleanHandoff: true });
+
+    const exact = await RuntimeLease.acquire(path, 'exact-operation');
+    await exact.activateExactHandoff();
+    await exact.close();
+  });
+
 
 
   it('refuses exact-operation startup without a clean generic handoff', async () => {
