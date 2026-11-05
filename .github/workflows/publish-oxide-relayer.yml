@@ -25,7 +25,7 @@ env:
   FOUNDRY_COMMIT: 6056c5845d34205a83cf7108042adb137325c9df
   AZTEC_VERSION: 6.0.0
   AZTEC_INSTALLER_SHA256: d1f1fc919a70e1404626c952a389f27d36c1459297d94c09168c66e37d2a89d4
-  NARGO_DEPENDENCY_LOCK_SHA256: a8e71695e77ce7e785627eb23f45b0e676c6ff85c4ac54910b8b2c79b8bd7cd9
+  NARGO_DEPENDENCY_LOCK_SHA256: 71e95fd86085df3495a3d93eea83fec8b6aa0b38a78f9de1a2d1866d3f3e1f0b
   SOLIDITY_DEPENDENCY_LOCK_SHA256: 99a1c9ea55c84b5e7279dad95a6e7ded68518b971941f363963a9d0a39f82219
   RELEASE_YARN_VERSION: 4.5.2
   RELEASE_YARN_LOCK_SHA256: 5a7ea8ae4343cee282adeacf25866b47f64780be2f604a5fa95675a98597ec73
@@ -113,9 +113,12 @@ jobs:
           : > "$git_config"
           cat > "$lock_file" <<'EOF'
           https://github.com/aztec-labs-eng/aztec-node	v6.0.0	d2e67c1d938f06a6476dd7d4bd01e73771923dd1
+          https://github.com/AztecProtocol/aztec-packages	v6.0.0	0219f11d8133970df3974fe5ae65e006bf8c193a
           https://github.com/noir-lang/poseidon	v0.3.0	0880c371e88e583d39515fd3f877538657ac41eb
+          https://github.com/noir-lang/poseidon	v0.4.0	e105cdd5c79c222860d53c5dfdb8fa8012b291c0
           https://github.com/noir-lang/keccak256	v0.1.3	f64ab3af714aa1a1e2699243037e0f11fe5bf706
           https://github.com/noir-lang/sha256	v0.2.1	eab74fc10d7f049a50728e8e8f4db01280fcf922
+          https://github.com/noir-lang/sha256	v0.3.0	9442e5b6856f98b2ec029882d7e90199ecff91ba
           https://github.com/noir-lang/noir_base64	v0.5.1	82737dc95c824fccc056c35e94c81d600f33ca1d
           https://github.com/noir-lang/noir-bignum	v0.10.0	00d4360fbaaae71b1ee7f93f78dfad4eb7e11479
           https://github.com/noir-lang/schnorr	v0.4.0	9995bcc45e24c9eaccabe3bcf59c36f9aedaa00c
@@ -141,26 +144,37 @@ jobs:
                       if "tag" not in dependency or "rev" in dependency:
                           raise SystemExit(f"unsupported unlocked Git dependency in {manifest}")
                       dependencies.add((dependency["git"], dependency["tag"]))
-          if dependencies != lock:
-              missing = sorted(dependencies - lock)
-              stale = sorted(lock - dependencies)
+          transitive = {
+              ("https://github.com/AztecProtocol/aztec-packages", "v6.0.0"),
+              ("https://github.com/noir-lang/poseidon", "v0.4.0"),
+              ("https://github.com/noir-lang/sha256", "v0.3.0"),
+          }
+          expected = dependencies | transitive
+          if expected != lock:
+              missing = sorted(expected - lock)
+              stale = sorted(lock - expected)
               raise SystemExit(f"Nargo dependency lock mismatch: missing={missing}, stale={stale}")
           PY
           : > "$RUNNER_TEMP/nargo-resolutions.jsonl"
+          declare -A mirrors
           index=0
           while IFS=$'\t' read -r url tag commit; do
-            index=$((index + 1))
-            mirror="$mirror_root/$index.git"
-            git init --bare "$mirror"
+            if [[ -z "${mirrors[$url]+set}" ]]; then
+              index=$((index + 1))
+              mirror="$mirror_root/$index.git"
+              git init --bare "$mirror"
+              mirrors[$url]="$mirror"
+              git config --file "$git_config" --add "url.file://$mirror.insteadOf" "$url"
+              if [[ "$url" == *.git ]]; then
+                git config --file "$git_config" --add "url.file://$mirror.insteadOf" "${url%.git}"
+              else
+                git config --file "$git_config" --add "url.file://$mirror.insteadOf" "$url.git"
+              fi
+            fi
+            mirror="${mirrors[$url]}"
             git --git-dir="$mirror" fetch --force --no-tags --depth=1 \
               "$url" "refs/tags/$tag:refs/tags/$tag"
             test "$(git --git-dir="$mirror" rev-list -n 1 "refs/tags/$tag")" = "$commit"
-            git config --file "$git_config" --add "url.file://$mirror.insteadOf" "$url"
-            if [[ "$url" == *.git ]]; then
-              git config --file "$git_config" --add "url.file://$mirror.insteadOf" "${url%.git}"
-            else
-              git config --file "$git_config" --add "url.file://$mirror.insteadOf" "$url.git"
-            fi
             jq -cn --arg url "$url" --arg tag "$tag" --arg commit "$commit" \
               '{url:$url,tag:$tag,commit:$commit}' >> "$RUNNER_TEMP/nargo-resolutions.jsonl"
           done < "$lock_file"
