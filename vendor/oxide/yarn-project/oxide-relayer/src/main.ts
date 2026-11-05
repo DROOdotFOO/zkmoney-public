@@ -35,7 +35,7 @@ import { UsdPeggedPriceOracle } from './price_oracle/usd_pegged_price_oracle.js'
 import { startEpochProofs } from './prover/index.js';
 import { RelayerTelemetry } from './relayer_telemetry.js';
 import { createEphemeralSigner, hasSignerKey, loadSigner } from './signers/index.js';
-import { statePathForPortal } from './state/path.js';
+import { statePathForPortal, supportsExactOperationHandoff } from './state/path.js';
 import { type SqliteStateStore, openSqliteStateStore } from './state/sqlite_store.js';
 import { relayerVersion } from './version.js';
 
@@ -57,7 +57,7 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
   let cleanHandoff = false;
   try {
     await runRelayerWithLease(config, opts);
-    cleanHandoff = true;
+    cleanHandoff = supportsExactOperationHandoff(config.state.sqlitePath);
   } finally {
     await lease.close({ cleanHandoff });
   }

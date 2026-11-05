@@ -32,9 +32,9 @@ export function l1Transport(readUrl: string, submissionUrl?: string): Transport 
     : redactedHttp(readUrl);
   return params => {
     const inner = transport(params);
-    const request: typeof inner.request = async args => {
+    const request: typeof inner.request = async (args, options) => {
       try {
-        return await inner.request(args);
+        return await inner.request(args, options);
       } catch (cause) {
         throw new Error('L1 RPC request failed', { cause });
       }

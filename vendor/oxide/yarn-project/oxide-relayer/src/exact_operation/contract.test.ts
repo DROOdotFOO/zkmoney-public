@@ -5,6 +5,7 @@ import {
   parseExactOperationApproval,
   type ExactOperationApproval,
 } from './contract.js';
+import { approvedSigningChainId } from './execution.js';
 
 const approval: ExactOperationApproval = {
   schema: 'oxide-relayer.exact-operation.v1',
@@ -75,5 +76,12 @@ describe('assertExactOperationMatches', () => {
         operation: { ...finalized.operation, sourceFinalized: false },
       }),
     ).toThrow();
+  });
+});
+
+describe('approvedSigningChainId', () => {
+  it('uses only the startup-verified approved chain', () => {
+    expect(approvedSigningChainId(approval, 1)).toBe(1);
+    expect(() => approvedSigningChainId(approval, 11155111)).toThrow(/approved chain/);
   });
 });

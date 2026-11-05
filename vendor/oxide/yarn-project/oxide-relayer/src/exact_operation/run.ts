@@ -101,7 +101,7 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
             publicConfig.operationExecutor,
           ),
       ));
-    const execution = new ExactL1Execution(observer, loadCompletion, publicClient, loadAccount, executorVersion);
+    const execution = new ExactL1Execution(observer, loadCompletion, publicClient, loadAccount, Number(chainId), executorVersion);
     return await relayExactOperation({ approval, journal, execution });
   } finally {
     await journal?.close();

@@ -121,8 +121,7 @@ describe('l1Transport', () => {
     await expect(client.sendRawTransaction({ serializedTransaction: RAW_TX })).rejects.toThrow();
 
     expect(read.methods).toEqual([]);
-    expect(submission.methods.length).toBeGreaterThan(0);
-    expect(submission.methods.every(method => method === 'eth_sendRawTransaction')).toBe(true);
+    expect(submission.methods).toEqual(['eth_sendRawTransaction']);
   });
 
   it('does not send failed reads to Protect', async () => {

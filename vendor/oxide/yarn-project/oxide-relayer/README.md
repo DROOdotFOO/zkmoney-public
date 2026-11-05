@@ -72,10 +72,12 @@ exact CLI reduces every failure to a static stderr message so RPC request bodies
 signed bytes cannot cross the log boundary. RPC, manifest, Portal, node, and signer references use the ordinary
 reviewed environment configuration.
 
-The exact journal and one global shared lease have fixed `/data` paths independent of the configurable generic state
-path. CLI callers cannot select a fresh journal or lease. Existing paths must be owner-only regular files under a
-canonical owner-only directory; symlinks and noncanonical SQLite schemas, including added views, indexes or triggers,
-are rejected before initialization.
+The exact journal and one global shared lease have fixed `/data` paths. Exact-compatible generic shutdown writes a
+handoff only when the generic state template is exactly `/data/oxide-relayer-{portal}.sqlite3`; custom state paths
+remain supported for ordinary generic operation but can never authorize exact cutover. CLI callers cannot select a
+fresh exact journal or lease. Existing paths must be owner-only regular files under a canonical owner-only directory;
+symlinks and noncanonical SQLite schemas, including added views, indexes or triggers, are rejected before
+initialization.
 
 Cutover is fail closed:
 

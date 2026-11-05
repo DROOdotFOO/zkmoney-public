@@ -12,9 +12,10 @@ import {
   DEFAULT_LOG_SCAN_WINDOW,
 } from '../l1_operations/l1_operation_relayer.js';
 import { PROVER_ENV_VARS, PROVER_RUN_OPTIONS } from '../prover/cli.js';
+import { EXACT_HANDOFF_STATE_TEMPLATE } from '../state/path.js';
 import { SIGNER_BACKENDS, urlOrigin } from './config.js';
 
-const DEFAULT_SQLITE_PATH = '/data/oxide-relayer-{portal}.sqlite3';
+const DEFAULT_SQLITE_PATH = EXACT_HANDOFF_STATE_TEMPLATE;
 const DEFAULT_L1_OPERATIONS_RETRY_BACKOFF_MS = 30_000;
 const DEFAULT_L1_OPERATIONS_MAX_PENDING_AGE_SECONDS = 2 * 7 * 24 * 60 * 60;
 

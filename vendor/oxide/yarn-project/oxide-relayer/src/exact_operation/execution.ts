@@ -31,6 +31,7 @@ export class ExactL1Execution implements ExactOperationExecution {
     private readonly loadCompletion: () => Promise<WithdrawalCompletion>,
     private readonly client: PublicClient,
     private readonly loadAccount: () => Promise<PrivateKeyAccount>,
+    private readonly chainId: number,
     private readonly executorVersion: OperationExecutorVersion,
   ) {}
 
@@ -116,10 +117,8 @@ export class ExactL1Execution implements ExactOperationExecution {
       gasToCover: simulation.gasToCover,
       tokenWeiPerEth: BigInt(approval.economics.tokenWeiPerEth),
     });
-    const [chainId, nonce] = await Promise.all([
-      this.client.getChainId(),
-      this.client.getTransactionCount({ address: account.address, blockTag: 'pending' }),
-    ]);
+    const nonce = await this.client.getTransactionCount({ address: account.address, blockTag: 'pending' });
+    const chainId = approvedSigningChainId(approval, this.chainId);
     const serialized = await account.signTransaction({
       type: 'eip1559',
       chainId,
@@ -142,6 +141,13 @@ export class ExactL1Execution implements ExactOperationExecution {
     return { status: receipt.status };
   }
 }
+export function approvedSigningChainId(approval: ExactOperationApproval, verifiedChainId: number): number {
+  if (BigInt(verifiedChainId) !== BigInt(approval.deployment.chainId)) {
+    throw new Error('Exact-operation signing chain differs from the approved chain');
+  }
+  return verifiedChainId;
+}
+
 
 function enforceFeeCeilings(
   approval: ExactOperationApproval,
