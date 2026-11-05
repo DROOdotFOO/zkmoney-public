@@ -219,7 +219,7 @@ jobs:
           pnpm fetch --prod --frozen-lockfile
           prewarm="$RUNNER_TEMP/oxide-relayer-production-deploy"
           npm_config_ignore_scripts=true pnpm --filter @oxide/oxide-relayer deploy --prod "$prewarm"
-          rm -rf "$prewarm"
+          printf 'RELEASE_PREWARM_DEPLOY=%s\n' "$prewarm" >> "$GITHUB_ENV"
           l1_contracts="$GITHUB_WORKSPACE/vendor/oxide/l1-contracts"
           test "$(sha256sum "$l1_contracts/yarn.lock" | cut -d ' ' -f 1)" = "$RELEASE_YARN_LOCK_SHA256"
           yarn_version="$(cd "$l1_contracts" && corepack yarn --version)"
@@ -278,10 +278,33 @@ jobs:
           node_root="$(dirname "$(dirname "$(command -v node)")")"
           store_dir="$(pnpm store path)"
           test -f "$node_root/include/node/node.h"
+          real_corepack="$(command -v corepack)"
+          wrapper_dir="$RUNNER_TEMP/release-corepack"
+          mkdir -p "$wrapper_dir"
+          cat > "$wrapper_dir/corepack" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "$#" -eq 6 ]] &&
+            [[ "$1" == "pnpm" ]] &&
+            [[ "$2" == "--filter" ]] &&
+            [[ "$3" == "@oxide/oxide-relayer" ]] &&
+            [[ "$4" == "deploy" ]] &&
+            [[ "$5" == "--prod" ]]; then
+            destination="$6"
+            cp -a "$RELEASE_PREWARM_DEPLOY/." "$destination/"
+            "$RELEASE_REAL_COREPACK" pnpm --dir "$destination" rebuild --pending
+            node -e 'require(process.argv[1])' "$destination/node_modules/sqlite3"
+            exit 0
+          fi
+          exec "$RELEASE_REAL_COREPACK" "$@"
+          EOF
+          chmod 0555 "$wrapper_dir/corepack"
           sudo unshare --net -- runuser -u "$USER" -- env \
             "HOME=$HOME" \
-            "PATH=$PATH" \
+            "PATH=$wrapper_dir:$PATH" \
             "PNPM_HOME=$PNPM_HOME" \
+            "RELEASE_REAL_COREPACK=$real_corepack" \
+            "RELEASE_PREWARM_DEPLOY=$RELEASE_PREWARM_DEPLOY" \
             "pnpm_config_store_dir=$store_dir" \
             "npm_config_offline=true" \
             "npm_config_nodedir=$node_root" \
