@@ -159,6 +159,7 @@ describe('idle-cycle logging', () => {
         executor: EXECUTOR,
         executorVersion: 'gas-to-cover',
         l1TxQueue: passThroughL1TxQueue(),
+        forbiddenOperationIds: new Set(),
         sanctionsList: CLEAN_LIST,
         withdrawalCompletion: NO_WITHDRAWALS,
         priceOracle: IDENTITY_ORACLE,

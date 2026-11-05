@@ -247,6 +247,7 @@ async function runRelayerWithLease(config: RunConfig, opts: RunRelayerOptions): 
           executor: publicConfig.operationExecutor,
           executorVersion,
           l1TxQueue,
+          forbiddenOperationIds: quarantinedOperationIds,
           sanctionsList,
           withdrawalCompletion: new WithdrawalCompletion(
             node,

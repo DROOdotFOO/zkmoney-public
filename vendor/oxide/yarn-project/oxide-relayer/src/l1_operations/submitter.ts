@@ -50,6 +50,8 @@ export interface L1OperationSubmitterDeps {
   client: PublicClient;
   l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
   store: StateStore;
+  /** Exact-operation identities permanently excluded before evaluation or TEE completion. */
+  forbiddenOperationIds: ReadonlySet<string>;
   priceOracle: PriceOracle;
   screener: L1OperationScreener;
   config: L1OperationsSubmissionConfig;
@@ -137,7 +139,8 @@ export class L1OperationSubmitter {
     const summary = this.#drainBackgroundSummary();
     // A batch can start before the monitor of an earlier batch's tx records its outcome.
     const due = (await this.deps.store.listPendingL1Operations({ dueAt: this.#now() })).filter(
-      operation => !this.inFlight.has(operation.operationId),
+      operation =>
+        !this.inFlight.has(operation.operationId) && !this.deps.forbiddenOperationIds.has(operation.operationId),
     );
     if (due.length === 0) {
       return summary;
