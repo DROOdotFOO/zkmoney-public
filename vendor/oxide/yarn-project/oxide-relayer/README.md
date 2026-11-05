@@ -7,12 +7,16 @@ The `@oxide/oxide-relayer` workspace builds the long-running L1 operation relaye
 Use Node 24, Aztec 6.0.0, Docker Buildx, and the Foundry toolchain. From the repository root:
 
 ```sh
-deployer/bash/relayer/prepare-relayer-image.sh
-docker buildx build --platform linux/amd64 --provenance=false --sbom=false --load \
-  -f yarn-project/oxide-relayer/Dockerfile -t oxide-relayer:local .
+pnpm build-contracts
+pnpm build:relayer
+pnpm prepare:relayer-image
+docker buildx build --platform linux/amd64 --provenance=mode=max --sbom=true \
+  -f Dockerfile.oxide-relayer -t oxide-relayer:local .
 ```
 
-The preparation command builds production L1 ABI modules and the L2 and refund artifacts used by the image. The Dockerfile installs the locked Yarn workspace, builds the relayer dependency chain, and keeps production dependencies. Publish an immutable image digest for a persistent deployment.
+The preparation command deploys production dependencies into an isolated
+filesystem, copies the built Oxide workspace outputs, and runs the exact CLI
+from that filesystem. Publish only a reviewed image by immutable digest.
 
 ## Public releases
 
@@ -44,6 +48,42 @@ Mount durable storage at `/data` for the default `oxide-relayer-{portal}.sqlite3
 For a reader coming from upstream oxide: the inputs and flag names are upstream's. The two differences are the startup check of the pinned entry's rollup version against the node, and the policy, that is the exclude list and the token admission rule, which upstream does not have.
 
 Start the relayer before clients broadcast operations and check that its L2 cursor advances. Observe one transaction through discovery, simulation, screening, L1 execution, and receipt. Back up the SQLite state and monitor discovery lag, deferred operations, signer ETH, and the sanctions-list refresh. The L2 transaction payload is available only for a short window; an operation broadcast before discovery cannot be recovered after its payload is pruned.
+
+## Exact-operation relay
+
+`relay-exact` is a separate one-shot runtime for an already-finalized withdrawal operation. It does not start the
+L1-operation discovery loop, historical supervisors, FPC funding, epoch proofs, fake-send mode, or a retry loop. It
+does not open the generic relayer SQLite files. The exact runtime uses a dedicated schema-versioned journal and a
+shared runtime lease.
+
+The operation identity is not available before the L2 exit transaction is submitted. Derive it after inclusion from
+the exact Portal deployment, source transaction hash and block, the single Broadcaster call, its calldata, and the
+resulting operation ID. The source block must be at or below the proven L2 tip, the withdrawal must verify against the
+transaction effect, and an Outbox witness must exist. Recipient plus amount is not an operation identity.
+
+The approval, approval token, and independently verified runtime identity are accepted only through inherited file
+descriptors. Use either `--bundle-fd` for a strict in-memory bundle or all of `--approval-fd`,
+`--approval-token-fd`, and `--runtime-identity-fd`. The token is bound to the source commit, immutable image digest,
+singleton host, generic-state-set digest, Portal, and operation ID. Never place these values in inventory,
+environment files, generated Compose, command arguments, or logs. RPC, manifest, Portal, node, and signer
+references use the ordinary reviewed environment configuration.
+
+Cutover is fail closed:
+
+1. Freeze intake outside the relayer.
+2. Gracefully stop the generic runtime. Shutdown waits for every signed L1 submission monitor to reach a terminal
+   outcome. Only then does it write the clean-handoff marker while still holding the shared lease.
+3. Preserve and hash every generic SQLite, WAL, and cursor artifact. The hash set is the approved
+   `stateSetDigest`; do not copy, filter, migrate, or rewrite the database.
+4. Confirm the exact singleton host, commit, image digest, journal schema, deployment, source evidence, operation,
+   and economics. Start `relay-exact`; acquiring its lease consumes the clean-handoff marker.
+5. The exact journal records `signing`, signed transaction bytes, and `send_started` durably before the only send.
+   A signing, send, or receipt ambiguity locks the approval and evidence permanently. There is no second send.
+6. Restore the generic runtime only under separate approval. Its startup does not consume or alter the exact journal.
+
+While the exact runtime owns the lease, unrelated L1-operation discovery/submission, FPC funding, and epoch-proof
+work are all delayed. Their SQLite rows and ordering remain unchanged. Account for that whole pause before cutover;
+do not use this mode if those obligations cannot be delayed safely.
 
 ## User flows
 

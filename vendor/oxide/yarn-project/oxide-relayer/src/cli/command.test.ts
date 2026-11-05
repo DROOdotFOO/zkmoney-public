@@ -7,13 +7,75 @@ import { describe, expect, it } from '@jest/globals';
 import { DEFAULT_LOG_SCAN_WINDOW } from '../l1_operations/l1_operation_relayer.js';
 import { createCliProgram } from './command.js';
 import { redactRunConfig } from './config.js';
-import { REQUIRED_ARGS, parseRunConfig, runHelpText } from './test_run_config.js';
+import {
+  REQUIRED_ARGS,
+  parseExactOperationConfig,
+  parseRunConfig,
+  runHelpText,
+} from './test_run_config.js';
 
 describe('createCliProgram', () => {
   it('rejects the removed prover-claims mode', async () => {
     await expect(parseRunConfig([...REQUIRED_ARGS, '--modes', 'prover-claims'], {})).rejects.toThrow(
       /invalid relayer mode/,
     );
+  });
+
+  it('keeps exact-operation approval descriptor-only and starts no generic workers', async () => {
+    const args = [
+      '--approval-fd',
+      '3',
+      '--approval-token-fd',
+      '4',
+      '--runtime-identity-fd',
+      '5',
+      '--journal',
+      '/data/exact.sqlite3',
+      '--runtime-lease',
+      '/data/runtime-lease.sqlite3',
+    ];
+    const env = {
+      OXIDE_DEPLOYMENT_ENV_MANIFEST_URL: 'https://manifest.example/v6/prod/releases.json',
+      OXIDE_PORTAL: '0x0000000000000000000000000000000000000001',
+      READ_L1_RPC_URL: 'https://rpc.example',
+      AZTEC_NODE_URL: 'https://aztec.example',
+      OXIDE_EXACT_APPROVAL_TOKEN: 'must-not-be-read',
+    };
+    const config = await parseExactOperationConfig(args, env);
+    const bundled = await parseExactOperationConfig(
+      [
+        '--bundle-fd',
+        '3',
+        '--journal',
+        '/data/exact.sqlite3',
+        '--runtime-lease',
+        '/data/runtime-lease.sqlite3',
+      ],
+      env,
+    );
+
+    expect(config).not.toHaveProperty('modes');
+    expect(config).not.toHaveProperty('disableSubmission');
+    expect(config.approvalTokenFd).toBe(4);
+    expect(bundled.bundleFd).toBe(3);
+    await expect(
+      parseExactOperationConfig(args.filter((_, index) => index !== 2 && index !== 3), env),
+    ).rejects.toThrow(/approval-token-fd/);
+    await expect(
+      parseExactOperationConfig(
+        [
+          '--bundle-fd',
+          '3',
+          '--approval-fd',
+          '4',
+          '--journal',
+          '/data/exact.sqlite3',
+          '--runtime-lease',
+          '/data/runtime-lease.sqlite3',
+        ],
+        env,
+      ),
+    ).rejects.toThrow(/requires --bundle-fd or all/);
   });
 
   it('parses public docker one-liner flags', async () => {

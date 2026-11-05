@@ -135,8 +135,9 @@ export class L1OperationRelayer {
     if (this.runningPromise.isRunning()) {
       this.log.verbose(`Stopping L1 operation relayer`);
       await this.runningPromise.stop();
-      this.log.info(`Stopped L1 operation relayer`);
     }
+    await this.submitter.stop();
+    this.log.info(`Stopped L1 operation relayer`);
   }
 
   public isRunning(): boolean {

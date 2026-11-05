@@ -1,0 +1,8 @@
+ARG NODE_IMAGE=node:24.15.0-bookworm-slim
+FROM ${NODE_IMAGE}
+
+WORKDIR /app
+COPY --chown=node:node .relayer-image/ ./
+
+USER node
+ENTRYPOINT ["node", "dest/bin/oxide-relayer.js"]

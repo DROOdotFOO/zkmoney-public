@@ -20,6 +20,8 @@ import {
   resolveDeploymentEnvManifest,
 } from './config/deployment_env_manifest.js';
 import { DeploymentManifestRefresher } from './config/deployment_manifest_refresher.js';
+import { RuntimeLease, runtimeLeasePath } from './exact_operation/runtime_lease.js';
+
 import { FpcFunderCaller } from './fpc_funding/fpc_funder_caller.js';
 import { HistoricalDeploymentSupervisor } from './historical_deployment_supervisor.js';
 import { getL1PublicClient } from './l1/client.js';
@@ -51,6 +53,16 @@ export interface RunRelayerOptions {
 const TELEMETRY_STOP_MS = 5_000;
 
 export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}): Promise<void> {
+  const lease = await RuntimeLease.acquire(runtimeLeasePath(config.state.sqlitePath), 'generic');
+  let cleanHandoff = false;
+  try {
+    await runRelayerWithLease(config, opts);
+    cleanHandoff = true;
+  } finally {
+    await lease.close({ cleanHandoff });
+  }
+}
+async function runRelayerWithLease(config: RunConfig, opts: RunRelayerOptions): Promise<void> {
   const log = createLogger('oxide-relayer');
   log.info(`oxide-relayer version ${relayerVersion()}`);
   log.info('Starting relayer', { config: redactRunConfig(config) });
@@ -324,7 +336,9 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
     await manifestRefresher?.stop();
     // Stop the L1 tx queue together with the workers. A worker run can wait on a queue hold that only the queue stop
     // ends.
-    await Promise.allSettled([...historicalSupervisors, ...currentServices, l1TxQueue].map(service => service.stop()));
+    const stopResults = await Promise.allSettled(
+      [...historicalSupervisors, ...currentServices, l1TxQueue].map(service => service.stop()),
+    );
     // stop() with a timeout so shutdown does not hang if the exporter stalls.
     await Promise.allSettled([
       Promise.race([
@@ -332,9 +346,15 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
         new Promise<void>(resolve => setTimeout(resolve, TELEMETRY_STOP_MS).unref()),
       ]),
     ]);
-    await Promise.allSettled(historicalSupervisors.map(supervisor => supervisor.close()));
+    const closeResults = await Promise.allSettled(historicalSupervisors.map(supervisor => supervisor.close()));
     await state?.close();
     sdn?.stop();
+    const shutdownFailures = [...stopResults, ...closeResults]
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map(result => result.reason);
+    if (shutdownFailures.length > 0) {
+      throw new AggregateError(shutdownFailures, 'Relayer shutdown was not clean; exact-operation handoff is forbidden');
+    }
   }
 }
 

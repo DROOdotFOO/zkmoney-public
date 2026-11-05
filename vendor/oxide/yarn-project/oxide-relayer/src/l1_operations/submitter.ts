@@ -106,6 +106,9 @@ export class L1OperationSubmitter {
   private readonly deferrals = new CauseTransitions();
   /** The operations whose sent tx has no outcome yet. A batch skips them. */
   private readonly inFlight = new Set<Hex>();
+  /** Settlement monitors that must finish before a clean generic-runtime handoff. */
+  private readonly settlementMonitors = new Set<Promise<void>>();
+
   private retryNextBatch = false;
 
   constructor(private readonly deps: L1OperationSubmitterDeps) {
@@ -117,6 +120,11 @@ export class L1OperationSubmitter {
     const retry = this.retryNextBatch;
     this.retryNextBatch = false;
     return await this.deps.l1TxQueue.enqueue(send => this.#runBatch(send), { retry });
+  }
+
+  /** A clean shutdown waits until every signed submission has a terminal chain outcome. */
+  async stop(): Promise<void> {
+    await Promise.all(this.settlementMonitors);
   }
 
   async #runBatch(send: SendL1Tx): Promise<L1OperationRunSummary> {
@@ -416,9 +424,12 @@ export class L1OperationSubmitter {
       // An already rejected monitor is terminal and must be processed before this run returns.
     }
     this.inFlight.add(operation.operationId);
-    const monitor = this.#monitorBroadcast(sent, operation, pending ? this.backgroundSummary : summary).finally(() =>
-      this.inFlight.delete(operation.operationId),
-    );
+    let monitor: Promise<void>;
+    monitor = this.#monitorBroadcast(sent, operation, pending ? this.backgroundSummary : summary).finally(() => {
+      this.inFlight.delete(operation.operationId);
+      this.settlementMonitors.delete(monitor);
+    });
+    this.settlementMonitors.add(monitor);
     if (!pending) {
       await monitor;
     }

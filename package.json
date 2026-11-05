@@ -15,6 +15,7 @@
     "build:web-deps": "pnpm --filter '@obsidion/config-client...' --filter '@obsidion/front-core...' --filter '@obsidion/passkey-web...' --filter '@obsidion/web-ds...' --filter '!@oxide/*' -r --if-present run build",
     "build:web-wallet": "pnpm --filter '@obsidion/web-wallet...' --filter '!@oxide/*' -r --if-present run build",
     "build:relayer": "node packages/oxide-build/scripts/build-oxide-tee.mjs --relayer",
+    "prepare:relayer-image": "node packages/oxide-build/scripts/prepare-relayer-image.mjs",
     "build:oxide-circuits": "scripts/build-oxide-circuits.sh"
   },
   "engines": {
