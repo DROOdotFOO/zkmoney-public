@@ -39,8 +39,10 @@ async function main(): Promise<void> {
 }
 
 main()
-  .catch(() => {
-    console.error('oxide-relayer privileged initialization or runtime failed closed');
+  .catch(error => {
+    const detail =
+      process.argv[2] === 'preflight-exact' && error instanceof Error ? `: ${error.message}` : '';
+    console.error(`oxide-relayer privileged initialization or runtime failed closed${detail}`);
     process.exitCode = 1;
   })
   .finally(() => closeRetainedSecretDescriptors());
