@@ -17,7 +17,9 @@ export interface LoadedSigner {
 
 /** Whether the config points at key material: the private-key env var is set, or a keystore path is given. */
 export function hasSignerKey(config: SignerConfig, env: NodeJS.ProcessEnv = process.env): boolean {
-  return config.backend === 'env' ? !!env[config.privateKeyEnvVar] : config.keystorePath !== undefined;
+  return config.backend === 'env'
+    ? !!env[config.privateKeyEnvVar]
+    : config.keystoreJson !== undefined || config.keystorePath !== undefined;
 }
 
 /** A random in-memory key for disabled submission, which simulates as a sender but never signs. */
@@ -57,18 +59,30 @@ function loadEnvAccount(envVar: string, env: NodeJS.ProcessEnv): PrivateKeyAccou
 }
 
 async function loadKeystoreAccount(config: SignerConfig): Promise<PrivateKeyAccount> {
-  if (!config.keystorePath) {
-    throw new Error('keystore signer requires --keystore or OXIDE_RELAYER_KEYSTORE.');
+  if (!config.keystoreJson && !config.keystorePath) {
+    throw new Error('keystore signer requires initializer-prepared bytes or --keystore/OXIDE_RELAYER_KEYSTORE.');
   }
-  const json = await readFile(config.keystorePath, 'utf8');
-  const password = await loadKeystorePassword(config);
-  const wallet = await Wallet.fromEncryptedJson(json, password);
-  return privateKeyToAccount(normalizePrivateKey(wallet.privateKey, 'keystore private key'));
+  const jsonBytes = config.keystoreJson;
+  const passwordBytes = config.keystorePasswordBytes;
+  try {
+    const json = jsonBytes ? jsonBytes.toString('utf8') : await readFile(config.keystorePath!, 'utf8');
+    const password = await loadKeystorePassword(config);
+    const wallet = await Wallet.fromEncryptedJson(json, password);
+    return privateKeyToAccount(normalizePrivateKey(wallet.privateKey, 'keystore private key'));
+  } finally {
+    jsonBytes?.fill(0);
+    passwordBytes?.fill(0);
+  }
 }
 
 async function loadKeystorePassword(config: SignerConfig): Promise<string> {
   if (config.keystorePassword !== undefined) {
     return config.keystorePassword;
+  }
+  if (config.keystorePasswordBytes) {
+    const password = config.keystorePasswordBytes.toString('utf8').replace(/\r?\n$/, '');
+    if (!password) throw new Error('initializer-prepared keystore password is empty');
+    return password;
   }
   if (config.keystorePasswordFile) {
     const passwordFile = await readFile(config.keystorePasswordFile, 'utf8');

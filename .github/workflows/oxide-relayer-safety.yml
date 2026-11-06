@@ -1,0 +1,98 @@
+name: Oxide relayer safety
+
+on:
+  pull_request:
+    paths:
+      - "Dockerfile.oxide-relayer"
+      - ".dockerignore"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "packages/contracts/**"
+      - "packages/oxide-build/**"
+      - "vendor/oxide/l1-contracts/**"
+      - "vendor/oxide/yarn-project/**"
+      - ".github/workflows/oxide-relayer-safety.yml"
+  push:
+    branches:
+      - security/exact-operation-relay
+    paths:
+      - "Dockerfile.oxide-relayer"
+      - ".dockerignore"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "packages/contracts/**"
+      - "packages/oxide-build/**"
+      - "vendor/oxide/l1-contracts/**"
+      - "vendor/oxide/yarn-project/**"
+      - ".github/workflows/oxide-relayer-safety.yml"
+
+env:
+  AZTEC_VERSION: 6.0.0
+  AZTEC_INSTALLER_SHA256: d1f1fc919a70e1404626c952a389f27d36c1459297d94c09168c66e37d2a89d4
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oxide-relayer-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: corepack enable
+      - uses: pnpm/action-setup@v4
+      - name: Install exact lockfile
+        run: pnpm install --frozen-lockfile
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Cache Aztec installation
+        id: cache-aztec
+        uses: actions/cache@v4
+        with:
+          path: ~/.aztec
+          key: aztec-installation-${{ env.AZTEC_VERSION }}-${{ env.AZTEC_INSTALLER_SHA256 }}
+      - name: Install verified Aztec bootstrap
+        if: steps.cache-aztec.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL "https://install.aztec.network/${AZTEC_VERSION}" -o "$RUNNER_TEMP/install-aztec"
+          printf '%s  %s\n' "$AZTEC_INSTALLER_SHA256" "$RUNNER_TEMP/install-aztec" | sha256sum -c -
+          VERSION="$AZTEC_VERSION" bash -i "$RUNNER_TEMP/install-aztec"
+      - name: Add Aztec binaries to PATH
+        run: |
+          {
+            echo "$HOME/.aztec/bin"
+            echo "$HOME/.aztec/current/bin"
+            echo "$HOME/.aztec/current/node_modules/.bin"
+            echo "$HOME/.aztec/current/internal-bin"
+          } >> "$GITHUB_PATH"
+      - name: Build and smoke reviewed image
+        run: |
+          pnpm build-contracts
+          openssl genpkey -algorithm ED25519 -out "$RUNNER_TEMP/approval-private.pem"
+          openssl pkey -in "$RUNNER_TEMP/approval-private.pem" -pubout -out "$RUNNER_TEMP/approval-public.pem"
+          OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE="$RUNNER_TEMP/approval-public.pem" pnpm prepare:relayer-image
+          image="oxide-relayer-ci:${GITHUB_SHA}"
+          docker build --file Dockerfile.oxide-relayer --tag "$image" .
+          test "$(docker image inspect --format '{{.Config.User}}' "$image")" = root
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")" = '["node","dest/bin/oxide-relayer-init.js"]'
+          docker run --rm --entrypoint getent "$image" passwd 65532 | grep -E '^oxide-exact:x:65532:65532:.*:/nonexistent:/usr/sbin/nologin$'
+          test "$(docker run --rm --entrypoint stat "$image" --format '%u:%g:%a' /control)" = '65532:65532:700'
+          docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | grep -Fx 'OXIDE_EXACT_RUNTIME_UID=65532'
+          docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | grep -Fx 'OXIDE_EXACT_RUNTIME_GID=65532'
+          test "$(docker run --rm --entrypoint cat "$image" /app/source-commit)" = "$GITHUB_SHA"
+          docker run --rm --entrypoint test "$image" -r /app/approval-authority.pem
+          docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js relay-exact --help
+          docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js authorize-generic-restore --help
+          OXIDE_SMOKE_DIAGNOSTIC=1 scripts/smoke-exact-relayer-entrypoint.sh "$image"
+      - name: Run complete source tests
+        run: pnpm --filter @oxide/oxide-relayer test

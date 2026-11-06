@@ -2,7 +2,7 @@ import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { describe, expect, it } from '@jest/globals';
 
-import { statePathForPortal } from './path.js';
+import { statePathForPortal, supportsExactOperationHandoff } from './path.js';
 
 const PORTAL = EthAddress.fromString('0x00000000000000000000000000000000000000ab');
 
@@ -19,5 +19,13 @@ describe('statePathForPortal', () => {
 
   it('rejects a fixed path for multiple deployments', () => {
     expect(() => statePathForPortal('/data/state.sqlite3', PORTAL, 2)).toThrow(/must contain \{portal\}/);
+  });
+});
+
+describe('supportsExactOperationHandoff', () => {
+  it('allows only the canonical generic state inventory', () => {
+    expect(supportsExactOperationHandoff('/data/oxide-relayer-{portal}.sqlite3')).toBe(true);
+    expect(supportsExactOperationHandoff('/data/custom-{portal}.sqlite3')).toBe(false);
+    expect(supportsExactOperationHandoff('/outside/oxide-relayer-{portal}.sqlite3')).toBe(false);
   });
 });

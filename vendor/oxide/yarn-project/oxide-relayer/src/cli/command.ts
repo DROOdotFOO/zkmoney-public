@@ -3,6 +3,14 @@ import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { Command } from 'commander';
 
+import type { PreflightExactOperationConfig } from '../exact_operation/preflight.js';
+import type { RunExactOperationConfig } from '../exact_operation/run.js';
+import {
+  EXACT_SIGNER_KEYSTORE_PATH,
+  EXACT_SIGNER_PASSWORD_PATH,
+} from '../exact_operation/paths.js';
+import { consumePreparedRuntimeInput, hasPreparedRuntimeInput } from '../exact_operation/runtime_sandbox.js';
+import { loadAztecNodeUrl } from '../exact_operation/witness_configuration.js';
 import type { PredicateScreenerConfig } from '../l1_operations/predicate_screener.js';
 import { toProverRunConfig } from '../prover/cli.js';
 import { relayerVersion } from '../version.js';
@@ -13,6 +21,7 @@ import {
   type RelayerMode,
   type RunConfig,
   type SignerBackend,
+  type SignerConfig,
 } from './config.js';
 import { RUN_OPTIONS, addOptions } from './options.js';
 import { parseCsv, parseEthAddresses } from './parse.js';
@@ -24,7 +33,12 @@ import { parseCsv, parseEthAddresses } from './parse.js';
  * The injected runner keeps process startup thin and lets tests capture the normalized config without
  * starting the long-running relayer loop.
  */
-export function createCliProgram(run: (config: RunConfig) => Promise<void> | void): Command {
+export function createCliProgram(
+  run: (config: RunConfig) => Promise<void> | void,
+  runExact?: (config: RunExactOperationConfig) => Promise<unknown> | void,
+  authorizeRestore?: (bundleFd: number) => Promise<unknown> | void,
+  preflightExact?: (config: PreflightExactOperationConfig) => Promise<unknown> | void,
+): Command {
   const program = new Command();
   program
     .name('oxide-relayer')
@@ -37,9 +51,70 @@ export function createCliProgram(run: (config: RunConfig) => Promise<void> | voi
     .addCommand(
       createRunCommand().action(async (options: CommanderRunOptions) => {
         const config = runOptionsToConfig(options);
-        await run(config);
+        try {
+          await run(config);
+        } finally {
+          wipeSignerBuffers(config.signer);
+        }
       }),
     );
+  if (runExact) {
+    program.addCommand(
+      new Command('relay-exact')
+        .description('submit one approved finalized L1 operation without discovery or retry')
+        .requiredOption('--bundle-fd <fd>', 'inherited descriptor containing the signed one-run approval', integerFd)
+        .requiredOption('--canonical-state <path>', 'read-only canonical state root')
+        .requiredOption('--control-dir <path>', 'owner-only exact-operation control root')
+        .allowExcessArguments(false)
+        .action(async options => {
+          let config: RunExactOperationConfig | undefined;
+          try {
+            config = await exactConfigFromEnvironment(options);
+            await runExact(config);
+          } catch {
+            throw new Error('relay-exact failed closed; sensitive failure details suppressed');
+          } finally {
+            if (config) wipeSignerBuffers(config.signer);
+          }
+        }),
+    );
+  }
+  if (preflightExact) {
+    program.addCommand(
+      new Command('preflight-exact')
+        .description('validate the exact-operation image and immutable runtime handoff without credentials or side effects')
+        .requiredOption('--bundle-fd <fd>', 'inherited descriptor containing the nonsecret preflight bundle', integerFd)
+        .requiredOption('--canonical-state <path>', 'fixed read-only canonical state root')
+        .requiredOption('--control-dir <path>', 'fixed owner-only control root; no files are created')
+        .allowExcessArguments(false)
+        .action(async options => {
+          try {
+            await preflightExact({
+              bundleFd: options.bundleFd,
+              canonicalState: options.canonicalState,
+              controlDir: options.controlDir,
+            });
+          } catch {
+            throw new Error('preflight-exact failed closed; sensitive failure details suppressed');
+          }
+        }),
+    );
+  }
+  if (authorizeRestore) {
+    program.addCommand(
+      new Command('authorize-generic-restore')
+        .description('consume one signed restore approval without starting generic workers')
+        .requiredOption('--bundle-fd <fd>', 'inherited descriptor containing the signed one-run restore approval', integerFd)
+        .allowExcessArguments(false)
+        .action(async options => {
+          try {
+            await authorizeRestore(options.bundleFd);
+          } catch {
+            throw new Error('generic restore authorization failed closed; sensitive failure details suppressed');
+          }
+        }),
+    );
+  }
   return program;
 }
 
@@ -93,13 +168,6 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
     aztecNodeApiKey: aztecNodeApiKeyFromEnv(),
     ...prover,
     modes,
-    signer: {
-      backend: opts.signer ?? defaultSignerBackend(privateKeyEnvVar),
-      privateKeyEnvVar,
-      keystorePath: opts.keystore,
-      keystorePassword: opts.keystorePassword,
-      keystorePasswordFile: opts.keystorePasswordFile,
-    },
     state: {
       backend: 'sqlite',
       sqlitePath: opts.state!,
@@ -116,6 +184,19 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
     l1OperationsSubmission,
     fpcFundingPollIntervalMs: opts.fpcFundingPollIntervalMs!,
     predicate: toPredicateConfig(opts),
+    signer: {
+      backend: opts.signer ?? defaultSignerBackend(privateKeyEnvVar),
+      privateKeyEnvVar,
+      keystorePath: opts.keystore,
+      keystorePassword: opts.keystorePassword,
+      keystorePasswordFile: opts.keystorePasswordFile,
+      keystoreJson: hasPreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
+        ? consumePreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
+        : undefined,
+      keystorePasswordBytes: hasPreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
+        ? consumePreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
+        : undefined,
+    },
   };
 }
 
@@ -174,4 +255,57 @@ function parseEnumValue<const T extends readonly string[]>(value: string, allowe
 
 function missing(label: string): never {
   throw new Error(`missing required config: ${label}`);
+}
+
+async function exactConfigFromEnvironment(options: {
+  bundleFd: number;
+  canonicalState: string;
+  controlDir: string;
+}): Promise<RunExactOperationConfig> {
+  const signer = process.env.OXIDE_RELAYER_SIGNER ?? 'env';
+  if (signer !== 'env' && signer !== 'keystore') {
+    throw new Error("OXIDE_RELAYER_SIGNER must be 'env' or 'keystore' for relay-exact");
+  }
+  return {
+    bundleFd: options.bundleFd,
+    canonicalState: options.canonicalState,
+    controlDir: options.controlDir,
+    deploymentEnvManifestUrl: requiredEnv('OXIDE_DEPLOYMENT_ENV_MANIFEST_URL'),
+    portal: EthAddress.fromString(requiredEnv('OXIDE_PORTAL')),
+    readL1RpcUrl: requiredEnv('READ_L1_RPC_URL'),
+    submissionL1RpcUrl: process.env.OXIDE_EXACT_SUBMISSION_L1_RPC_URL,
+    aztecNodeUrl: await loadAztecNodeUrl(),
+    aztecNodeApiKey: aztecNodeApiKeyFromEnv(),
+    signer: {
+      backend: signer,
+      privateKeyEnvVar: process.env.OXIDE_RELAYER_PRIVATE_KEY_ENV ?? 'OXIDE_RELAYER_PRIVATE_KEY',
+      keystoreJson: hasPreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
+        ? consumePreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
+        : undefined,
+      keystorePasswordBytes: hasPreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
+        ? consumePreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
+        : undefined,
+    },
+  };
+}
+
+function wipeSignerBuffers(signer: SignerConfig): void {
+  signer.keystoreJson?.fill(0);
+  signer.keystorePasswordBytes?.fill(0);
+}
+
+function integerFd(value: string): number {
+  const fd = Number(value);
+  if (!Number.isSafeInteger(fd) || fd < 0 || fd === 1 || fd === 2) {
+    throw new Error('file descriptor must be standard input or an inherited descriptor of at least 3');
+  }
+  return fd;
+}
+
+function requiredEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`missing required relay-exact environment variable: ${name}`);
+  }
+  return value;
 }

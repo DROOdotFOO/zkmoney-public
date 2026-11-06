@@ -43,6 +43,8 @@ export interface L1OperationRelayerConfig {
   /** The `execute` version of `executor`. */
   executorVersion: OperationExecutorVersion;
   l1TxQueue: L1OperationSubmitterDeps['l1TxQueue'];
+  /** Exact-operation identities permanently excluded before evaluation or TEE completion. */
+  forbiddenOperationIds: ReadonlySet<string>;
   /** The list every address an operation touches is screened against before it is executed. */
   sanctionsList: SanctionsList;
   /** When set, addresses the Predicate policy declines also block the operation. */
@@ -107,6 +109,7 @@ export class L1OperationRelayer {
       client: config.publicClient,
       l1TxQueue: config.l1TxQueue,
       store: config.store,
+      forbiddenOperationIds: config.forbiddenOperationIds,
       priceOracle: config.priceOracle,
       screener: new L1OperationScreener(
         config.sanctionsList,
@@ -135,8 +138,9 @@ export class L1OperationRelayer {
     if (this.runningPromise.isRunning()) {
       this.log.verbose(`Stopping L1 operation relayer`);
       await this.runningPromise.stop();
-      this.log.info(`Stopped L1 operation relayer`);
     }
+    await this.submitter.stop();
+    this.log.info(`Stopped L1 operation relayer`);
   }
 
   public isRunning(): boolean {

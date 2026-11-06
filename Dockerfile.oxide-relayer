@@ -1,0 +1,24 @@
+ARG NODE_IMAGE=node:24.15.0-bookworm-slim
+FROM ${NODE_IMAGE}
+
+ENV OXIDE_EXACT_RUNTIME_UID=65532 \
+    OXIDE_EXACT_RUNTIME_GID=65532
+
+WORKDIR /app
+COPY --chown=root:root .relayer-image/ ./
+RUN groupadd --gid 65532 oxide-exact \
+    && useradd --uid 65532 --gid 65532 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin oxide-exact \
+    && mkdir -p /canonical /control /run/config/oxide-relayer /run/secrets/oxide-relayer /tmp \
+    && chown 65532:65532 /control \
+    && chmod 0555 /app \
+    && chmod 0700 /control /run/config/oxide-relayer /run/secrets/oxide-relayer \
+    && chmod 1777 /tmp \
+    && rm -rf \
+      /bin/bash /bin/dash /bin/sh \
+      /usr/bin/apt /usr/bin/apt-get /usr/bin/apt-cache /usr/bin/dpkg /usr/bin/dpkg-deb \
+      /usr/bin/scp /usr/bin/sftp /usr/bin/ssh /usr/bin/ssh-add /usr/bin/ssh-agent /usr/bin/ssh-keygen \
+      /usr/local/bin/corepack /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/pnpm /usr/local/bin/yarn \
+      /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/npm
+
+USER root
+ENTRYPOINT ["node", "dest/bin/oxide-relayer-init.js"]

@@ -111,19 +111,26 @@ describe('l1Transport', () => {
     }
   });
 
-  it.each(['rpc', 'network'])('does not send through the public RPC after a private %s failure', async failure => {
-    const read = await startRpc();
-    const submission = await startRpc();
-    submission.error = failure === 'rpc' ? { code: -32000, message: 'rejected' } : undefined;
-    submission.disconnect = failure === 'network';
-    const client = createPublicClient({ chain: foundry, transport: l1Transport(read.url, submission.url) });
+  it.each(['rpc', 'retryable-rpc', 'network'])(
+    'does not retry or send through the public RPC after a private %s failure',
+    async failure => {
+      const read = await startRpc();
+      const submission = await startRpc();
+      submission.error =
+        failure === 'rpc'
+          ? { code: -32000, message: 'rejected' }
+          : failure === 'retryable-rpc'
+            ? { code: -32603, message: 'internal error' }
+            : undefined;
+      submission.disconnect = failure === 'network';
+      const client = createPublicClient({ chain: foundry, transport: l1Transport(read.url, submission.url) });
 
-    await expect(client.sendRawTransaction({ serializedTransaction: RAW_TX })).rejects.toThrow();
+      await expect(client.sendRawTransaction({ serializedTransaction: RAW_TX })).rejects.toThrow();
 
-    expect(read.methods).toEqual([]);
-    expect(submission.methods.length).toBeGreaterThan(0);
-    expect(submission.methods.every(method => method === 'eth_sendRawTransaction')).toBe(true);
-  });
+      expect(read.methods).toEqual([]);
+      expect(submission.methods).toEqual(['eth_sendRawTransaction']);
+    },
+  );
 
   it('does not send failed reads to Protect', async () => {
     const read = await startRpc();

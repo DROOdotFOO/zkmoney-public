@@ -1,6 +1,11 @@
 import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 export const PORTAL_STATE_PLACEHOLDER = '{portal}';
+export const EXACT_HANDOFF_STATE_TEMPLATE = '/data/oxide-relayer-{portal}.sqlite3';
+
+export function supportsExactOperationHandoff(template: string): boolean {
+  return template === EXACT_HANDOFF_STATE_TEMPLATE;
+}
 
 /** Resolve one deployment's SQLite file without allowing multiple portals to share a database. */
 export function statePathForPortal(template: string, portal: EthAddress, deploymentCount: number): string {

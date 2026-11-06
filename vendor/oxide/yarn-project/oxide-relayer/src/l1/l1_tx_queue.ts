@@ -1,26 +1,29 @@
 import { type Logger, createLogger } from '@aztec-labs/foundation/log';
 import { sleep } from '@aztec-labs/foundation/sleep';
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   type Address,
   type Chain,
   type Hash,
   type LocalAccount,
   type PublicClient,
-  type TransactionReceipt,
   TransactionReceiptNotFoundError,
+  type TransactionReceipt,
   type TransactionRequestEIP1559,
   type Transport,
   type WalletClient,
   createWalletClient,
+  hexToBytes,
   isAddressEqual,
+  keccak256,
   toHex,
   zeroHash,
 } from 'viem';
 
 import { l1Transport } from './client.js';
 import { protectEndpoints } from './flashbots_protect.js';
+import type { DurableSubmissionJournal } from './submission_journal.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const PROTECT_TX_STATUS_TIMEOUT_MS = 5_000;
@@ -29,15 +32,28 @@ const PROTECT_TX_STATUS_TIMEOUT_MS = 5_000;
 export interface SentL1Tx {
   txHash: Hash;
   nonce: number;
-  /** Resolves with a mined receipt, including a revert; rejects on replacement or expiry. */
+  /** Resolves with a mined receipt; rejects on proven replacement or Protect expiry. */
   settled: Promise<TransactionReceipt>;
   /** True when submission is disabled: the tx was not sent and `settled` holds a fake receipt. */
   simulated?: boolean;
 }
 
-/** Broadcasts within the current submission batch. */
-export type SendL1Tx = (request: TransactionRequestEIP1559) => Promise<SentL1Tx>;
+export interface DurableSubmissionIdentity {
+  kind: 'l1-operation' | 'fpc-funding' | 'prover-claims';
+  id: string;
+}
 
+/** Broadcasts within the current submission batch. */
+export type SendL1Tx = (
+  request: TransactionRequestEIP1559,
+  identity: DurableSubmissionIdentity,
+) => Promise<SentL1Tx>;
+
+export class DurableSubmissionAmbiguityError extends Error {
+  constructor(cause: unknown) {
+    super('L1 submission outcome is durably ambiguous; reconciliation approval is required', { cause });
+  }
+}
 /**
  * Shares one account across relayer flows. Each batch is a fixed snapshot of queued callbacks, with retries first.
  * Broadcasts use serial nonces, and each transaction settles independently. The next batch waits until Protect
@@ -53,6 +69,14 @@ export class L1TxQueue {
   private readonly wallet: WalletClient<Transport, Chain, LocalAccount>;
   private readonly protectTxStatusUrl: string | undefined;
   private readonly pollIntervalMs: number;
+  private readonly submissionJournal: DurableSubmissionJournal;
+  private readonly submissionHooks:
+    | {
+        afterPrepared?(): Promise<void> | void;
+        afterResponse?(): Promise<void> | void;
+      }
+    | undefined;
+  private readonly forbiddenOperationIds: ReadonlySet<string>;
   private readonly log: Logger;
   private readonly queue: {
     retry: boolean;
@@ -68,10 +92,18 @@ export class L1TxQueue {
   private broadcasts: Promise<void> = Promise.resolve();
   /** Lower bound when the read RPC has not seen the last broadcast. */
   private lastSentNonce: number | undefined;
+  /** A send call failed after it may have reached the RPC. Exact-operation handoff is permanently forbidden. */
+  private ambiguousBroadcastResult = false;
 
   constructor(options: {
     client: PublicClient;
     wallet: WalletClient<Transport, Chain, LocalAccount>;
+    submissionJournal: DurableSubmissionJournal;
+    submissionHooks?: {
+      afterPrepared?(): Promise<void> | void;
+      afterResponse?(): Promise<void> | void;
+    };
+    forbiddenOperationIds?: ReadonlySet<string>;
     blockWindow: number;
     protectTxStatusUrl?: string;
     /** Skip each send instead of signing and broadcasting it, and report it as mined. */
@@ -85,6 +117,9 @@ export class L1TxQueue {
     }
     this.client = options.client;
     this.wallet = options.wallet;
+    this.submissionJournal = options.submissionJournal;
+    this.submissionHooks = options.submissionHooks;
+    this.forbiddenOperationIds = options.forbiddenOperationIds ?? new Set();
     this.address = options.wallet.account.address;
     this.blockWindow = options.blockWindow;
     this.protectTxStatusUrl = options.protectTxStatusUrl;
@@ -121,6 +156,9 @@ export class L1TxQueue {
       this.#rejectQueued(new Error('L1 submission batcher stopped before queued work could run'));
     }
     await this.worker;
+    if (this.ambiguousBroadcastResult) {
+      throw new Error('An L1 broadcast has an unknown result; exact-operation handoff is forbidden');
+    }
   }
 
   #startWorker(): void {
@@ -162,8 +200,8 @@ export class L1TxQueue {
         }
         try {
           submission.resolve(
-            await submission.submit(async request => {
-              const transaction = await this.#send(request);
+            await submission.submit(async (request, identity) => {
+              const transaction = await this.#send(request, identity);
               sent.push(transaction);
               return transaction;
             }),
@@ -257,12 +295,34 @@ export class L1TxQueue {
   }
 
   /** Broadcasts `request` after all earlier broadcasts, then starts its monitor. */
-  async #send(request: TransactionRequestEIP1559): Promise<SentL1Tx> {
+  async #send(request: TransactionRequestEIP1559, identity: DurableSubmissionIdentity): Promise<SentL1Tx> {
+    if (identity.kind === 'l1-operation' && this.forbiddenOperationIds.has(identity.id)) {
+      throw new Error('Exact operation is permanently quarantined from generic submission');
+    }
     if (this.disableSubmission) {
       return this.#skipSend(request);
     }
-    const { txHash, nonce, sentAtBlock } = await this.#inOrder(() => this.#broadcast(request));
-    const settled = this.#monitor(txHash, nonce, sentAtBlock);
+    const { txHash, nonce, sentAtBlock, operationIdentity } = await this.#inOrder(() =>
+      this.#broadcast(request, identity),
+    );
+    const settled = this.#monitor(txHash, nonce, sentAtBlock).then(
+      async receipt => {
+        await this.submissionJournal.recordTerminal(
+          operationIdentity,
+          receipt.status === 'success' ? 'confirmed' : 'reverted',
+          JSON.stringify({ txHash, receiptStatus: receipt.status }),
+        );
+        return receipt;
+      },
+      async error => {
+        await this.submissionJournal.recordTerminal(
+          operationIdentity,
+          'dropped_or_replaced',
+          JSON.stringify({ txHash, outcome: 'dropped_or_replaced' }),
+        );
+        throw error;
+      },
+    );
     // Callers see a failure through `settled`. This catch only prevents an unhandled rejection.
     void settled.catch(() => {});
     return { txHash, nonce, settled };
@@ -305,36 +365,87 @@ export class L1TxQueue {
     return result;
   }
 
-  async #broadcast(request: TransactionRequestEIP1559) {
+  async #broadcast(request: TransactionRequestEIP1559, identity: DurableSubmissionIdentity) {
+    if (this.ambiguousBroadcastResult) {
+      throw new Error('A prior L1 submission has an unresolved outcome; no further signing is permitted');
+    }
     const [pendingNonce, sentAtBlock] = await Promise.all([
       this.client.getTransactionCount({ address: this.address, blockTag: 'pending' }),
       this.client.getBlockNumber({ cacheTime: 0 }),
     ]);
     const nonce =
       this.lastSentNonce !== undefined && pendingNonce <= this.lastSentNonce ? this.lastSentNonce + 1 : pendingNonce;
-    const txHash = await this.wallet.sendTransaction({
-      ...request,
+    const chainId = this.wallet.chain.id;
+    const operationIdentity = durableOperationIdentity(identity);
+    await this.submissionJournal.reserveSigning({
+      operationIdentity,
+      signerCommitment: signerCommitment(this.address),
+      chainId,
       nonce,
-      type: 'eip1559',
+      requestDigest: durableRequestDigest(request, chainId, nonce),
     });
-    this.lastSentNonce = nonce;
-    this.log.debug('Sent L1 transaction', {
-      event: 'l1_tx_sent',
-      txHash,
-      nonce,
-      sentAtBlock: sentAtBlock.toString(),
-      to: request.to,
-      gasLimit: request.gas?.toString(),
-      maxFeePerGas: request.maxFeePerGas?.toString(),
-      maxPriorityFeePerGas: request.maxPriorityFeePerGas?.toString(),
-    });
-    return { txHash, nonce, sentAtBlock };
+    let serialized: `0x${string}`;
+    try {
+      serialized = await this.wallet.account.signTransaction({
+        ...request,
+        chainId,
+        nonce,
+        type: 'eip1559',
+      });
+      const signedTxHash = keccak256(serialized);
+      await this.submissionJournal.recordPrepared(
+        operationIdentity,
+        signedTxHash,
+        Buffer.from(hexToBytes(serialized)),
+      );
+    } catch (error) {
+      this.ambiguousBroadcastResult = true;
+      await this.submissionJournal.recordAmbiguous(operationIdentity);
+      throw new DurableSubmissionAmbiguityError(error);
+    }
+    const signedTxHash = keccak256(serialized);
+    try {
+      await this.submissionHooks?.afterPrepared?.();
+      await this.submissionJournal.beginSend(operationIdentity);
+      const txHash = await this.wallet.sendRawTransaction({ serializedTransaction: serialized });
+      const response = JSON.stringify({ txHash });
+      await this.submissionJournal.recordResponse(operationIdentity, response);
+      await this.submissionHooks?.afterResponse?.();
+      if (txHash.toLowerCase() !== signedTxHash.toLowerCase()) {
+        throw new Error('L1 RPC returned a transaction hash that does not match the durable signed bytes');
+      }
+      await this.submissionJournal.recordAccepted(operationIdentity);
+      this.lastSentNonce = nonce;
+      this.log.debug('Sent L1 transaction', {
+        event: 'l1_tx_sent',
+        txHash,
+        nonce,
+        sentAtBlock: sentAtBlock.toString(),
+        to: request.to,
+        gasLimit: request.gas?.toString(),
+        maxFeePerGas: request.maxFeePerGas?.toString(),
+        maxPriorityFeePerGas: request.maxPriorityFeePerGas?.toString(),
+      });
+      return { txHash, nonce, sentAtBlock, operationIdentity };
+    } catch (error) {
+      this.ambiguousBroadcastResult = true;
+      try {
+        const current = await this.submissionJournal.read(operationIdentity);
+        if (current?.state === 'sending' || current?.state === 'response_received') {
+          await this.submissionJournal.recordAmbiguous(operationIdentity, current.response);
+        }
+      } catch (journalError) {
+        throw new DurableSubmissionAmbiguityError(
+          new AggregateError([error, journalError], 'Failed to persist durable L1 submission ambiguity'),
+        );
+      }
+      throw new DurableSubmissionAmbiguityError(error);
+    }
   }
 
   /**
-   * Reads the chain until it uses the nonce of the transaction or passes the expiry bound. Protect drops a
-   * transaction after block `sentAtBlock + 1 + blockWindow`, and the last `+ 1` covers a relay that reads one block
-   * ahead of this sender at broadcast.
+   * Reads the chain until it uses the nonce. Protect can also prove a drop after
+   * `sentAtBlock + 1 + blockWindow`; public-mempool expiry is never terminal.
    */
   async #monitor(txHash: Hash, nonce: number, sentAtBlock: bigint): Promise<TransactionReceipt> {
     const lastBlock = sentAtBlock + BigInt(this.blockWindow + 2);
@@ -355,7 +466,7 @@ export class L1TxQueue {
           if (nonceUser !== undefined && nonceUser !== txHash) {
             terminalError = `L1 transaction ${txHash} has no receipt, and a different transaction used its nonce ${nonce}`;
           }
-        } else if (blockNumber > lastBlock) {
+        } else if (this.protectTxStatusUrl && blockNumber > lastBlock) {
           terminalError = `L1 transaction ${txHash} with nonce ${nonce} is not in a block up to block ${lastBlock}`;
         }
       } catch (err) {
@@ -425,6 +536,17 @@ function errMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function durableOperationIdentity(identity: DurableSubmissionIdentity): string {
+  if (!/^[A-Za-z0-9:._/-]{1,512}$/.test(identity.id)) {
+    throw new Error('Durable L1 submission identity is malformed');
+  }
+  return `${identity.kind}:${identity.id}`;
+}
+
+function signerCommitment(address: Address): string {
+  return `sha256:${createHash('sha256').update(Buffer.from(address.slice(2), 'hex')).digest('hex')}`;
+}
+
 /** True when `maxFeePerGas` is above the operator cap `maxFeePerGasCap`. Always false when no cap is set. */
 export function isAboveMaxFeePerGas(
   { maxFeePerGasCap }: { readonly maxFeePerGasCap?: bigint },
@@ -442,10 +564,21 @@ export function createL1TxQueue(options: {
   account: LocalAccount;
   readL1RpcUrl: string;
   flashbotsBlockRange: number;
+  submissionJournal: DurableSubmissionJournal;
   disableSubmission?: boolean;
   maxFeePerGasCap?: bigint;
+  forbiddenOperationIds?: ReadonlySet<string>;
 }): L1TxQueue {
-  const { client, account, readL1RpcUrl, flashbotsBlockRange, disableSubmission, maxFeePerGasCap } = options;
+  const {
+    client,
+    account,
+    readL1RpcUrl,
+    flashbotsBlockRange,
+    submissionJournal,
+    disableSubmission,
+    maxFeePerGasCap,
+    forbiddenOperationIds,
+  } = options;
   const endpoints = protectEndpoints(client.chain.id, flashbotsBlockRange);
   const wallet = createWalletClient({
     account,
@@ -459,5 +592,18 @@ export function createL1TxQueue(options: {
     protectTxStatusUrl: endpoints?.txStatusUrl,
     disableSubmission,
     maxFeePerGasCap,
+    submissionJournal,
+    forbiddenOperationIds,
   });
+}
+
+function durableRequestDigest(request: TransactionRequestEIP1559, chainId: number, nonce: number): string {
+  const canonical = JSON.stringify(
+    { ...request, chainId, nonce, type: 'eip1559' },
+    (_key, value: unknown) => (typeof value === 'bigint' ? value.toString(10) : value),
+  );
+  return `sha256:${createHash('sha256')
+    .update('oxide-relayer/generic-signing-request/v1\0')
+    .update(canonical)
+    .digest('hex')}`;
 }

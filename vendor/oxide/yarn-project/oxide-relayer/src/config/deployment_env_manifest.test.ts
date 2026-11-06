@@ -90,6 +90,20 @@ describe('resolveDeploymentEnvManifest', () => {
     expect(publicConfig.operationExecutor.toString()).toBe(OPERATION_EXECUTOR);
     expect(publicConfig.fpcFunder.toString()).toBe(FPC_FUNDER);
   });
+  it('exposes the exact fetched bytes to immutable-operation evidence callers', async () => {
+    const body = `${document(entry())}\n`;
+    let observed: Buffer | undefined;
+    await resolveDeploymentEnvManifest({
+      deploymentEnvManifestUrl: URL,
+      portal: EthAddress.fromString(PORTAL),
+      fetch: (() => Promise.resolve(new Response(body, { status: 200 }))) as typeof fetch,
+      onManifestBytes: bytes => {
+        observed = bytes;
+      },
+    });
+    expect(observed).toEqual(Buffer.from(body));
+  });
+
 
   it.each([undefined, 'not an address'])(
     'does not require or interpret withdrawal executor addresses (%s)',

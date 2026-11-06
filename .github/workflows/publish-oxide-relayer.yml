@@ -1,0 +1,953 @@
+name: Publish exact-operation relayer
+
+on:
+  push:
+    branches:
+      - release/oxide-relayer-exact-v1.0.6
+    paths:
+      - .github/workflows/publish-oxide-relayer.yml
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_COMMIT: ${{ github.sha }}
+  SOURCE_TAG: oxide-relayer-exact-v1.0.6
+  IMAGE_URI: ghcr.io/droodotfoo/oxide-relayer-exact-operation
+  IMAGE_VERSION: 1.0.6
+  LOCAL_IMAGE: oxide-relayer-exact-operation:release
+  APPROVAL_AUTHORITY_PEM_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQXVmMTNWdlAxUWZoU2dSM1d2d2dvMmJXbkMyNkhCSEZVMmtwTkoxQkRmQTg9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=
+  APPROVAL_AUTHORITY_SHA256: 3ceda4bf55e4c1b17765a28fc01e824765d4c02ef852749a76eb5d877c1cf137
+  NODE_BUILD_VERSION: 24.22.2
+  NODE_NATIVE_BUILD_IMAGE: node:24.15.0-bookworm@sha256:f22d6a1f082c02f292e86929b5b0442ac2e5eaf438a5dea9b1566601c3e05940
+  NODE_RUNTIME_IMAGE: node:24.15.0-bookworm-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
+  NODE_RUNTIME_DIGEST: sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
+  FOUNDRY_VERSION: v1.9.0
+  FOUNDRY_COMMIT: 6056c5845d34205a83cf7108042adb137325c9df
+  AZTEC_VERSION: 6.0.0
+  AZTEC_INSTALLER_SHA256: d1f1fc919a70e1404626c952a389f27d36c1459297d94c09168c66e37d2a89d4
+  NARGO_DEPENDENCY_LOCK_SHA256: 71e95fd86085df3495a3d93eea83fec8b6aa0b38a78f9de1a2d1866d3f3e1f0b
+  SOLIDITY_DEPENDENCY_LOCK_SHA256: 99a1c9ea55c84b5e7279dad95a6e7ded68518b971941f363963a9d0a39f82219
+  RELEASE_YARN_VERSION: 4.5.2
+  RELEASE_YARN_LOCK_SHA256: 5a7ea8ae4343cee282adeacf25866b47f64780be2f604a5fa95675a98597ec73
+  SOLC_VERSION: 0.8.30
+  SOLC_URL: https://github.com/argotorg/solidity/releases/download/v0.8.30/solc-static-linux
+  SOLC_SHA256: f3e987dc6ecebd4bd350c48edcbc320b46cf9e3109bd3fc3d88f1acaf4c428f7
+  RELEASE_PREDICATE_TYPE: https://xochimilco.dev/attestations/oxide-relayer-exact/v1
+
+concurrency:
+  group: publish-oxide-relayer-exact-v1.0.6
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the reviewed source commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Require the exact reviewed source and release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git rev-list -n 1 "$SOURCE_TAG")" = "$SOURCE_COMMIT"
+          test -z "$(git status --porcelain)"
+
+      - name: Set up exact Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_BUILD_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up exact pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+
+      - name: Install the exact lockfile without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+
+      - name: Set up exact Foundry
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+
+      - name: Verify Foundry identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          forge --version | tee "$RUNNER_TEMP/forge-version"
+          grep -Fx "Commit SHA: $FOUNDRY_COMMIT" "$RUNNER_TEMP/forge-version"
+
+      - name: Install the verified Aztec bootstrap without cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://install.aztec.network/${AZTEC_VERSION}" -o "$RUNNER_TEMP/install-aztec"
+          printf '%s  %s\n' "$AZTEC_INSTALLER_SHA256" "$RUNNER_TEMP/install-aztec" | sha256sum -c -
+          VERSION="$AZTEC_VERSION" bash -i "$RUNNER_TEMP/install-aztec"
+          {
+            echo "$HOME/.aztec/bin"
+            echo "$HOME/.aztec/current/bin"
+            echo "$HOME/.aztec/current/node_modules/.bin"
+            echo "$HOME/.aztec/current/internal-bin"
+          } >> "$GITHUB_PATH"
+
+      - name: Materialize reviewed Nargo dependency mirrors
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock_file="$RUNNER_TEMP/nargo-dependencies.lock"
+          mirror_root="$RUNNER_TEMP/nargo-mirrors"
+          git_config="$RUNNER_TEMP/nargo-gitconfig"
+          resolutions="$RUNNER_TEMP/nargo-dependency-resolutions.json"
+          mkdir -p "$mirror_root"
+          : > "$git_config"
+          cat > "$lock_file" <<'EOF'
+          https://github.com/aztec-labs-eng/aztec-node	v6.0.0	d2e67c1d938f06a6476dd7d4bd01e73771923dd1
+          https://github.com/AztecProtocol/aztec-packages	v6.0.0	0219f11d8133970df3974fe5ae65e006bf8c193a
+          https://github.com/noir-lang/poseidon	v0.3.0	0880c371e88e583d39515fd3f877538657ac41eb
+          https://github.com/noir-lang/poseidon	v0.4.0	e105cdd5c79c222860d53c5dfdb8fa8012b291c0
+          https://github.com/noir-lang/keccak256	v0.1.3	f64ab3af714aa1a1e2699243037e0f11fe5bf706
+          https://github.com/noir-lang/sha256	v0.2.1	eab74fc10d7f049a50728e8e8f4db01280fcf922
+          https://github.com/noir-lang/sha256	v0.3.0	9442e5b6856f98b2ec029882d7e90199ecff91ba
+          https://github.com/noir-lang/noir_base64	v0.5.1	82737dc95c824fccc056c35e94c81d600f33ca1d
+          https://github.com/noir-lang/noir-bignum	v0.10.0	00d4360fbaaae71b1ee7f93f78dfad4eb7e11479
+          https://github.com/noir-lang/schnorr	v0.4.0	9995bcc45e24c9eaccabe3bcf59c36f9aedaa00c
+          https://github.com/madztheo/noir-date.git	v0.5.6	ca9029869819c567c7b533e4b13d9ed47f2b7db3
+          https://github.com/zkpassport/noir_rsa	v0.11.1	7f77920b6289ca1f5ef9f4f185045875ab4513fc
+          https://github.com/olehmisar/nodash	v0.45.0	d6e6556e0d34faafe38d84653bb295e875e81d26
+          EOF
+          test "$(sha256sum "$lock_file" | cut -d ' ' -f 1)" = "$NARGO_DEPENDENCY_LOCK_SHA256"
+          python3 - "$lock_file" <<'PY'
+          import pathlib
+          import sys
+          import tomllib
+
+          lock = {
+              tuple(line.split("\t")[:2])
+              for line in pathlib.Path(sys.argv[1]).read_text().splitlines()
+          }
+          dependencies = set()
+          for manifest in pathlib.Path("packages/contracts").rglob("Nargo.toml"):
+              document = tomllib.loads(manifest.read_text())
+              for dependency in document.get("dependencies", {}).values():
+                  if isinstance(dependency, dict) and "git" in dependency:
+                      if "tag" not in dependency or "rev" in dependency:
+                          raise SystemExit(f"unsupported unlocked Git dependency in {manifest}")
+                      dependencies.add((dependency["git"], dependency["tag"]))
+          transitive = {
+              ("https://github.com/AztecProtocol/aztec-packages", "v6.0.0"),
+              ("https://github.com/noir-lang/poseidon", "v0.4.0"),
+              ("https://github.com/noir-lang/sha256", "v0.3.0"),
+          }
+          expected = dependencies | transitive
+          if expected != lock:
+              missing = sorted(expected - lock)
+              stale = sorted(lock - expected)
+              raise SystemExit(f"Nargo dependency lock mismatch: missing={missing}, stale={stale}")
+          PY
+          : > "$RUNNER_TEMP/nargo-resolutions.jsonl"
+          declare -A mirrors
+          index=0
+          while IFS=$'\t' read -r url tag commit; do
+            if [[ -z "${mirrors[$url]+set}" ]]; then
+              index=$((index + 1))
+              mirror="$mirror_root/$index.git"
+              git init --bare "$mirror"
+              mirrors[$url]="$mirror"
+              git config --file "$git_config" --add "url.file://$mirror.insteadOf" "$url"
+              if [[ "$url" == *.git ]]; then
+                git config --file "$git_config" --add "url.file://$mirror.insteadOf" "${url%.git}"
+              else
+                git config --file "$git_config" --add "url.file://$mirror.insteadOf" "$url.git"
+              fi
+            fi
+            mirror="${mirrors[$url]}"
+            git --git-dir="$mirror" fetch --force --no-tags --depth=1 \
+              "$url" "refs/tags/$tag:refs/tags/$tag"
+            test "$(git --git-dir="$mirror" rev-list -n 1 "refs/tags/$tag")" = "$commit"
+            jq -cn --arg url "$url" --arg tag "$tag" --arg commit "$commit" \
+              '{url:$url,tag:$tag,commit:$commit}' >> "$RUNNER_TEMP/nargo-resolutions.jsonl"
+          done < "$lock_file"
+          jq -s 'sort_by(.url, .tag)' "$RUNNER_TEMP/nargo-resolutions.jsonl" > "$resolutions"
+          solidity_lock="$RUNNER_TEMP/solidity-dependencies.lock"
+          solidity_resolutions="$RUNNER_TEMP/solidity-dependency-resolutions.json"
+          cat > "$solidity_lock" <<'EOF'
+          https://github.com/base/nitro-validator.git	55860bc2f7b934fa0337ca057ac18f0a53760c21
+          https://github.com/dl-solarity/solidity-lib.git	b94757194de6436062c2d68118c0352be84ac4be
+          EOF
+          test "$(sha256sum "$solidity_lock" | cut -d ' ' -f 1)" = "$SOLIDITY_DEPENDENCY_LOCK_SHA256"
+          : > "$RUNNER_TEMP/solidity-resolutions.jsonl"
+          index=0
+          while IFS=$'\t' read -r url commit; do
+            index=$((index + 1))
+            mirror="$mirror_root/solidity-$index.git"
+            git init --bare "$mirror"
+            git --git-dir="$mirror" fetch --force --no-tags --depth=1 "$url" "$commit"
+            test "$(git --git-dir="$mirror" rev-parse FETCH_HEAD)" = "$commit"
+            git --git-dir="$mirror" update-ref refs/heads/release "$commit"
+            git config --file "$git_config" --add "url.file://$mirror.insteadOf" "$url"
+            git config --file "$git_config" --add "url.file://$mirror.insteadOf" "${url%.git}"
+            jq -cn --arg url "$url" --arg commit "$commit" \
+              '{url:$url,commit:$commit}' >> "$RUNNER_TEMP/solidity-resolutions.jsonl"
+          done < "$solidity_lock"
+          jq -s 'sort_by(.url)' "$RUNNER_TEMP/solidity-resolutions.jsonl" > "$solidity_resolutions"
+          {
+            printf 'NARGO_DEPENDENCY_LOCK=%s\n' "$lock_file"
+            printf 'NARGO_DEPENDENCY_RESOLUTIONS=%s\n' "$resolutions"
+            printf 'SOLIDITY_DEPENDENCY_LOCK=%s\n' "$solidity_lock"
+            printf 'SOLIDITY_DEPENDENCY_RESOLUTIONS=%s\n' "$solidity_resolutions"
+            printf 'NARGO_GIT_CONFIG=%s\n' "$git_config"
+          } >> "$GITHUB_ENV"
+
+
+      - name: Materialize exact Yarn cache and Solidity compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(corepack pnpm --version)" = "9.14.4"
+          docker pull "$NODE_NATIVE_BUILD_IMAGE"
+          pnpm fetch --prod --frozen-lockfile
+          prewarm="$RUNNER_TEMP/oxide-relayer-production-deploy"
+          npm_config_ignore_scripts=true pnpm --filter @oxide/oxide-relayer deploy --prod "$prewarm"
+          printf 'RELEASE_PREWARM_DEPLOY=%s\n' "$prewarm" >> "$GITHUB_ENV"
+          l1_contracts="$GITHUB_WORKSPACE/vendor/oxide/l1-contracts"
+          test "$(sha256sum "$l1_contracts/yarn.lock" | cut -d ' ' -f 1)" = "$RELEASE_YARN_LOCK_SHA256"
+          yarn_version="$(cd "$l1_contracts" && corepack yarn --version)"
+          test "$yarn_version" = "$RELEASE_YARN_VERSION"
+          (
+            cd "$l1_contracts"
+            YARN_ENABLE_IMMUTABLE_INSTALLS=true corepack yarn install --immutable
+          )
+          yarn_cache="$(cd "$l1_contracts" && corepack yarn config get cacheFolder)"
+          test -d "$yarn_cache"
+          yarn_cache_sha256="$(tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$yarn_cache" -cf - . | sha256sum | cut -d ' ' -f 1)"
+          solc_binary="$RUNNER_TEMP/solc-$SOLC_VERSION"
+          curl -fsSL "$SOLC_URL" -o "$solc_binary"
+          test "$(sha256sum "$solc_binary" | cut -d ' ' -f 1)" = "$SOLC_SHA256"
+          chmod 0555 "$solc_binary"
+          "$solc_binary" --version | grep -F "Version: $SOLC_VERSION"
+          crs_base_url="https://crs.aztec-cdn.foundation"
+          crs_dir="$HOME/.bb-crs"
+          mkdir -p "$crs_dir"
+          curl -fsSL --range 0-16777215 "$crs_base_url/g1_compressed.dat" -o "$crs_dir/bn254_g1_compressed.dat"
+          curl -fsSL --range 0-127 "$crs_base_url/g2.dat" -o "$crs_dir/bn254_g2.dat"
+          curl -fsSL --range 0-4194303 "$crs_base_url/grumpkin_g1_v2.dat" -o "$crs_dir/grumpkin_g1_v2.flat.dat"
+          test "$(stat -c %s "$crs_dir/bn254_g1_compressed.dat")" = "16777216"
+          test "$(stat -c %s "$crs_dir/bn254_g2.dat")" = "128"
+          test "$(stat -c %s "$crs_dir/grumpkin_g1_v2.flat.dat")" = "4194304"
+          test "$(sha256sum "$crs_dir/bn254_g1_compressed.dat" | cut -d ' ' -f 1)" = "1d03ebeb73e1a6d426e44a2ccc88b04125ca185ab9d1679817380502a723fa80"
+          test "$(sha256sum "$crs_dir/bn254_g2.dat" | cut -d ' ' -f 1)" = "01797bfc4de5a96f0e516a9ea4537d18786dc30cb991aca4274c95822b69c32f"
+          test "$(sha256sum "$crs_dir/grumpkin_g1_v2.flat.dat" | cut -d ' ' -f 1)" = "64236c9455e75aeea77a94587ea607eed2e978d2609a421d66bf10bb9698b8fd"
+          chmod 0444 "$crs_dir"/*.dat
+          offline_inputs="$RUNNER_TEMP/offline-build-inputs.json"
+          jq -n \
+            --arg yarnVersion "$RELEASE_YARN_VERSION" \
+            --arg yarnLockSha256 "$RELEASE_YARN_LOCK_SHA256" \
+            --arg yarnCacheSha256 "$yarn_cache_sha256" \
+            --arg solcVersion "$SOLC_VERSION" \
+            --arg solcUrl "$SOLC_URL" \
+            --arg solcSha256 "$SOLC_SHA256" \
+            --arg nodeNativeBuildImage "$NODE_NATIVE_BUILD_IMAGE" \
+            --arg crsBaseUrl "$crs_base_url" \
+            --slurpfile solidityDependencies "$SOLIDITY_DEPENDENCY_RESOLUTIONS" \
+            '{yarn:{version:$yarnVersion,lockSha256:$yarnLockSha256,cacheSha256:$yarnCacheSha256},solc:{version:$solcVersion,url:$solcUrl,sha256:$solcSha256},nodeNativeBuildImage:$nodeNativeBuildImage,crs:[{name:"bn254_g1_compressed.dat",url:($crsBaseUrl+"/g1_compressed.dat"),bytes:16777216,sha256:"1d03ebeb73e1a6d426e44a2ccc88b04125ca185ab9d1679817380502a723fa80"},{name:"bn254_g2.dat",url:($crsBaseUrl+"/g2.dat"),bytes:128,sha256:"01797bfc4de5a96f0e516a9ea4537d18786dc30cb991aca4274c95822b69c32f"},{name:"grumpkin_g1_v2.flat.dat",url:($crsBaseUrl+"/grumpkin_g1_v2.dat"),bytes:4194304,sha256:"64236c9455e75aeea77a94587ea607eed2e978d2609a421d66bf10bb9698b8fd"}],solidityDependencies:$solidityDependencies[0]}' \
+            > "$offline_inputs"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          {
+            printf 'RELEASE_YARN_OFFLINE_CACHE=%s\n' "$yarn_cache"
+            printf 'RELEASE_YARN_OFFLINE_CACHE_SHA256=%s\n' "$yarn_cache_sha256"
+            printf 'SOLC_BINARY=%s\n' "$solc_binary"
+            printf 'OFFLINE_BUILD_INPUTS=%s\n' "$offline_inputs"
+          } >> "$GITHUB_ENV"
+      - name: Stage the reviewed production filesystem
+        shell: bash
+        run: |
+          set -euo pipefail
+          authority="$RUNNER_TEMP/approval-public.pem"
+          printf '%s' "$APPROVAL_AUTHORITY_PEM_B64" | base64 --decode > "$authority"
+          test "$(sha256sum "$authority" | cut -d ' ' -f 1)" = "$APPROVAL_AUTHORITY_SHA256"
+          node_root="$(dirname "$(dirname "$(command -v node)")")"
+          store_dir="$(pnpm store path)"
+          test -f "$node_root/include/node/node.h"
+          real_corepack="$(command -v corepack)"
+          wrapper_dir="$RUNNER_TEMP/release-corepack"
+          mkdir -p "$wrapper_dir"
+          cat > "$wrapper_dir/corepack" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "$#" -eq 6 ]] &&
+            [[ "$1" == "pnpm" ]] &&
+            [[ "$2" == "--filter" ]] &&
+            [[ "$3" == "@oxide/oxide-relayer" ]] &&
+            [[ "$4" == "deploy" ]] &&
+            [[ "$5" == "--prod" ]]; then
+            destination="$6"
+            cp -a "$RELEASE_PREWARM_DEPLOY/." "$destination/"
+            rm -rf "$destination/dest"
+            cp -a vendor/oxide/yarn-project/oxide-relayer/dest "$destination/dest"
+            copy_runtime_asset() {
+              local package="$1"
+              local asset="$2"
+              local count=0
+              local package_dir
+              for package_dir in "$destination"/node_modules/.pnpm/@oxide+"$package"@*/node_modules/@oxide/"$package"; do
+                rm -rf "$package_dir/$asset"
+                cp -a "vendor/oxide/yarn-project/$package/$asset" "$package_dir/$asset"
+                count=$((count + 1))
+              done
+              test "$count" -gt 0
+            }
+            shopt -s nullglob
+            copy_runtime_asset l1-contracts dest
+            copy_runtime_asset noir-contracts.js dest
+            copy_runtime_asset noir-contracts.js artifacts
+            copy_runtime_asset oxide-client dest
+            copy_runtime_asset oxide-lib dest
+            copy_runtime_asset oxide-lib-tee dest
+            copy_runtime_asset refund-proof dest
+            copy_runtime_asset telemetry dest
+            copy_runtime_asset watcher-lib dest
+            "$RELEASE_REAL_COREPACK" pnpm --dir "$destination" rebuild --pending
+            sqlite_dir="$destination/node_modules/.pnpm/sqlite3@5.1.7/node_modules/sqlite3"
+            docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+              --user "$(id -u):$(id -g)" \
+              --env HOME=/tmp \
+              --env npm_config_build_from_source=true \
+              --env npm_config_nodedir=/usr/local \
+              --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+              --workdir "$sqlite_dir" \
+              "$NODE_NATIVE_BUILD_IMAGE" \
+              ./node_modules/.bin/node-gyp rebuild
+            node -e 'require(process.argv[1])' "$destination/node_modules/sqlite3"
+            exit 0
+          fi
+          exec "$RELEASE_REAL_COREPACK" "$@"
+          EOF
+          chmod 0555 "$wrapper_dir/corepack"
+          sudo unshare --net -- runuser -u "$USER" -- env \
+            "HOME=$HOME" \
+            "PATH=$wrapper_dir:$PATH" \
+            "PNPM_HOME=$PNPM_HOME" \
+            "RELEASE_REAL_COREPACK=$real_corepack" \
+            "RELEASE_PREWARM_DEPLOY=$RELEASE_PREWARM_DEPLOY" \
+            "GITHUB_WORKSPACE=$GITHUB_WORKSPACE" \
+            "NODE_NATIVE_BUILD_IMAGE=$NODE_NATIVE_BUILD_IMAGE" \
+            "pnpm_config_store_dir=$store_dir" \
+            "npm_config_offline=true" \
+            "npm_config_nodedir=$node_root" \
+            "npm_config_build_from_source=true" \
+            "GIT_CONFIG_GLOBAL=$NARGO_GIT_CONFIG" \
+            "GIT_ALLOW_PROTOCOL=file" \
+            "YARN_ENABLE_NETWORK=false" \
+            "YARN_ENABLE_IMMUTABLE_CACHE=true" \
+            "YARN_ENABLE_IMMUTABLE_INSTALLS=true" \
+            "FOUNDRY_SOLC_VERSION=$SOLC_BINARY" \
+            "FOUNDRY_OFFLINE=true" \
+            "OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE=$authority" \
+            bash -euc 'pnpm build-contracts; pnpm prepare:relayer-image'
+          test "$(cat .relayer-image/source-commit)" = "$SOURCE_COMMIT"
+          test "$(sha256sum .relayer-image/approval-authority.pem | cut -d ' ' -f 1)" = "$APPROVAL_AUTHORITY_SHA256"
+          test "$(tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$RELEASE_YARN_OFFLINE_CACHE" -cf - . | sha256sum | cut -d ' ' -f 1)" = "$RELEASE_YARN_OFFLINE_CACHE_SHA256"
+          test "$(sha256sum "$SOLC_BINARY" | cut -d ' ' -f 1)" = "$SOLC_SHA256"
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+      - name: Record exact build materials
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-build release-materials
+          source_epoch="$(git show -s --format=%ct "$SOURCE_COMMIT")"
+          git archive --format=tar --prefix="zkmoney-public-${SOURCE_TAG}/" "$SOURCE_COMMIT" \
+            | gzip -n > "release-materials/zkmoney-public-${SOURCE_TAG}.tar.gz"
+          cp "$NARGO_DEPENDENCY_LOCK" release-materials/nargo-dependencies.lock
+          cp "$NARGO_DEPENDENCY_RESOLUTIONS" release-materials/nargo-dependency-resolutions.json
+          cp "$SOLIDITY_DEPENDENCY_LOCK" release-materials/solidity-dependencies.lock
+          cp "$SOLIDITY_DEPENDENCY_RESOLUTIONS" release-materials/solidity-dependency-resolutions.json
+          cp "$OFFLINE_BUILD_INPUTS" release-materials/offline-build-inputs.json
+          stage_sha256="$(tar --sort=name --mtime="@$source_epoch" --owner=0 --group=0 --numeric-owner -cf - .relayer-image | sha256sum | cut -d ' ' -f 1)"
+          jq -n \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg sourceArchiveSha256 "$(sha256sum "release-materials/zkmoney-public-${SOURCE_TAG}.tar.gz" | cut -d ' ' -f 1)" \
+            --arg stagedFilesystemSha256 "$stage_sha256" \
+            --arg nodeVersion "$(node --version)" \
+            --arg nodeBinarySha256 "$(sha256sum "$(readlink -f "$(command -v node)")" | cut -d ' ' -f 1)" \
+            --arg pnpmVersion "$(pnpm --version)" \
+            --arg forgeVersion "$(forge --version | tr '\n' ' ')" \
+            --arg nargoVersion "$(nargo --version | tr '\n' ' ')" \
+            --arg nargoBinarySha256 "$(sha256sum "$(readlink -f "$(command -v nargo)")" | cut -d ' ' -f 1)" \
+            --arg aztecVersion "$AZTEC_VERSION" \
+            --arg aztecBinarySha256 "$(sha256sum "$(readlink -f "$(command -v aztec)")" | cut -d ' ' -f 1)" \
+            --arg aztecInstallerSha256 "$AZTEC_INSTALLER_SHA256" \
+            --arg runtimeBase "$NODE_RUNTIME_IMAGE" \
+            --arg nativeBuildBase "$NODE_NATIVE_BUILD_IMAGE" \
+            --arg nargoDependencyLockSha256 "$(sha256sum release-materials/nargo-dependencies.lock | cut -d ' ' -f 1)" \
+            --arg nargoDependencyResolutionsSha256 "$(sha256sum release-materials/nargo-dependency-resolutions.json | cut -d ' ' -f 1)" \
+            --arg solidityDependencyLockSha256 "$(sha256sum release-materials/solidity-dependencies.lock | cut -d ' ' -f 1)" \
+            --arg solidityDependencyResolutionsSha256 "$(sha256sum release-materials/solidity-dependency-resolutions.json | cut -d ' ' -f 1)" \
+            --arg offlineBuildInputsSha256 "$(sha256sum release-materials/offline-build-inputs.json | cut -d ' ' -f 1)" \
+            --arg dockerVersion "$(docker version --format '{{.Client.Version}}/{{.Server.Version}}')" \
+            '{sourceCommit:$sourceCommit,sourceArchiveSha256:$sourceArchiveSha256,stagedFilesystemSha256:$stagedFilesystemSha256,nodeVersion:$nodeVersion,nodeBinarySha256:$nodeBinarySha256,pnpmVersion:$pnpmVersion,forgeVersion:$forgeVersion,nargoVersion:$nargoVersion,nargoBinarySha256:$nargoBinarySha256,nargoDependencyLockSha256:$nargoDependencyLockSha256,nargoDependencyResolutionsSha256:$nargoDependencyResolutionsSha256,solidityDependencyLockSha256:$solidityDependencyLockSha256,solidityDependencyResolutionsSha256:$solidityDependencyResolutionsSha256,offlineBuildInputsSha256:$offlineBuildInputsSha256,aztecVersion:$aztecVersion,aztecBinarySha256:$aztecBinarySha256,aztecInstallerSha256:$aztecInstallerSha256,nativeBuildBase:$nativeBuildBase,runtimeBase:$runtimeBase,dockerVersion:$dockerVersion}' \
+            > release-materials/build-materials.json
+          (cd release-materials && sha256sum build-materials.json nargo-dependencies.lock nargo-dependency-resolutions.json solidity-dependencies.lock solidity-dependency-resolutions.json offline-build-inputs.json "zkmoney-public-${SOURCE_TAG}.tar.gz" > SHA256SUMS)
+
+      - name: Build the candidate without publication credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg "NODE_IMAGE=$NODE_RUNTIME_IMAGE" \
+            --label "org.opencontainers.image.source=https://github.com/DROOdotFOO/zkmoney-public" \
+            --label "org.opencontainers.image.revision=$SOURCE_COMMIT" \
+            --label "org.opencontainers.image.version=$IMAGE_VERSION" \
+            --label "org.opencontainers.image.ref.name=$SOURCE_TAG" \
+            --label "io.xochimilco.approval-authority.sha256=$APPROVAL_AUTHORITY_SHA256" \
+            --file Dockerfile.oxide-relayer \
+            --tag "$LOCAL_IMAGE" \
+            .
+          docker save --output release-build/oxide-relayer-exact-v1.0.6.tar "$LOCAL_IMAGE"
+          (cd release-build && sha256sum oxide-relayer-exact-v1.0.6.tar > SHA256SUMS)
+
+      - name: Upload unpublished image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: oxide-relayer-exact-v1.0.6-image
+          path: release-build/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload source and build materials
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: oxide-relayer-exact-v1.0.6-materials
+          path: release-materials/
+          if-no-files-found: error
+          retention-days: 90
+
+  smoke-unpublished:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact smoke contract
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+
+      - name: Download unpublished image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.6-image
+          path: release-build
+
+      - name: Smoke the exact unpublished bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release-build && sha256sum --check SHA256SUMS)
+          docker load --input release-build/oxide-relayer-exact-v1.0.6.tar
+          test "$(docker image inspect --format '{{.Config.User}}' "$LOCAL_IMAGE")" = root
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$LOCAL_IMAGE")" = '["node","dest/bin/oxide-relayer-init.js"]'
+          docker run --rm --entrypoint getent "$LOCAL_IMAGE" passwd 65532 | grep -E '^oxide-exact:x:65532:65532:.*:/nonexistent:/usr/sbin/nologin$'
+          test "$(docker run --rm --entrypoint stat "$LOCAL_IMAGE" --format '%u:%g:%a' /control)" = '65532:65532:700'
+          docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$LOCAL_IMAGE" | grep -Fx 'OXIDE_EXACT_RUNTIME_UID=65532'
+          docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$LOCAL_IMAGE" | grep -Fx 'OXIDE_EXACT_RUNTIME_GID=65532'
+          test "$(docker run --rm --entrypoint cat "$LOCAL_IMAGE" /app/source-commit)" = "$SOURCE_COMMIT"
+          docker run --rm --entrypoint sha256sum "$LOCAL_IMAGE" /app/approval-authority.pem \
+            | awk -v expected="$APPROVAL_AUTHORITY_SHA256" '$1 != expected { exit 1 }'
+          docker run --rm --entrypoint node "$LOCAL_IMAGE" dest/bin/oxide-relayer.js relay-exact --help
+          docker run --rm --entrypoint node "$LOCAL_IMAGE" dest/bin/oxide-relayer.js authorize-generic-restore --help
+          OXIDE_SMOKE_DIAGNOSTIC=1 scripts/smoke-exact-relayer-entrypoint.sh "$LOCAL_IMAGE"
+
+  publish-candidate:
+    needs: smoke-unpublished
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-digest: ${{ steps.publish.outputs.image-digest }}
+      candidate-ref: ${{ steps.publish.outputs.candidate-ref }}
+    steps:
+      - name: Download verified unpublished image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.6-image
+          path: release-build
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish one candidate identity
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$IMAGE_URI:candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          (cd release-build && sha256sum --check SHA256SUMS)
+          docker load --input release-build/oxide-relayer-exact-v1.0.6.tar
+          docker tag "$LOCAL_IMAGE" "$candidate"
+          docker push "$candidate"
+          digest="sha256:$(docker buildx imagetools inspect --raw "$candidate" | sha256sum | cut -d ' ' -f 1)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'image-digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          printf 'candidate-ref=%s\n' "$candidate" >> "$GITHUB_OUTPUT"
+
+  verify-candidate:
+    needs: publish-candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out exact source for independent archive verification
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download source and build materials
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.6-materials
+          path: release-evidence
+
+      - name: Log in to GHCR read-only
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify source archive and immutable candidate
+        env:
+          IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release-evidence && sha256sum --check SHA256SUMS)
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git rev-list -n 1 "$SOURCE_TAG")" = "$SOURCE_COMMIT"
+          git archive --format=tar --prefix="zkmoney-public-${SOURCE_TAG}/" "$SOURCE_COMMIT" \
+            | gzip -n > "$RUNNER_TEMP/source.tar.gz"
+          cmp "$RUNNER_TEMP/source.tar.gz" "release-evidence/zkmoney-public-${SOURCE_TAG}.tar.gz"
+          image="$IMAGE_URI@$IMAGE_DIGEST"
+          docker pull "$image"
+          test "$(docker run --rm --entrypoint cat "$image" /app/source-commit)" = "$SOURCE_COMMIT"
+          docker run --rm --entrypoint sha256sum "$image" /app/approval-authority.pem \
+            | awk -v expected="$APPROVAL_AUTHORITY_SHA256" '$1 != expected { exit 1 }'
+          docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js relay-exact --help
+          docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js authorize-generic-restore --help
+
+      - name: Generate SBOM from the registry candidate
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c
+        with:
+          image: ${{ env.IMAGE_URI }}@${{ needs.publish-candidate.outputs.image-digest }}
+          format: spdx-json
+          output-file: release-evidence/image.spdx.json
+          upload-artifact: false
+
+      - name: Record verified SBOM digest
+        shell: bash
+        run: sha256sum release-evidence/image.spdx.json > release-evidence/SBOM_SHA256
+
+      - name: Upload independently generated candidate evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: oxide-relayer-exact-v1.0.6-candidate-evidence
+          path: release-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  sign-and-attest:
+    needs:
+      - publish-candidate
+      - verify-candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image-attestation-url: ${{ steps.attest-image.outputs.attestation-url }}
+      source-attestation-url: ${{ steps.attest-source.outputs.attestation-url }}
+    steps:
+      - name: Download independently verified evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.6-candidate-evidence
+          path: release-evidence
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install exact Cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532
+        with:
+          cosign-release: v3.1.4
+
+      - name: Create exact source-to-image predicate
+        env:
+          IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha256="$(sha256sum "release-evidence/zkmoney-public-${SOURCE_TAG}.tar.gz" | cut -d ' ' -f 1)"
+          sbom_sha256="$(sha256sum release-evidence/image.spdx.json | cut -d ' ' -f 1)"
+          materials_sha256="$(sha256sum release-evidence/build-materials.json | cut -d ' ' -f 1)"
+          stage_sha256="$(jq -r '.stagedFilesystemSha256' release-evidence/build-materials.json)"
+          jq -n \
+            --arg sourceRepository "git+https://github.com/DROOdotFOO/zkmoney-public" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg sourceTag "$SOURCE_TAG" \
+            --arg sourceArchiveSha256 "$source_sha256" \
+            --arg stagedFilesystemSha256 "$stage_sha256" \
+            --arg buildMaterialsSha256 "$materials_sha256" \
+            --arg runtimeBase "$NODE_RUNTIME_IMAGE" \
+            --arg runtimeBaseDigest "${NODE_RUNTIME_DIGEST#sha256:}" \
+            --arg nargoDependencyLockSha256 "$(sha256sum release-evidence/nargo-dependencies.lock | cut -d ' ' -f 1)" \
+            --arg nargoDependencyResolutionsSha256 "$(sha256sum release-evidence/nargo-dependency-resolutions.json | cut -d ' ' -f 1)" \
+            --slurpfile nargoDependencies release-evidence/nargo-dependency-resolutions.json \
+            --arg solidityDependencyLockSha256 "$(sha256sum release-evidence/solidity-dependencies.lock | cut -d ' ' -f 1)" \
+            --arg solidityDependencyResolutionsSha256 "$(sha256sum release-evidence/solidity-dependency-resolutions.json | cut -d ' ' -f 1)" \
+            --slurpfile solidityDependencies release-evidence/solidity-dependency-resolutions.json \
+            --arg offlineBuildInputsSha256 "$(sha256sum release-evidence/offline-build-inputs.json | cut -d ' ' -f 1)" \
+            --slurpfile offlineBuildInputs release-evidence/offline-build-inputs.json \
+            --arg sbomSha256 "$sbom_sha256" \
+            --arg approvalAuthoritySha256 "$APPROVAL_AUTHORITY_SHA256" \
+            --arg workflowRepository "$GITHUB_REPOSITORY" \
+            --arg workflowCommit "$GITHUB_SHA" \
+            --arg workflowRef "$GITHUB_REF" \
+            --arg workflowRun "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{source:{repository:$sourceRepository,commit:$sourceCommit,tag:$sourceTag,archive:{sha256:$sourceArchiveSha256}},build:{workflowRepository:$workflowRepository,workflowCommit:$workflowCommit,workflowRef:$workflowRef,workflowRun:$workflowRun,stagedFilesystemSha256:$stagedFilesystemSha256,buildMaterialsSha256:$buildMaterialsSha256},materials:[{uri:$runtimeBase,digest:{sha256:$runtimeBaseDigest}}],dependencies:{nargo:{lockSha256:$nargoDependencyLockSha256,resolutionsSha256:$nargoDependencyResolutionsSha256,resolved:$nargoDependencies[0]},solidity:{lockSha256:$solidityDependencyLockSha256,resolutionsSha256:$solidityDependencyResolutionsSha256,resolved:$solidityDependencies[0]},offlineBuildInputs:{sha256:$offlineBuildInputsSha256,content:$offlineBuildInputs[0]}},sbom:{sha256:$sbomSha256},approvalAuthoritySha256:$approvalAuthoritySha256}' \
+            > release-evidence/exact-release-predicate.json
+
+      - name: Attest GitHub image provenance
+        id: attest-image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-name: ${{ env.IMAGE_URI }}
+          subject-digest: ${{ needs.publish-candidate.outputs.image-digest }}
+          push-to-registry: true
+
+      - name: Attest exact source archive provenance
+        id: attest-source
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: release-evidence/zkmoney-public-${{ env.SOURCE_TAG }}.tar.gz
+
+      - name: Sign image and attach exact predicates
+        env:
+          IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$IMAGE_URI@$IMAGE_DIGEST"
+          cosign sign --yes "$image"
+          cosign attest --yes --type "$RELEASE_PREDICATE_TYPE" \
+            --predicate release-evidence/exact-release-predicate.json "$image"
+          cosign attest --yes --type spdxjson \
+            --predicate release-evidence/image.spdx.json "$image"
+
+      - name: Create and sign release manifest
+        env:
+          IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
+          IMAGE_ATTESTATION_URL: ${{ steps.attest-image.outputs.attestation-url }}
+          SOURCE_ATTESTATION_URL: ${{ steps.attest-source.outputs.attestation-url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg sourceRepository "https://github.com/DROOdotFOO/zkmoney-public" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg sourceTag "$SOURCE_TAG" \
+            --arg imageUri "$IMAGE_URI" \
+            --arg imageDigest "$IMAGE_DIGEST" \
+            --arg sbomSha256 "$(sha256sum release-evidence/image.spdx.json | cut -d ' ' -f 1)" \
+            --arg sourceArchiveSha256 "$(sha256sum "release-evidence/zkmoney-public-${SOURCE_TAG}.tar.gz" | cut -d ' ' -f 1)" \
+            --arg predicateSha256 "$(sha256sum release-evidence/exact-release-predicate.json | cut -d ' ' -f 1)" \
+            --arg nargoDependencyLockSha256 "$(sha256sum release-evidence/nargo-dependencies.lock | cut -d ' ' -f 1)" \
+            --arg nargoDependencyResolutionsSha256 "$(sha256sum release-evidence/nargo-dependency-resolutions.json | cut -d ' ' -f 1)" \
+            --arg solidityDependencyLockSha256 "$(sha256sum release-evidence/solidity-dependencies.lock | cut -d ' ' -f 1)" \
+            --arg solidityDependencyResolutionsSha256 "$(sha256sum release-evidence/solidity-dependency-resolutions.json | cut -d ' ' -f 1)" \
+            --arg offlineBuildInputsSha256 "$(sha256sum release-evidence/offline-build-inputs.json | cut -d ' ' -f 1)" \
+            --arg approvalAuthoritySha256 "$APPROVAL_AUTHORITY_SHA256" \
+            --arg workflowCommit "$GITHUB_SHA" \
+            --arg workflowRun "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg imageAttestationUrl "$IMAGE_ATTESTATION_URL" \
+            --arg sourceAttestationUrl "$SOURCE_ATTESTATION_URL" \
+            '{sourceRepository:$sourceRepository,sourceCommit:$sourceCommit,sourceTag:$sourceTag,imageUri:$imageUri,imageDigest:$imageDigest,sbomSha256:$sbomSha256,sourceArchiveSha256:$sourceArchiveSha256,predicateSha256:$predicateSha256,nargoDependencyLockSha256:$nargoDependencyLockSha256,nargoDependencyResolutionsSha256:$nargoDependencyResolutionsSha256,solidityDependencyLockSha256:$solidityDependencyLockSha256,solidityDependencyResolutionsSha256:$solidityDependencyResolutionsSha256,offlineBuildInputsSha256:$offlineBuildInputsSha256,approvalAuthoritySha256:$approvalAuthoritySha256,workflowCommit:$workflowCommit,workflowRun:$workflowRun,imageAttestationUrl:$imageAttestationUrl,sourceAttestationUrl:$sourceAttestationUrl}' \
+            > release-evidence/release-provenance.json
+          cosign sign-blob --yes \
+            --bundle release-evidence/release-provenance.sigstore.json \
+            release-evidence/release-provenance.json
+          sha256sum \
+            release-evidence/build-materials.json \
+            release-evidence/exact-release-predicate.json \
+            release-evidence/image.spdx.json \
+            release-evidence/nargo-dependencies.lock \
+            release-evidence/nargo-dependency-resolutions.json \
+            release-evidence/solidity-dependencies.lock \
+            release-evidence/solidity-dependency-resolutions.json \
+            release-evidence/offline-build-inputs.json \
+            release-evidence/release-provenance.json \
+            "release-evidence/zkmoney-public-${SOURCE_TAG}.tar.gz" \
+            > release-evidence/RELEASE_SHA256SUMS
+
+      - name: Upload signed release evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: oxide-relayer-exact-v1.0.6-release-evidence
+          path: release-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  verify-evidence:
+    needs:
+      - publish-candidate
+      - sign-and-attest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - name: Check out exact source for independent verification
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download signed release evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.6-release-evidence
+          path: release-evidence
+
+      - name: Log in to GHCR read-only
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install exact Cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532
+        with:
+          cosign-release: v3.1.4
+
+      - name: Verify release manifest, source, signature, and attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$IMAGE_URI@$IMAGE_DIGEST"
+          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.6"
+          sha256sum --check release-evidence/RELEASE_SHA256SUMS
+          cosign verify-blob \
+            --bundle release-evidence/release-provenance.sigstore.json \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            release-evidence/release-provenance.json
+          jq -e \
+            --arg sourceRepository "https://github.com/DROOdotFOO/zkmoney-public" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg sourceTag "$SOURCE_TAG" \
+            --arg imageUri "$IMAGE_URI" \
+            --arg imageDigest "$IMAGE_DIGEST" \
+            --arg sbomSha256 "$(sha256sum release-evidence/image.spdx.json | cut -d ' ' -f 1)" \
+            --arg sourceArchiveSha256 "$(sha256sum "release-evidence/zkmoney-public-${SOURCE_TAG}.tar.gz" | cut -d ' ' -f 1)" \
+            --arg predicateSha256 "$(sha256sum release-evidence/exact-release-predicate.json | cut -d ' ' -f 1)" \
+            --arg nargoDependencyLockSha256 "$NARGO_DEPENDENCY_LOCK_SHA256" \
+            --arg nargoDependencyResolutionsSha256 "$(sha256sum release-evidence/nargo-dependency-resolutions.json | cut -d ' ' -f 1)" \
+            --arg solidityDependencyLockSha256 "$SOLIDITY_DEPENDENCY_LOCK_SHA256" \
+            --arg solidityDependencyResolutionsSha256 "$(sha256sum release-evidence/solidity-dependency-resolutions.json | cut -d ' ' -f 1)" \
+            --arg offlineBuildInputsSha256 "$(sha256sum release-evidence/offline-build-inputs.json | cut -d ' ' -f 1)" \
+            --arg approvalAuthoritySha256 "$APPROVAL_AUTHORITY_SHA256" \
+            --arg workflowCommit "$GITHUB_SHA" \
+            '.sourceRepository == $sourceRepository and .sourceCommit == $sourceCommit and .sourceTag == $sourceTag and .imageUri == $imageUri and .imageDigest == $imageDigest and .sbomSha256 == $sbomSha256 and .sourceArchiveSha256 == $sourceArchiveSha256 and .predicateSha256 == $predicateSha256 and .nargoDependencyLockSha256 == $nargoDependencyLockSha256 and .nargoDependencyResolutionsSha256 == $nargoDependencyResolutionsSha256 and .solidityDependencyLockSha256 == $solidityDependencyLockSha256 and .solidityDependencyResolutionsSha256 == $solidityDependencyResolutionsSha256 and .offlineBuildInputsSha256 == $offlineBuildInputsSha256 and .approvalAuthoritySha256 == $approvalAuthoritySha256 and .workflowCommit == $workflowCommit' \
+            release-evidence/release-provenance.json
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git rev-list -n 1 "$SOURCE_TAG")" = "$SOURCE_COMMIT"
+          git archive --format=tar --prefix="zkmoney-public-${SOURCE_TAG}/" "$SOURCE_COMMIT" \
+            | gzip -n > "$RUNNER_TEMP/source.tar.gz"
+          cmp "$RUNNER_TEMP/source.tar.gz" "release-evidence/zkmoney-public-${SOURCE_TAG}.tar.gz"
+          test "$(sha256sum release-evidence/nargo-dependencies.lock | cut -d ' ' -f 1)" = "$NARGO_DEPENDENCY_LOCK_SHA256"
+          test "$(sha256sum release-evidence/solidity-dependencies.lock | cut -d ' ' -f 1)" = "$SOLIDITY_DEPENDENCY_LOCK_SHA256"
+          cosign verify \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            "$image" > "$RUNNER_TEMP/image-signature.json"
+          cosign verify-attestation \
+            --type "$RELEASE_PREDICATE_TYPE" \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            --output json "$image" > "$RUNNER_TEMP/release-attestation.json"
+          jq -s '
+            if length != 1 then error("expected one Cosign output document")
+            elif (.[0] | type) == "array" then
+              if (.[0] | length) != 1 then error("expected one release attestation") else .[0][0] end
+            elif (.[0] | type) == "object" then .[0]
+            else error("unexpected Cosign output type")
+            end
+          ' "$RUNNER_TEMP/release-attestation.json" > "$RUNNER_TEMP/release-attestation-one.json"
+          jq -er '.payload' "$RUNNER_TEMP/release-attestation-one.json" | base64 --decode > "$RUNNER_TEMP/release-statement.json"
+          jq -e \
+            --arg imageUri "$IMAGE_URI" \
+            --arg imageDigest "${IMAGE_DIGEST#sha256:}" \
+            --arg sourceRepository "git+https://github.com/DROOdotFOO/zkmoney-public" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg sourceTag "$SOURCE_TAG" \
+            --arg sourceArchiveSha256 "$(sha256sum "$RUNNER_TEMP/source.tar.gz" | cut -d ' ' -f 1)" \
+            --arg workflowRepository "$GITHUB_REPOSITORY" \
+            --arg workflowCommit "$GITHUB_SHA" \
+            --arg workflowRef "$GITHUB_REF" \
+            --arg stagedFilesystemSha256 "$(jq -r '.stagedFilesystemSha256' release-evidence/build-materials.json)" \
+            --arg buildMaterialsSha256 "$(sha256sum release-evidence/build-materials.json | cut -d ' ' -f 1)" \
+            --arg runtimeBase "$NODE_RUNTIME_IMAGE" \
+            --arg runtimeBaseDigest "${NODE_RUNTIME_DIGEST#sha256:}" \
+            --arg nargoDependencyLockSha256 "$NARGO_DEPENDENCY_LOCK_SHA256" \
+            --arg nargoDependencyResolutionsSha256 "$(sha256sum release-evidence/nargo-dependency-resolutions.json | cut -d ' ' -f 1)" \
+            --slurpfile nargoDependencies release-evidence/nargo-dependency-resolutions.json \
+            --arg solidityDependencyLockSha256 "$SOLIDITY_DEPENDENCY_LOCK_SHA256" \
+            --arg solidityDependencyResolutionsSha256 "$(sha256sum release-evidence/solidity-dependency-resolutions.json | cut -d ' ' -f 1)" \
+            --slurpfile solidityDependencies release-evidence/solidity-dependency-resolutions.json \
+            --arg offlineBuildInputsSha256 "$(sha256sum release-evidence/offline-build-inputs.json | cut -d ' ' -f 1)" \
+            --slurpfile offlineBuildInputs release-evidence/offline-build-inputs.json \
+            --slurpfile buildMaterials release-evidence/build-materials.json \
+            --arg yarnVersion "$RELEASE_YARN_VERSION" \
+            --arg yarnLockSha256 "$RELEASE_YARN_LOCK_SHA256" \
+            --arg solcVersion "$SOLC_VERSION" \
+            --arg solcUrl "$SOLC_URL" \
+            --arg solcSha256 "$SOLC_SHA256" \
+            --arg sbomSha256 "$(sha256sum release-evidence/image.spdx.json | cut -d ' ' -f 1)" \
+            --arg approvalAuthoritySha256 "$APPROVAL_AUTHORITY_SHA256" \
+            'any(.subject[]; .name == $imageUri and .digest.sha256 == $imageDigest) and .predicate.source.repository == $sourceRepository and .predicate.source.commit == $sourceCommit and .predicate.source.tag == $sourceTag and .predicate.source.archive.sha256 == $sourceArchiveSha256 and .predicate.build.workflowRepository == $workflowRepository and .predicate.build.workflowCommit == $workflowCommit and .predicate.build.workflowRef == $workflowRef and .predicate.build.stagedFilesystemSha256 == $stagedFilesystemSha256 and .predicate.build.buildMaterialsSha256 == $buildMaterialsSha256 and $buildMaterials[0].stagedFilesystemSha256 == $stagedFilesystemSha256 and $buildMaterials[0].nargoDependencyLockSha256 == $nargoDependencyLockSha256 and $buildMaterials[0].nargoDependencyResolutionsSha256 == $nargoDependencyResolutionsSha256 and $buildMaterials[0].solidityDependencyLockSha256 == $solidityDependencyLockSha256 and $buildMaterials[0].solidityDependencyResolutionsSha256 == $solidityDependencyResolutionsSha256 and $buildMaterials[0].offlineBuildInputsSha256 == $offlineBuildInputsSha256 and (.predicate.materials | length) == 1 and .predicate.materials[0].uri == $runtimeBase and .predicate.materials[0].digest.sha256 == $runtimeBaseDigest and .predicate.dependencies.nargo.lockSha256 == $nargoDependencyLockSha256 and .predicate.dependencies.nargo.resolutionsSha256 == $nargoDependencyResolutionsSha256 and .predicate.dependencies.nargo.resolved == $nargoDependencies[0] and .predicate.dependencies.solidity.lockSha256 == $solidityDependencyLockSha256 and .predicate.dependencies.solidity.resolutionsSha256 == $solidityDependencyResolutionsSha256 and .predicate.dependencies.solidity.resolved == $solidityDependencies[0] and .predicate.dependencies.offlineBuildInputs.sha256 == $offlineBuildInputsSha256 and .predicate.dependencies.offlineBuildInputs.content == $offlineBuildInputs[0] and $offlineBuildInputs[0].yarn.version == $yarnVersion and $offlineBuildInputs[0].yarn.lockSha256 == $yarnLockSha256 and $offlineBuildInputs[0].solc.version == $solcVersion and $offlineBuildInputs[0].solc.url == $solcUrl and $offlineBuildInputs[0].solc.sha256 == $solcSha256 and $offlineBuildInputs[0].solidityDependencies == $solidityDependencies[0] and .predicate.sbom.sha256 == $sbomSha256 and .predicate.approvalAuthoritySha256 == $approvalAuthoritySha256' \
+            "$RUNNER_TEMP/release-statement.json"
+          cmp \
+            <(jq -S '.predicate' "$RUNNER_TEMP/release-statement.json") \
+            <(jq -S '.' release-evidence/exact-release-predicate.json)
+          cosign verify-attestation \
+            --type spdxjson \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            --output json "$image" > "$RUNNER_TEMP/sbom-attestation.json"
+          jq -s '
+            if length != 1 then error("expected one Cosign output document")
+            elif (.[0] | type) == "array" then
+              if (.[0] | length) != 1 then error("expected one SBOM attestation") else .[0][0] end
+            elif (.[0] | type) == "object" then .[0]
+            else error("unexpected Cosign output type")
+            end
+          ' "$RUNNER_TEMP/sbom-attestation.json" > "$RUNNER_TEMP/sbom-attestation-one.json"
+          jq -er '.payload' "$RUNNER_TEMP/sbom-attestation-one.json" | base64 --decode > "$RUNNER_TEMP/sbom-statement.json"
+          cmp \
+            <(jq -S '.predicate' "$RUNNER_TEMP/sbom-statement.json") \
+            <(jq -S '.' release-evidence/image.spdx.json)
+          gh attestation verify "oci://$image" --repo "$GITHUB_REPOSITORY"
+          gh attestation verify \
+            "release-evidence/zkmoney-public-${SOURCE_TAG}.tar.gz" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Independently smoke the signed registry image
+        env:
+          IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$IMAGE_URI@$IMAGE_DIGEST"
+          docker pull "$image"
+          test "$(docker image inspect --format '{{.Config.User}}' "$image")" = root
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")" = '["node","dest/bin/oxide-relayer-init.js"]'
+          docker run --rm --entrypoint getent "$image" passwd 65532 | grep -E '^oxide-exact:x:65532:65532:.*:/nonexistent:/usr/sbin/nologin$'
+          test "$(docker run --rm --entrypoint stat "$image" --format '%u:%g:%a' /control)" = '65532:65532:700'
+          docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | grep -Fx 'OXIDE_EXACT_RUNTIME_UID=65532'
+          docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | grep -Fx 'OXIDE_EXACT_RUNTIME_GID=65532'
+          test "$(docker run --rm --entrypoint cat "$image" /app/source-commit)" = "$SOURCE_COMMIT"
+          docker run --rm --entrypoint sha256sum "$image" /app/approval-authority.pem \
+            | awk -v expected="$APPROVAL_AUTHORITY_SHA256" '$1 != expected { exit 1 }'
+          docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js relay-exact --help
+          docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js authorize-generic-restore --help
+
+
+  final-verify:
+    needs:
+      - publish-candidate
+      - verify-evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out the exact smoke contract
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+
+      - name: Log in to GHCR read-only
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install exact Cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532
+        with:
+          cosign-release: v3.1.4
+
+      - name: Verify and smoke the immutable reviewed digest
+        env:
+          IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$IMAGE_URI@$IMAGE_DIGEST"
+          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.6"
+          cosign verify \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            "$image" > /dev/null
+          docker pull "$image"
+          test "$(docker run --rm --entrypoint cat "$image" /app/source-commit)" = "$SOURCE_COMMIT"
+          docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js relay-exact --help
+          docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js authorize-generic-restore --help
+          OXIDE_SMOKE_DIAGNOSTIC=1 scripts/smoke-exact-relayer-entrypoint.sh "$image"

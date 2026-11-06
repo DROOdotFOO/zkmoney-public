@@ -2,12 +2,17 @@ import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { OFAC_SDN_LIST_URL } from '@oxide/watcher-lib/sanctions';
 
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 
 import { DEFAULT_LOG_SCAN_WINDOW } from '../l1_operations/l1_operation_relayer.js';
 import { createCliProgram } from './command.js';
 import { redactRunConfig } from './config.js';
-import { REQUIRED_ARGS, parseRunConfig, runHelpText } from './test_run_config.js';
+import {
+  REQUIRED_ARGS,
+  parseExactOperationConfig,
+  parseRunConfig,
+  runHelpText,
+} from './test_run_config.js';
 
 describe('createCliProgram', () => {
   it('rejects the removed prover-claims mode', async () => {
@@ -15,6 +20,93 @@ describe('createCliProgram', () => {
       /invalid relayer mode/,
     );
   });
+
+  it('keeps exact-operation approval descriptor-only and starts no generic workers', async () => {
+    const args = ['--bundle-fd', '3', '--canonical-state', '/canonical', '--control-dir', '/control'];
+    const env = {
+      OXIDE_DEPLOYMENT_ENV_MANIFEST_URL: 'https://manifest.example/v6/prod/releases.json',
+      OXIDE_PORTAL: '0x0000000000000000000000000000000000000001',
+      READ_L1_RPC_URL: 'https://rpc.example',
+      AZTEC_NODE_URL: 'https://aztec.example',
+      OXIDE_EXACT_APPROVAL_TOKEN: 'must-not-be-read',
+    };
+    const config = await parseExactOperationConfig(args, env);
+
+    expect(config).not.toHaveProperty('modes');
+    expect(config).not.toHaveProperty('disableSubmission');
+    expect(config.canonicalState).toBe('/canonical');
+    expect(config.controlDir).toBe('/control');
+    expect(config).not.toHaveProperty('journalPath');
+    expect(config).not.toHaveProperty('runtimeLeasePath');
+    expect(config.bundleFd).toBe(3);
+    const stdinConfig = await parseExactOperationConfig(
+      ['--bundle-fd', '0', '--canonical-state', '/canonical', '--control-dir', '/control'],
+      env,
+    );
+    expect(stdinConfig.bundleFd).toBe(0);
+    await expect(
+      parseExactOperationConfig(
+        ['--bundle-fd', '1', '--canonical-state', '/canonical', '--control-dir', '/control'],
+        env,
+      ),
+    ).rejects.toThrow(/standard input/);
+    await expect(parseExactOperationConfig([], env)).rejects.toThrow(/bundle-fd/);
+    await expect(parseExactOperationConfig(['--bundle-fd', '3'], env)).rejects.toThrow(/canonical-state/);
+    await expect(
+      parseExactOperationConfig([...args, '--journal', '/tmp/bypass.sqlite3'], env),
+    ).rejects.toThrow(/unknown option/);
+  });
+  it('suppresses sensitive exact-operation failure details at the CLI boundary', async () => {
+    const sensitive = 'eth_sendRawTransaction: 0xsigned-private-recipient-commitment';
+    const environment = jest.replaceProperty(process, 'env', {
+      ...process.env,
+      OXIDE_DEPLOYMENT_ENV_MANIFEST_URL: 'https://manifest.example/v6/prod/releases.json',
+      OXIDE_PORTAL: '0x0000000000000000000000000000000000000001',
+      READ_L1_RPC_URL: 'https://rpc.example',
+      AZTEC_NODE_URL: 'https://aztec.example',
+    });
+    try {
+      const program = createCliProgram(
+        () => {},
+        () => Promise.reject(new Error(sensitive)),
+      );
+      const error = await program
+        .parseAsync(
+          ['relay-exact', '--bundle-fd', '3', '--canonical-state', '/canonical', '--control-dir', '/control'],
+          { from: 'user' },
+        )
+        .catch(value => value);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('relay-exact failed closed; sensitive failure details suppressed');
+      expect(String(error)).not.toContain(sensitive);
+      expect((error as Error).cause).toBeUndefined();
+    } finally {
+      environment.restore();
+    }
+  });
+  it('defines the fixed networkless preflight-exact caller contract', async () => {
+    const preflight = jest.fn(async (_config: unknown) => {});
+    const program = createCliProgram(() => {}, undefined, undefined, preflight);
+    await program.parseAsync(
+      [
+        'preflight-exact',
+        '--bundle-fd',
+        '0',
+        '--canonical-state',
+        '/canonical',
+        '--control-dir',
+        '/control',
+      ],
+      { from: 'user' },
+    );
+    expect(preflight).toHaveBeenCalledWith({
+      bundleFd: 0,
+      canonicalState: '/canonical',
+      controlDir: '/control',
+    });
+  });
+
+
 
   it('parses public docker one-liner flags', async () => {
     const config = await parseRunConfig(
