@@ -125,6 +125,21 @@ jobs:
               "$qualification"
           )"
           printf 'qualification-run-id=%s\n' "$qualification_run_id" >> "$GITHUB_OUTPUT"
+          source_ci="$RUNNER_TEMP/source-ci.json"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/oxide-relayer-safety.yml/runs?branch=release/oxide-relayer-exact-v1.0.8&event=push&status=completed&head_sha=$SOURCE_COMMIT&per_page=100" \
+            > "$source_ci"
+          jq -e \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            '[.workflow_runs[]
+              | select(.head_sha == $sourceCommit
+                       and .head_branch == "release/oxide-relayer-exact-v1.0.8"
+                       and .event == "push"
+                       and .conclusion == "success"
+                       and .run_attempt == 1)]
+             | length == 1' \
+            "$source_ci"
+
 
           publication_runs="$RUNNER_TEMP/publication-runs.json"
           gh api \
@@ -547,8 +562,6 @@ jobs:
           docker save --output release-build/oxide-relayer-exact-v1.0.8.tar "$LOCAL_IMAGE"
           (cd release-build && sha256sum oxide-relayer-exact-v1.0.8.tar > SHA256SUMS)
 
-      - name: Run complete source tests
-        run: pnpm --filter @oxide/oxide-relayer test
 
       - name: Upload unpublished image
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -852,6 +865,14 @@ jobs:
           path: release-materials
           github-token: ${{ github.token }}
           run-id: ${{ needs.admission.outputs.qualification-run-id }}
+      - name: Download reviewed pre-tag signing evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.8-pretag-signing-evidence
+          path: pretag-signing
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.admission.outputs.qualification-run-id }}
+
 
       - name: Require exact imported qualification
         shell: bash
@@ -859,9 +880,17 @@ jobs:
           set -euo pipefail
           (cd release-build && sha256sum --check SHA256SUMS)
           (cd release-materials && sha256sum --check PRETAG_SHA256SUMS)
+          cmp release-materials/PRETAG_SHA256SUMS pretag-signing/PRETAG_SHA256SUMS
           test "$(jq -er '.sourceCommit' release-materials/pretag-qualification.json)" = "$SOURCE_COMMIT"
           test "$(jq -er '.sourceTag' release-materials/pretag-qualification.json)" = "$SOURCE_TAG"
           test "$(jq -er '.duplicateBuilds' release-materials/pretag-qualification.json)" = 2
+          cp \
+            pretag-signing/PRETAG_SHA256SUMS.sigstore.json \
+            pretag-signing/pretag-image-signature.json \
+            pretag-signing/pretag-release-attestation.json \
+            pretag-signing/pretag-sbom-attestation.json \
+            release-materials/
+
 
       - name: Re-stage reviewed image in the tag run
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -1210,6 +1239,10 @@ jobs:
             release-evidence/offline-build-inputs.json \
             release-evidence/pretag-image.spdx.json \
             release-evidence/pretag-qualification.json \
+            release-evidence/PRETAG_SHA256SUMS.sigstore.json \
+            release-evidence/pretag-image-signature.json \
+            release-evidence/pretag-release-attestation.json \
+            release-evidence/pretag-sbom-attestation.json \
             release-evidence/release-provenance.json \
             release-evidence/release-provenance.sigstore.json \
             release-evidence/solidity-dependencies.lock \
