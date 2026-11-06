@@ -88,9 +88,11 @@ export class ExactL1Execution implements ExactOperationExecution {
       attempts: 0,
       createdAt: new Date(0),
     };
-    const finalizationCalldata = await this.limits.requestTeeSignature(async () =>
-      (await this.loadCompletion()).resolveCalldata(operation),
-    );
+    const finalizationCalldata = await this.limits.requestTeeSignature(async () => {
+      const completion = await this.loadCompletion();
+      assertApprovalWindow();
+      return await completion.resolveCalldata(operation);
+    });
     const quoteBlock = await this.client.getBlock({ blockTag: 'latest' });
     const feeValues = await estimateL1OperationFeeValues(this.client, quoteBlock);
     enforceFeeCeilings(approval, feeValues);
@@ -176,9 +178,12 @@ export class ExactL1Execution implements ExactOperationExecution {
     });
   }
 
-  async waitForReceipt(txHash: string): Promise<{ status: 'success' | 'reverted' }> {
+  async waitForReceipt(txHash: string): Promise<{
+    status: 'success' | 'reverted';
+    transactionHash: string;
+  }> {
     const receipt = await this.client.waitForTransactionReceipt({ hash: txHash as Hash });
-    return { status: receipt.status };
+    return { status: receipt.status, transactionHash: receipt.transactionHash };
   }
 }
 export function approvedSigningChainId(approval: ExactOperationApproval, verifiedChainId: number): number {

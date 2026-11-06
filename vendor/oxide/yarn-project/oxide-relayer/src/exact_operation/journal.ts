@@ -3,16 +3,20 @@ import path from 'node:path';
 
 import { type Database, open } from 'sqlite';
 import sqlite3Driver, { type Database as Sqlite3Database, type Statement as Sqlite3Statement } from 'sqlite3';
-import type { ExactApprovalClaimReceipt } from './monotonic_claim.js';
+import {
+  type ExactApprovalClaimJournalReceipt,
+  type ExactApprovalClaimReceipt,
+  exactApprovalClaimJournalReceipt,
+} from './monotonic_claim.js';
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const META_TABLE_SQL = `CREATE TABLE exact_operation_meta (schema_version INTEGER NOT NULL)`;
 const OPERATIONS_TABLE_SQL = `CREATE TABLE exact_operations (
   approval_digest TEXT PRIMARY KEY,
   stage_a_approval_digest TEXT NOT NULL,
   operation_id TEXT NOT NULL UNIQUE,
   state TEXT NOT NULL CHECK (state IN ('approved', 'signing', 'signed', 'send_started', 'sent', 'confirmed', 'failed', 'ambiguous')),
-  witness_key TEXT NOT NULL,
+  witness_key_commitment TEXT NOT NULL,
   witness_version_id TEXT NOT NULL,
   witness_checksum_sha256 TEXT NOT NULL,
   witness_retain_until TEXT NOT NULL,
@@ -43,7 +47,7 @@ export interface ExactOperationRecord {
   signedTx?: Buffer;
   signedTxHash?: string;
   l1TxHash?: string;
-  witness: ExactApprovalClaimReceipt;
+  witness: ExactApprovalClaimJournalReceipt;
 }
 
 
@@ -93,6 +97,7 @@ export class ExactOperationJournal {
     stageAApprovalDigest: string,
     witness: ExactApprovalClaimReceipt,
   ): Promise<void> {
+    const journalWitness = exactApprovalClaimJournalReceipt(witness);
     await this.transaction(async () => {
       const existing = await this.db.get<{ operation_id: string }>(
         'SELECT operation_id FROM exact_operations WHERE approval_digest = ? OR operation_id = ? LIMIT 1',
@@ -104,17 +109,17 @@ export class ExactOperationJournal {
       }
       await this.db.run(
         `INSERT INTO exact_operations
-          (approval_digest, operation_id, stage_a_approval_digest, state, witness_key, witness_version_id,
+          (approval_digest, operation_id, stage_a_approval_digest, state, witness_key_commitment, witness_version_id,
            witness_checksum_sha256, witness_retain_until, witness_body, created_at, updated_at)
          VALUES (?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?)`,
         approvalCommitment,
         operationId,
         stageAApprovalDigest,
-        witness.key,
-        witness.versionId,
-        witness.checksumSha256,
-        witness.retainUntil,
-        witness.body,
+        journalWitness.keyCommitment,
+        journalWitness.versionId,
+        journalWitness.checksumSha256,
+        journalWitness.retainUntil,
+        journalWitness.body,
         new Date().toISOString(),
         new Date().toISOString(),
       );
@@ -124,15 +129,15 @@ export class ExactOperationJournal {
   async findConsumption(
     approvalCommitment: string,
     operationId: string,
-  ): Promise<ExactApprovalClaimReceipt | undefined> {
+  ): Promise<ExactApprovalClaimJournalReceipt | undefined> {
     const row = await this.db.get<{
-      witness_key: string;
+      witness_key_commitment: ExactApprovalClaimJournalReceipt['keyCommitment'];
       witness_version_id: string;
       witness_checksum_sha256: string;
       witness_retain_until: string;
       witness_body: string;
     }>(
-      `SELECT witness_key, witness_version_id, witness_checksum_sha256, witness_retain_until, witness_body
+      `SELECT witness_key_commitment, witness_version_id, witness_checksum_sha256, witness_retain_until, witness_body
        FROM exact_operations WHERE approval_digest = ? OR operation_id = ? LIMIT 1`,
       approvalCommitment,
       operationId,
@@ -140,7 +145,7 @@ export class ExactOperationJournal {
     return row === undefined
       ? undefined
       : {
-          key: row.witness_key,
+          keyCommitment: row.witness_key_commitment,
           versionId: row.witness_version_id,
           checksumSha256: row.witness_checksum_sha256,
           retainUntil: row.witness_retain_until,
@@ -220,7 +225,7 @@ export class ExactOperationJournal {
       state: ExactOperationState;
       operation_id: string;
       approval_digest: string;
-      witness_key: string;
+      witness_key_commitment: ExactApprovalClaimJournalReceipt['keyCommitment'];
       stage_a_approval_digest: string;
       witness_version_id: string;
       witness_checksum_sha256: string;
@@ -230,8 +235,8 @@ export class ExactOperationJournal {
       signed_tx_hash: string | null;
       l1_tx_hash: string | null;
     }>(
-      `SELECT state, operation_id, approval_digest, stage_a_approval_digest, witness_key, witness_version_id,
-              witness_checksum_sha256, witness_retain_until, witness_body,
+      `SELECT state, operation_id, approval_digest, stage_a_approval_digest, witness_key_commitment,
+              witness_version_id, witness_checksum_sha256, witness_retain_until, witness_body,
               signed_tx, signed_tx_hash, l1_tx_hash
        FROM exact_operations WHERE operation_id = ?`,
       operationId,
@@ -245,7 +250,7 @@ export class ExactOperationJournal {
       approvalCommitment: row.approval_digest,
       stageAApprovalDigest: row.stage_a_approval_digest,
       witness: {
-        key: row.witness_key,
+        keyCommitment: row.witness_key_commitment,
         versionId: row.witness_version_id,
         checksumSha256: row.witness_checksum_sha256,
         retainUntil: row.witness_retain_until,
@@ -349,7 +354,7 @@ export async function auditExactOperationJournal(filename: string): Promise<Exac
         signed_tx: Buffer | null;
         signed_tx_hash: string | null;
         l1_tx_hash: string | null;
-        witness_key: string;
+        witness_key_commitment: ExactApprovalClaimJournalReceipt['keyCommitment'];
         witness_version_id: string;
         witness_checksum_sha256: string;
         witness_retain_until: string;
@@ -357,7 +362,7 @@ export async function auditExactOperationJournal(filename: string): Promise<Exac
       }>
     >(
       `SELECT state, operation_id, approval_digest, stage_a_approval_digest, signed_tx, signed_tx_hash, l1_tx_hash,
-              witness_key, witness_version_id, witness_checksum_sha256, witness_retain_until, witness_body
+              witness_key_commitment, witness_version_id, witness_checksum_sha256, witness_retain_until, witness_body
        FROM exact_operations ORDER BY operation_id`,
     );
     return rows.map(row => ({
@@ -369,7 +374,7 @@ export async function auditExactOperationJournal(filename: string): Promise<Exac
       ...(row.signed_tx_hash === null ? {} : { signedTxHash: row.signed_tx_hash }),
       ...(row.l1_tx_hash === null ? {} : { l1TxHash: row.l1_tx_hash }),
       witness: {
-        key: row.witness_key,
+        keyCommitment: row.witness_key_commitment,
         versionId: row.witness_version_id,
         checksumSha256: row.witness_checksum_sha256,
         retainUntil: row.witness_retain_until,

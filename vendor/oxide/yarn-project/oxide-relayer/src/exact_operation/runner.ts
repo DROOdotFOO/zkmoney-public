@@ -9,6 +9,8 @@ import type { ExactOperationJournal } from './journal.js';
 import {
   type ExactApprovalClaimStore,
   consumeExactApprovalExternally,
+  exactApprovalClaimKey,
+  restoreExactApprovalClaimReceipt,
   verifyExactApprovalClaimReceipt,
 } from './monotonic_claim.js';
 
@@ -27,7 +29,7 @@ export interface ExactOperationExecution {
   /** Makes one transport call with the durable signed bytes. */
   sendOnce(signedTransaction: Buffer, assertApprovalWindow: () => void): Promise<string>;
   /** Observation only; this method cannot sign, send or replace a transaction. */
-  waitForReceipt(txHash: string): Promise<{ status: 'success' | 'reverted' }>;
+  waitForReceipt(txHash: string): Promise<{ status: 'success' | 'reverted'; transactionHash: string }>;
 }
 
 export interface RelayExactOperationOptions {
@@ -55,10 +57,16 @@ export async function relayExactOperation({
   await execution.assertSignerIdentity(approval);
   const existing = await journal.findConsumption(approvalCommitment, approval.operation.id);
   if (existing) {
-    await verifyExactApprovalClaimReceipt(claimStore, existing);
+    const key = exactApprovalClaimKey(approval, approvalCommitment, claimStore.claimPrefix);
+    await verifyExactApprovalClaimReceipt(claimStore, restoreExactApprovalClaimReceipt(key, existing));
     throw new Error(`Exact operation ${approval.operation.id} approval was already consumed`);
   }
-  const witness = await consumeExactApprovalExternally(approval, approvalCommitment, claimStore);
+  const witness = await consumeExactApprovalExternally(
+    approval,
+    approvalCommitment,
+    claimStore,
+    assertApprovalWindow,
+  );
   await journal.consumeApproval(approvalCommitment, approval.operation.id, approval.stageA.approvalDigest, witness);
   await journal.beginSigning(approval.operation.id);
   assertApprovalWindow();
@@ -82,12 +90,16 @@ export async function relayExactOperation({
     throw new Error('Exact-operation send outcome is ambiguous; no second send is permitted', { cause });
   }
 
-  let receipt: { status: 'success' | 'reverted' };
+  let receipt: { status: 'success' | 'reverted'; transactionHash: string };
   try {
     receipt = await execution.waitForReceipt(l1TxHash);
   } catch (cause) {
     await journal.recordAmbiguous(approval.operation.id);
     throw new Error('Exact-operation receipt outcome is ambiguous; no second send is permitted', { cause });
+  }
+  if (receipt.transactionHash.toLowerCase() !== l1TxHash.toLowerCase()) {
+    await journal.recordAmbiguous(approval.operation.id);
+    throw new Error('Exact-operation receipt belongs to a replacement transaction; no exact outcome is known');
   }
   if (receipt.status === 'reverted') {
     await journal.recordFailed(approval.operation.id);

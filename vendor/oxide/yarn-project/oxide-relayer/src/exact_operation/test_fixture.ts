@@ -1,4 +1,4 @@
-import type { ExactOperationApproval } from './contract.js';
+import { EXACT_DATABASE_SCHEMA_IDENTITY, type ExactOperationApproval } from './contract.js';
 
 export function exactApprovalFixture(now = new Date()): ExactOperationApproval {
   const second = Math.floor(now.getTime() / 1000) * 1000;
@@ -29,7 +29,7 @@ export function exactApprovalFixture(now = new Date()): ExactOperationApproval {
       runtimeUid: 65532,
       runtimeGid: 65532,
       signerAddress: `0x${'33'.repeat(20)}`,
-      schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v3+generic-v2+lease-v1+runtime-v2',
+      schemaIdentity: EXACT_DATABASE_SCHEMA_IDENTITY,
       stateInventoryDigest: `sha256:${'44'.repeat(32)}`,
       canonicalStateDigest: `sha256:${'55'.repeat(32)}`,
       expectedNonce: 7,

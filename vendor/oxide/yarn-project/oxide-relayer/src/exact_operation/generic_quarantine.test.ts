@@ -9,6 +9,7 @@ import {
   type RestoreMarker,
   type WitnessClaim,
 } from './generic_quarantine.js';
+import { exactApprovalClaimJournalReceipt } from './monotonic_claim.js';
 
 const receipt = {
   key: 'oxide/exact/claim.json',
@@ -61,7 +62,7 @@ function record(state: ExactOperationRecord['state'] = 'confirmed'): ExactOperat
     stageAApprovalDigest: claim.claim.stageAApprovalDigest,
     signedTxHash: `0x${'99'.repeat(32)}`,
     l1TxHash: `0x${'99'.repeat(32)}`,
-    witness: receipt,
+    witness: exactApprovalClaimJournalReceipt(receipt),
   };
 }
 
@@ -96,6 +97,17 @@ describe('generic exact-operation quarantine', () => {
 
   it('fails closed when the local journal exists but the witness is missing', () => {
     expect(() => evaluateGenericQuarantine({ claims: [], records: [record()], runtime })).toThrow(
+      'missing or inconsistent',
+    );
+  });
+
+  it('fails closed when the journal witness-coordinate commitment differs', () => {
+    const mismatched = record();
+    mismatched.witness = {
+      ...mismatched.witness,
+      keyCommitment: `sha256:${'ff'.repeat(32)}`,
+    };
+    expect(() => evaluateGenericQuarantine({ claims: [claim], records: [mismatched], runtime })).toThrow(
       'missing or inconsistent',
     );
   });

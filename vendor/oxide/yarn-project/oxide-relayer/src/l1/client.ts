@@ -25,10 +25,13 @@ export function chainFor(chainId: number | bigint): Chain {
 /** Routes private submissions separately and keeps RPC URLs out of error messages. */
 export function l1Transport(readUrl: string, submissionUrl?: string): Transport {
   const transport: Transport = submissionUrl
-    ? fallback([
-        redactedHttp(submissionUrl, { methods: { include: ['eth_sendRawTransaction'] } }),
-        redactedHttp(readUrl, { methods: { exclude: ['eth_sendRawTransaction'] } }),
-      ])
+    ? fallback(
+        [
+          redactedHttp(submissionUrl, { methods: { include: ['eth_sendRawTransaction'] } }),
+          redactedHttp(readUrl, { methods: { exclude: ['eth_sendRawTransaction'] } }),
+        ],
+        { retryCount: 0 },
+      )
     : redactedHttp(readUrl);
   return params => {
     const inner = transport(params);

@@ -112,7 +112,7 @@ runtime = {
     'runtimeUid': 65532,
     'runtimeGid': 65532,
     'signerAddress': '0x' + '00' * 20,
-    'schemaIdentity': 'oxide-relayer.sqlite.portal-v4+exact-v3+generic-v2+lease-v1+runtime-v2',
+    'schemaIdentity': 'oxide-relayer.sqlite.portal-v4+exact-v4+generic-v2+lease-v1+runtime-v2',
     'stateInventoryDigest': digest(b'oxide-relayer-state-inventory-v3\0' + inventory_bytes),
     'canonicalStateDigest': canonical_state_digest,
     'expectedNonce': 0,

@@ -48,7 +48,10 @@ class RecordingExecution implements ExactOperationExecution {
   }
 
   async waitForReceipt() {
-    return { status: 'success' as const };
+    return {
+      status: 'success' as const,
+      transactionHash: `0x${'aa'.repeat(32)}`,
+    };
   }
 }
 
@@ -59,12 +62,16 @@ class RecordingClaimStore implements ExactApprovalClaimStore {
 
   async assertComplianceRetention(): Promise<void> {}
 
-  async createIfAbsent(args: {
-    key: string;
-    body: string;
-    checksumSha256: string;
-    retainUntil: Date;
-  }): Promise<{ versionId: string }> {
+  async createIfAbsent(
+    args: {
+      key: string;
+      body: string;
+      checksumSha256: string;
+      retainUntil: Date;
+    },
+    assertApprovalWindow: () => void,
+  ): Promise<{ versionId: string }> {
+    assertApprovalWindow();
     if (this.claim) throw new Error('collision');
     this.claim = { ...args, versionId: 'version-1' };
     return { versionId: this.claim.versionId };
@@ -125,13 +132,14 @@ describe('relayExactOperation', () => {
     expect(claimStore.claim).toBeUndefined();
     await state.close();
   });
-  it('refuses to sign when the approval expires during pre-sign work', async () => {
+
+  it('does not publish the immutable claim when approval expires at its boundary', async () => {
     const state = await journal();
     const execution = new RecordingExecution();
     const claimStore = new RecordingClaimStore();
     const live = new Date(approval.notBefore);
     const expired = new Date(approval.expiresAt);
-    const times = [live, live, expired];
+    const times = [live, expired];
     await expect(
       relayExactOperation({
         approval,
@@ -141,13 +149,13 @@ describe('relayExactOperation', () => {
         claimStore,
         now: () => times.shift() ?? expired,
       }),
-    ).rejects.toThrow(/signing outcome is ambiguous/);
+    ).rejects.toThrow(/execution window/);
+    expect(claimStore.claim).toBeUndefined();
     expect(execution.signingCount).toBe(0);
     expect(execution.sendCount).toBe(0);
     await state.close();
   });
-
-  it('refuses to send when the approval expires after signing', async () => {
+  it('refuses the L1 signature when approval expires at its boundary', async () => {
     const state = await journal();
     const execution = new RecordingExecution();
     const claimStore = new RecordingClaimStore();
@@ -163,9 +171,51 @@ describe('relayExactOperation', () => {
         claimStore,
         now: () => times.shift() ?? expired,
       }),
+    ).rejects.toThrow(/signing outcome is ambiguous/);
+    expect(execution.signingCount).toBe(0);
+    expect(execution.sendCount).toBe(0);
+    await state.close();
+  });
+
+  it('refuses submission when approval expires at the send boundary', async () => {
+    const state = await journal();
+    const execution = new RecordingExecution();
+    const claimStore = new RecordingClaimStore();
+    const live = new Date(approval.notBefore);
+    const expired = new Date(approval.expiresAt);
+    const times = [live, live, live, live, expired];
+    await expect(
+      relayExactOperation({
+        approval,
+        approvalCommitment,
+        journal: state,
+        execution,
+        claimStore,
+        now: () => times.shift() ?? expired,
+      }),
     ).rejects.toThrow(/send outcome is ambiguous/);
     expect(execution.signingCount).toBe(1);
     expect(execution.sendCount).toBe(0);
+    await state.close();
+  });
+
+  it('marks a replacement receipt ambiguous without confirming or failing the exact operation', async () => {
+    const state = await journal();
+    const execution = new RecordingExecution();
+    execution.waitForReceipt = async () => ({
+      status: 'success',
+      transactionHash: `0x${'bb'.repeat(32)}`,
+    });
+    const claimStore = new RecordingClaimStore();
+
+    await expect(
+      relayExactOperation({ approval, approvalCommitment, journal: state, execution, claimStore }),
+    ).rejects.toThrow(/replacement transaction/);
+    await expect(state.read(approval.operation.id)).resolves.toMatchObject({
+      state: 'ambiguous',
+      l1TxHash: `0x${'aa'.repeat(32)}`,
+    });
+    expect(execution.sendCount).toBe(1);
     await state.close();
   });
 

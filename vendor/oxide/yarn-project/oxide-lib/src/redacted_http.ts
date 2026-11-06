@@ -9,7 +9,7 @@ import { type HttpTransport, type HttpTransportConfig, http } from 'viem';
  * `code` do not change.
  */
 export function redactedHttp(url: string, config?: HttpTransportConfig): HttpTransport {
-  const transport = http(url, config);
+  const transport = http(url, { ...config, retryCount: 0 });
   const secrets = secretForms(url);
   if (secrets.length === 0) {
     return transport;

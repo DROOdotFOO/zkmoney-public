@@ -69,14 +69,15 @@ state digest, Portal, exact operation, and an S3 Object Lock witness authority.
 
 Before TEE or transaction signing, the runtime creates one operation-scoped witness claim with S3
 `If-None-Match: *`, SHA-256 checksum, and `COMPLIANCE` retention through `9999-12-31T23:59:59Z`.
+It rechecks the signed window immediately before that immutable `PutObject`, with SDK retries disabled.
 The key is stable across fresh approvals and runtime-state changes for the same chain, deployment,
 Portal, rollup, and operation ID. The canonical body binds an opaque commitment to the verified
 approval signature, including its nonce and runtime identity, without storing the nonce, token,
 recipient address, recipient commitment, or a recomputable descriptor digest. The runtime verifies
 the exact returned object version and retention before continuing. Authority unavailability,
 collision, read-after-write failure, deletion markers, incomplete listings, local-journal rollback,
-or any witness/journal inconsistency fails closed. The local receipt remains in the mode-0600 exact
-journal.
+or any witness/journal inconsistency fails closed. Exact journal schema v4 stores a domain-separated
+commitment to the private witness coordinate with the receipt evidence, never the raw prefix or key.
 
 Runtime identity comes from fixed image/runtime paths. The complete inventory manifest binds every canonical
 SQLite/WAL/SHM file, historical database, generic ambiguity journal, exporter ledger, signer nonce record, mount,
@@ -152,9 +153,10 @@ The runtime independently derives the deployment registry from the observed Port
 manifest digest from the exact fetched manifest bytes, broadcaster contract/selector/call index/call digest from the
 observed public call, and Outbox root/proof digest from the fetched membership witness before the external claim.
 The Outbox root replays the indexer's leaf-first path with its exact `sha256Trunc(left || right)` Merkle hash, not a
-Poseidon tree. Approval values are comparison targets only. The signed execution window is checked again inside the
-signing sink immediately before `account.signTransaction()` and inside the one-shot transport sink immediately
-before `eth_sendRawTransaction`.
+Poseidon tree. Approval values are comparison targets only. The signed execution window is checked again immediately
+before the immutable witness claim, the TEE finalization request, `account.signTransaction()`, and
+`eth_sendRawTransaction`. The submission HTTP and fallback transports have no automatic retry. A receipt naming
+a transaction hash other than the submitted signed hash is ambiguous, irrespective of its reported status.
 
 6. Any ambiguous exact send blocks all submission for the signer and chain. Exact success remains permanently
    quarantined from generic submission; duplicate safety never relies on a destination revert.

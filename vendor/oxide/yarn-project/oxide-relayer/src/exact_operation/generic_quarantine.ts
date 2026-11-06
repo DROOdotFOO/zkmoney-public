@@ -9,6 +9,7 @@ import {
   S3ExactApprovalClaimStore,
   type ExactApprovalClaim,
   type ExactApprovalClaimReceipt,
+  exactApprovalClaimJournalReceipt,
 } from './monotonic_claim.js';
 import { EXACT_APPROVAL_AUTHORITY_PATH, EXACT_CONTROL_DIRECTORY, EXACT_JOURNAL_PATH } from './paths.js';
 import { loadExactRuntimeIdentity } from './runtime_identity.js';
@@ -156,7 +157,7 @@ function assertWitnessJournalConsistency(claims: WitnessClaim[], records: ExactO
       !record ||
       record.approvalCommitment !== claim.approvalCommitment ||
       record.stageAApprovalDigest !== claim.stageAApprovalDigest ||
-      canonicalJson(record.witness) !== canonicalJson(receipt)
+      canonicalJson(record.witness) !== canonicalJson(exactApprovalClaimJournalReceipt(receipt))
     ) {
       throw new Error('Exact-operation witness and local journal are missing or inconsistent');
     }

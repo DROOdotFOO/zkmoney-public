@@ -12,6 +12,7 @@ import { exactApprovalFixture } from './test_fixture.js';
 
 const approval = exactApprovalFixture();
 const approvalCommitment = `sha256:${'ca'.repeat(32)}` as const;
+const approvalLive = () => {};
 
 class MemoryClaimStore implements ExactApprovalClaimStore {
   readonly claims = new Map<string, { checksumSha256: string; retainUntil: Date; versionId: string }>();
@@ -21,12 +22,16 @@ class MemoryClaimStore implements ExactApprovalClaimStore {
     if (this.unavailable) throw new Error('unavailable');
   }
 
-  async createIfAbsent(args: {
-    key: string;
-    body: string;
-    checksumSha256: string;
-    retainUntil: Date;
-  }): Promise<{ versionId: string }> {
+  async createIfAbsent(
+    args: {
+      key: string;
+      body: string;
+      checksumSha256: string;
+      retainUntil: Date;
+    },
+    assertApprovalWindow: () => void,
+  ): Promise<{ versionId: string }> {
+    assertApprovalWindow();
     if (this.unavailable) throw new Error('unavailable');
     if (this.claims.has(args.key)) throw new ExactApprovalClaimCollisionError();
     const versionId = `version-${this.claims.size + 1}`;
@@ -55,10 +60,10 @@ class MemoryClaimStore implements ExactApprovalClaimStore {
 describe('external exact-operation approval consumption', () => {
   it('uses one conditional claim and permanently refuses a collision', async () => {
     const store = new MemoryClaimStore();
-    const first = await consumeExactApprovalExternally(approval, approvalCommitment, store);
+    const first = await consumeExactApprovalExternally(approval, approvalCommitment, store, approvalLive);
     expect(first.key).toBe(exactApprovalClaimKey(approval, approvalCommitment));
     await expect(
-      consumeExactApprovalExternally(approval, approvalCommitment, store),
+      consumeExactApprovalExternally(approval, approvalCommitment, store, approvalLive),
     ).rejects.toBeInstanceOf(
       ExactApprovalClaimCollisionError,
     );
@@ -67,9 +72,9 @@ describe('external exact-operation approval consumption', () => {
   it('fails before eligibility when the authority is unavailable', async () => {
     const store = new MemoryClaimStore();
     store.unavailable = true;
-    await expect(consumeExactApprovalExternally(approval, approvalCommitment, store)).rejects.toThrow(
-      'unavailable',
-    );
+    await expect(
+      consumeExactApprovalExternally(approval, approvalCommitment, store, approvalLive),
+    ).rejects.toThrow('unavailable');
   });
 
   it('uses S3 If-None-Match rather than a read-then-write claim', async () => {
@@ -85,11 +90,29 @@ describe('external exact-operation approval consumption', () => {
       { client: { send } as unknown as S3Client },
     );
     await expect(
-      consumeExactApprovalExternally(approval, approvalCommitment, store),
+      consumeExactApprovalExternally(approval, approvalCommitment, store, approvalLive),
     ).rejects.toBeInstanceOf(
       ExactApprovalClaimCollisionError,
     );
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('rechecks the approval window immediately before the immutable PutObject', async () => {
+    const send = jest.fn(async (_command: unknown) => ({
+      ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' },
+    }));
+    const store = new S3ExactApprovalClaimStore(
+      { bucket: 'oxide-approval-witness', region: 'us-east-1', expectedOwner: '123456789012' },
+      { client: { send } as unknown as S3Client },
+    );
+
+    await expect(
+      consumeExactApprovalExternally(approval, approvalCommitment, store, () => {
+        throw new Error('approval execution window expired');
+      }),
+    ).rejects.toThrow('approval execution window expired');
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls.some(([command]) => command instanceof PutObjectCommand)).toBe(false);
   });
 
   it('refuses a hidden retained version or delete marker after conditional creation', async () => {
@@ -115,7 +138,7 @@ describe('external exact-operation approval consumption', () => {
     );
 
     await expect(
-      consumeExactApprovalExternally(approval, approvalCommitment, store),
+      consumeExactApprovalExternally(approval, approvalCommitment, store, approvalLive),
     ).rejects.toBeInstanceOf(
       ExactApprovalClaimCollisionError,
     );
@@ -123,7 +146,7 @@ describe('external exact-operation approval consumption', () => {
 
   it('keeps recipient linkage and approval nonce out of the object key and body', async () => {
     const store = new MemoryClaimStore();
-    const receipt = await consumeExactApprovalExternally(approval, approvalCommitment, store);
+    const receipt = await consumeExactApprovalExternally(approval, approvalCommitment, store, approvalLive);
     expect(receipt.key).not.toContain(approval.withdrawal.executor);
     expect(receipt.key).not.toContain(approval.withdrawal.recipientCommitment);
     expect(receipt.key).not.toContain(approval.approvalNonce);

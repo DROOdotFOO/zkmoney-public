@@ -41,15 +41,28 @@ export interface ExactApprovalClaimReceipt {
   body: string;
 }
 
+export type ExactApprovalClaimKeyCommitment = `sha256:${string}`;
+
+export interface ExactApprovalClaimJournalReceipt {
+  keyCommitment: ExactApprovalClaimKeyCommitment;
+  versionId: string;
+  checksumSha256: string;
+  retainUntil: string;
+  body: string;
+}
+
 export interface ExactApprovalClaimStore {
   readonly claimPrefix?: string;
   assertComplianceRetention(): Promise<void>;
-  createIfAbsent(args: {
-    key: string;
-    body: string;
-    checksumSha256: string;
-    retainUntil: Date;
-  }): Promise<{ versionId: string }>;
+  createIfAbsent(
+    args: {
+      key: string;
+      body: string;
+      checksumSha256: string;
+      retainUntil: Date;
+    },
+    assertApprovalWindow: () => void,
+  ): Promise<{ versionId: string }>;
   verify(args: {
     key: string;
     versionId: string;
@@ -104,17 +117,56 @@ export function exactApprovalClaimKey(
   return `${prefix}/exact-operation-consumption/${digest}.json`;
 }
 
+export function exactApprovalClaimKeyCommitment(key: string): ExactApprovalClaimKeyCommitment {
+  return `sha256:${createHash('sha256')
+    .update('oxide-relayer/exact-operation-witness-key-commitment/v1\0')
+    .update(key)
+    .digest('hex')}`;
+}
+
+export function exactApprovalClaimJournalReceipt(
+  receipt: ExactApprovalClaimReceipt,
+): ExactApprovalClaimJournalReceipt {
+  return {
+    keyCommitment: exactApprovalClaimKeyCommitment(receipt.key),
+    versionId: receipt.versionId,
+    checksumSha256: receipt.checksumSha256,
+    retainUntil: receipt.retainUntil,
+    body: receipt.body,
+  };
+}
+
+export function restoreExactApprovalClaimReceipt(
+  key: string,
+  receipt: ExactApprovalClaimJournalReceipt,
+): ExactApprovalClaimReceipt {
+  if (exactApprovalClaimKeyCommitment(key) !== receipt.keyCommitment) {
+    throw new Error('Local exact-operation witness key commitment does not match the approved claim coordinate');
+  }
+  return {
+    key,
+    versionId: receipt.versionId,
+    checksumSha256: receipt.checksumSha256,
+    retainUntil: receipt.retainUntil,
+    body: receipt.body,
+  };
+}
+
 export async function consumeExactApprovalExternally(
   approval: ExactOperationApproval,
   approvalCommitment: ExactApprovalCommitment,
   store: ExactApprovalClaimStore,
+  assertApprovalWindow: () => void,
 ): Promise<ExactApprovalClaimReceipt> {
   await store.assertComplianceRetention();
   const body = canonicalJson(exactApprovalClaim(approval, approvalCommitment));
   const checksumSha256 = createHash('sha256').update(body).digest('base64');
   const retainUntil = new Date(approval.witness.retainUntil);
   const key = exactApprovalClaimKey(approval, approvalCommitment, store.claimPrefix);
-  const { versionId } = await store.createIfAbsent({ key, body, checksumSha256, retainUntil });
+  const { versionId } = await store.createIfAbsent(
+    { key, body, checksumSha256, retainUntil },
+    assertApprovalWindow,
+  );
   await store.verify({ key, versionId, checksumSha256, retainUntil });
   return {
     key,
@@ -146,6 +198,7 @@ export class S3ExactApprovalClaimStore implements ExactApprovalClaimStore {
       options.client ??
       new S3Client({
         region: config.region,
+        maxAttempts: 1,
         ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
       });
   }
@@ -162,12 +215,16 @@ export class S3ExactApprovalClaimStore implements ExactApprovalClaimStore {
     }
   }
 
-  async createIfAbsent(args: {
-    key: string;
-    body: string;
-    checksumSha256: string;
-    retainUntil: Date;
-  }): Promise<{ versionId: string }> {
+  async createIfAbsent(
+    args: {
+      key: string;
+      body: string;
+      checksumSha256: string;
+      retainUntil: Date;
+    },
+    assertApprovalWindow: () => void,
+  ): Promise<{ versionId: string }> {
+    assertApprovalWindow();
     try {
       const response = await this.client.send(
         new PutObjectCommand({

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.6
+
+- Disable both viem fallback-level and HTTP-level automatic retries so one exact or generic send boundary makes at most one `eth_sendRawTransaction` network call.
+- Recheck every exact-operation irreversible boundary, reject replacement receipts, and commit rather than persist private witness coordinates in exact journal schema v4.
+
 ## 1.0.5
 
 - Run the production-entrypoint smoke against the Linux Docker daemon without host sudo and expose only credential-free preflight failure reasons.

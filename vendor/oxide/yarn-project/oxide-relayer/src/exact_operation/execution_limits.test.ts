@@ -1,6 +1,7 @@
 import { describe, expect, it, jest } from '@jest/globals';
 
-import { ExactExecutionLimits } from './execution.js';
+import { ExactExecutionLimits, ExactL1Execution } from './execution.js';
+import { exactApprovalFixture } from './test_fixture.js';
 
 describe('exact execution limits', () => {
   it('independently permits at most one TEE request, one L1 signing, and one send', async () => {
@@ -19,5 +20,36 @@ describe('exact execution limits', () => {
     expect(tee).toHaveBeenCalledTimes(1);
     expect(signing).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('rechecks approval immediately before requesting TEE finalization', async () => {
+    const approval = exactApprovalFixture();
+    approval.deployment.broadcaster = `0x${'08'.repeat(32)}`;
+    const resolveCalldata = jest.fn(async () => '0xfinalization');
+    const loadCompletion = jest.fn(async () => ({ resolveCalldata }));
+    const observer = {
+      exactOperation: () => ({
+        target: { toString: () => approval.operation.target },
+        payoutToken: { toString: () => approval.operation.payoutToken },
+        calldata: '0x',
+        condition: {},
+      }),
+    };
+    const execution = new ExactL1Execution(
+      observer as never,
+      loadCompletion as never,
+      {} as never,
+      (async () => ({ address: approval.runtime.signerAddress })) as never,
+      Number(approval.deployment.chainId),
+      approval.economics.executorVersion,
+    );
+
+    await expect(
+      execution.signOnce(approval, () => {
+        throw new Error('approval execution window expired');
+      }),
+    ).rejects.toThrow(/execution window/);
+    expect(loadCompletion).toHaveBeenCalledTimes(1);
+    expect(resolveCalldata).not.toHaveBeenCalled();
   });
 });

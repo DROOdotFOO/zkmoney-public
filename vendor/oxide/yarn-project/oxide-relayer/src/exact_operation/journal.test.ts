@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { chmod, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,10 +8,11 @@ import { open } from 'sqlite';
 import sqlite3Driver from 'sqlite3';
 
 import { ExactOperationJournal } from './journal.js';
+import { exactApprovalClaimKeyCommitment } from './monotonic_claim.js';
 
 const directories: string[] = [];
 const witness = {
-  key: 'oxide-relayer/exact-operation-consumption/claim.json',
+  key: 'private-witness-coordinate/exact-operation-consumption/claim.json',
   versionId: 'version-1',
   checksumSha256: Buffer.alloc(32, 1).toString('base64'),
   retainUntil: '9999-12-31T23:59:59.000Z',
@@ -52,6 +53,40 @@ describe('ExactOperationJournal', () => {
     ).rejects.toThrow(
       /already consumed/,
     );
+    await restarted.close();
+  });
+
+  it('persists only a commitment to the private witness coordinate', async () => {
+    const path = await journalPath();
+    const operationId = `0x${'24'.repeat(32)}`;
+    const journal = await ExactOperationJournal.open(path);
+    await journal.consumeApproval(
+      `0x${'13'.repeat(32)}`,
+      operationId,
+      `sha256:${'35'.repeat(32)}`,
+      witness,
+    );
+    await journal.close();
+
+    const journalBytes = await readFile(path);
+    expect(journalBytes.includes(Buffer.from(witness.key))).toBe(false);
+    expect(journalBytes.includes(Buffer.from('private-witness-coordinate'))).toBe(false);
+    const database = await open({ filename: path, driver: sqlite3Driver.Database });
+    const columns = await database.all<Array<{ name: string }>>('PRAGMA table_info(exact_operations)');
+    await database.close();
+    expect(columns.map(column => column.name)).toContain('witness_key_commitment');
+    expect(columns.map(column => column.name)).not.toContain('witness_key');
+
+    const restarted = await ExactOperationJournal.open(path);
+    const record = await restarted.read(operationId);
+    expect(record.witness).toEqual({
+      keyCommitment: exactApprovalClaimKeyCommitment(witness.key),
+      versionId: witness.versionId,
+      checksumSha256: witness.checksumSha256,
+      retainUntil: witness.retainUntil,
+      body: witness.body,
+    });
+    expect('key' in record.witness).toBe(false);
     await restarted.close();
   });
 
