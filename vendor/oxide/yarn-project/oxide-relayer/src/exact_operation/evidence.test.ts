@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { Fr } from '@aztec-labs/foundation/curves/bn254';
 import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { UnbalancedMerkleTreeCalculator } from '@aztec-labs/foundation/trees';
 import { TxHash } from '@aztec-labs/stdlib/tx';
 
 import {
@@ -15,7 +16,7 @@ import { encodeFinalizationData } from '@oxide/oxide-lib/withdrawal_finalization
 import { describe, expect, it } from '@jest/globals';
 
 import type { ExactOperationApproval } from './contract.js';
-import { deriveExactOperationObservation, deriveOutboxEvidence } from './evidence.js';
+import { computeOutboxShaRoot, deriveExactOperationObservation, deriveOutboxEvidence } from './evidence.js';
 import { exactApprovalFixture } from './test_fixture.js';
 
 const portal = EthAddress.fromString('0x1111111111111111111111111111111111111111');
@@ -108,6 +109,23 @@ async function expected(overrides: Partial<ExactOperationApproval> = {}): Promis
   return reviewed;
 }
 
+describe('computeOutboxShaRoot', () => {
+  it('matches the SHA tree and leaf position used by the L2-to-L1 message indexer', () => {
+    const messages = [11n, 22n, 33n, 44n, 55n].map(value => new Fr(value));
+    const tree = UnbalancedMerkleTreeCalculator.create(messages.map(message => message.toBuffer()));
+    const messageIndex = 4;
+    const location = tree.getLeafLocation(messageIndex);
+    const siblingPath = tree.getSiblingPathByLeafIndex(messageIndex).toFields();
+
+    const root = computeOutboxShaRoot(messages[messageIndex]!, {
+      leafIndex: BigInt(location.index),
+      siblingPath,
+    });
+
+    expect(root.toBuffer()).toEqual(tree.getRoot());
+  });
+});
+
 describe('deriveExactOperationObservation', () => {
   it('derives one finalized withdrawal operation from exact source evidence', async () => {
     const reviewed = await expected();
@@ -188,6 +206,12 @@ describe('deriveExactOperationObservation', () => {
       },
     ],
     [
+      'Outbox leaf index',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.operation.outboxWitness.leafIndex = '1';
+      },
+    ],
+    [
       'Outbox proof digest',
       (reviewed: ExactOperationApproval) => {
         reviewed.operation.outboxWitness.proofDigest = `sha256:${'37'.repeat(32)}`;
@@ -203,6 +227,24 @@ describe('deriveExactOperationObservation', () => {
       'withdrawal amount',
       (reviewed: ExactOperationApproval) => {
         reviewed.withdrawal.amount = '1000001';
+      },
+    ],
+    [
+      'withdrawal executor',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.withdrawal.executor = `0x${'39'.repeat(20)}`;
+      },
+    ],
+    [
+      'withdrawal prover tip',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.withdrawal.proverTip = '1001';
+      },
+    ],
+    [
+      'withdrawal relayer tip',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.withdrawal.relayerTip = '2001';
       },
     ],
     [

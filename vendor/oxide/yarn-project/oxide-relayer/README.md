@@ -112,6 +112,13 @@ capability, privilege-drop, and post-drop readability path:
 preflight-exact --bundle-fd 0 --canonical-state /canonical --control-dir /control
 ```
 
+The caller runs as UID/GID 0 with a read-only root filesystem, `--network none`, `no-new-privileges`,
+`--cap-drop ALL`, and only `--cap-add DAC_READ_SEARCH --cap-add SETUID --cap-add SETGID`. It bind-mounts
+the legacy canonical state at `/canonical:ro` and the root-owned configuration directory at
+`/run/config/oxide-relayer:ro`; mounts a fresh UID/GID-65532 mode-0700 tmpfs at `/control`; mounts a distinct
+root-owned mode-0700 empty tmpfs at `/run/secrets/oxide-relayer`; and mounts a distinct writable
+`noexec,nosuid,nodev` tmpfs at `/tmp`. It does not mount production control state, credentials, or any host `/app`.
+
 Inherited standard input must contain exactly `{"schema":"oxide-relayer.preflight-exact.v1"}`. The fixed
 root-owned mode-0400 inputs are `/run/config/oxide-relayer/runtime-identity.json` and
 `/run/config/oxide-relayer/state-inventory.json`. `/run/secrets/oxide-relayer` remains a distinct, empty,
@@ -144,7 +151,8 @@ Cutover is fail closed:
 The runtime independently derives the deployment registry from the observed Portal domain's `teeRegistry`, the
 manifest digest from the exact fetched manifest bytes, broadcaster contract/selector/call index/call digest from the
 observed public call, and Outbox root/proof digest from the fetched membership witness before the external claim.
-Approval values are comparison targets only. The signed execution window is checked again inside the one-shot
+The Outbox root replays the indexer's leaf-first path with its exact `sha256Trunc(left || right)` Merkle hash, not a
+Poseidon tree. Approval values are comparison targets only. The signed execution window is checked again inside the
 signing sink immediately before `account.signTransaction()` and inside the one-shot transport sink immediately
 before `eth_sendRawTransaction`.
 

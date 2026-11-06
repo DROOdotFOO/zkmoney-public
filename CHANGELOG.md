@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.4
+
+- Recompute exact Outbox roots with the indexer's `sha256Trunc(left || right)` Merkle algorithm and bind the actual typed L2-to-L1 sibling path.
+- Verify Portal rollup identity, complete withdrawal economics and malformed public-call handling before operation consumption.
+- Bound and wipe privileged runtime inputs, reject raw node and cloud credentials from the environment, and keep signer buffers unopened until all public configuration parses.
+- Restore release-build type checking for the exact Outbox witness shape.
+
 ## 1.0.3
 
 - Independently derive and verify the exact Portal deployment, registry, manifest, source transaction, public-call digest, operation identity, finalized source block, Outbox proof and economics before consuming the operation witness.

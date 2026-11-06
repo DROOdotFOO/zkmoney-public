@@ -168,19 +168,6 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
     aztecNodeApiKey: aztecNodeApiKeyFromEnv(),
     ...prover,
     modes,
-    signer: {
-      backend: opts.signer ?? defaultSignerBackend(privateKeyEnvVar),
-      privateKeyEnvVar,
-      keystorePath: opts.keystore,
-      keystorePassword: opts.keystorePassword,
-      keystorePasswordFile: opts.keystorePasswordFile,
-      keystoreJson: hasPreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
-        ? consumePreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
-        : undefined,
-      keystorePasswordBytes: hasPreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
-        ? consumePreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
-        : undefined,
-    },
     state: {
       backend: 'sqlite',
       sqlitePath: opts.state!,
@@ -197,6 +184,19 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
     l1OperationsSubmission,
     fpcFundingPollIntervalMs: opts.fpcFundingPollIntervalMs!,
     predicate: toPredicateConfig(opts),
+    signer: {
+      backend: opts.signer ?? defaultSignerBackend(privateKeyEnvVar),
+      privateKeyEnvVar,
+      keystorePath: opts.keystore,
+      keystorePassword: opts.keystorePassword,
+      keystorePasswordFile: opts.keystorePasswordFile,
+      keystoreJson: hasPreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
+        ? consumePreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
+        : undefined,
+      keystorePasswordBytes: hasPreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
+        ? consumePreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
+        : undefined,
+    },
   };
 }
 

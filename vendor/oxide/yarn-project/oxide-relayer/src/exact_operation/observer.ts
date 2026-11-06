@@ -81,7 +81,10 @@ export class ExactOperationObserver {
         .replace('.000Z', 'Z'),
       operationCalls,
       outboxMessageHash: verified.messageHash,
-      outboxWitness: witness,
+      outboxWitness: {
+        leafIndex: witness.leafIndex,
+        siblingPath: witness.siblingPath.toFields(),
+      },
     });
     this.operation = operation;
     return observation;

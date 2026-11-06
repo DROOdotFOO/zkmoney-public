@@ -137,6 +137,9 @@ describe('runtime sandbox', () => {
     expect(() => rejectRawSecretEnvironment({ AZTEC_NODE_URL_FILE: '/proc/self/fd/3' })).toThrow(
       'Raw credential environment variables are prohibited',
     );
+    expect(() => rejectRawSecretEnvironment({ AZTEC_NODE_URL: 'https://credential@example.invalid' })).toThrow(
+      'Raw credential environment variables are prohibited',
+    );
   });
 
   it('accepts only the dedicated final identity with no active capabilities', () => {

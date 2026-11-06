@@ -155,7 +155,39 @@ export function extractL1Operations(
   selector: FunctionSelector,
   broadcaster: AztecAddress,
 ): BroadcastL1Operation[] {
-  return extractL1OperationCalls(tx, selector, broadcaster).map(call => call.operation);
+  const selectorField = selector.toField();
+  const operations: BroadcastL1Operation[] = [];
+  for (const { request, calldata: values } of tx.getPublicCallRequestsWithCalldata()) {
+    if (!request.contractAddress.equals(broadcaster) || !L1_OPERATION_EVENT_CALLDATA_LENS.has(values.length)) {
+      continue;
+    }
+    const [
+      calldataSelector,
+      target,
+      payoutToken,
+      bytesLen,
+      conditionKind,
+      conditionToken,
+      conditionRecipient,
+      ...l1Calldata
+    ] = values;
+    if (!calldataSelector.equals(selectorField)) continue;
+    try {
+      operations.push({
+        target: EthAddress.fromField(target),
+        payoutToken: EthAddress.fromField(payoutToken),
+        calldata: decodeL1OperationCalldata(Number(bytesLen.toBigInt()), l1Calldata),
+        condition: L1OperationCondition.decode(
+          Number(conditionKind.toBigInt()),
+          EthAddress.fromField(conditionToken),
+          EthAddress.fromField(conditionRecipient),
+        ),
+      });
+    } catch {
+      continue;
+    }
+  }
+  return operations;
 }
 
 /**
