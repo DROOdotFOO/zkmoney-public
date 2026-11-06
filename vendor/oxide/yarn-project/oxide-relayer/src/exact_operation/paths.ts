@@ -4,6 +4,7 @@ export const GENERIC_DATA_DIRECTORY = '/data';
 export const EXACT_JOURNAL_PATH = '/control/exact-operation.sqlite3';
 export const EXACT_RUNTIME_LEASE_PATH = '/control/oxide-relayer.runtime-lease.sqlite3';
 export const EXACT_GENERIC_SUBMISSION_JOURNAL_PATH = '/canonical/generic-submission.sqlite3';
+export const EXACT_CLEAN_HANDOFF_PATH = '/canonical/oxide-relayer.runtime-lease.sqlite3.clean-handoff.json';
 export const GENERIC_SUBMISSION_JOURNAL_PATH = '/data/generic-submission.sqlite3';
 export const EXACT_APPROVAL_AUTHORITY_PATH = '/app/approval-authority.pem';
 export const EXACT_SOURCE_COMMIT_PATH = '/app/source-commit';
