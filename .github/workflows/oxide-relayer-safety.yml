@@ -34,8 +34,6 @@ on:
       - "CHANGELOG.md"
 
 env:
-  SOURCE_TAG: oxide-relayer-exact-v1.0.8
-  IMAGE_VERSION: 1.0.8
   APPROVAL_AUTHORITY_PEM_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQXVmMTNWdlAxUWZoU2dSM1d2d2dvMmJXbkMyNkhCSEZVMmtwTkoxQkRmQTg9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=
   APPROVAL_AUTHORITY_SHA256: 3ceda4bf55e4c1b17765a28fc01e824765d4c02ef852749a76eb5d877c1cf137
   NODE_BUILD_VERSION: 24.22.2
@@ -54,7 +52,7 @@ concurrency:
 jobs:
   build-and-test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 90
     steps:
       - name: Require GitHub-hosted runner
         env:
@@ -107,12 +105,10 @@ jobs:
             printf '%s\n' "$HOME/.aztec/current/internal-bin"
           } >> "$GITHUB_PATH"
 
-      - name: Stage the exact reviewed runtime
+      - name: Build and smoke reviewed image
         shell: bash
         run: |
           set -euo pipefail
-          test "$SOURCE_TAG" = "oxide-relayer-exact-v$IMAGE_VERSION"
-          mkdir -p pretag-evidence
           authority="$RUNNER_TEMP/approval-authority.pem"
           printf '%s' "$APPROVAL_AUTHORITY_PEM_B64" | base64 --decode > "$authority"
           chmod 0400 "$authority"
@@ -120,157 +116,24 @@ jobs:
           pnpm build-contracts
           OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE="$authority" pnpm prepare:relayer-image
           test "$(cat .relayer-image/source-commit)" = "$GITHUB_SHA"
-          git archive --format=tar --prefix="zkmoney-public-${SOURCE_TAG}/" "$GITHUB_SHA" \
-            | gzip -n > "pretag-evidence/zkmoney-public-${SOURCE_TAG}.tar.gz"
-
-      - name: Build exact image twice without build-network access
-        shell: bash
-        run: |
-          set -euo pipefail
-          image_a="oxide-relayer-pretag-a:${GITHUB_SHA}"
-          image_b="oxide-relayer-pretag-b:${GITHUB_SHA}"
+          image="oxide-relayer-ci:${GITHUB_SHA}"
           docker pull "$NODE_RUNTIME_IMAGE"
-          build_exact_image() {
-            local image="$1"
-            docker build \
-              --pull=false \
-              --network=none \
-              --no-cache \
-              --build-arg "NODE_IMAGE=$NODE_RUNTIME_IMAGE" \
-              --label "org.opencontainers.image.source=https://github.com/DROOdotFOO/zkmoney-public" \
-              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-              --label "org.opencontainers.image.version=$IMAGE_VERSION" \
-              --label "org.opencontainers.image.ref.name=$SOURCE_TAG" \
-              --label "io.xochimilco.approval-authority.sha256=$APPROVAL_AUTHORITY_SHA256" \
-              --file Dockerfile.oxide-relayer \
-              --tag "$image" \
-              .
-          }
-          build_exact_image "$image_a"
-          build_exact_image "$image_b"
-          image_a_id="$(docker image inspect --format '{{.Id}}' "$image_a")"
-          image_b_id="$(docker image inspect --format '{{.Id}}' "$image_b")"
-          test "$image_a_id" = "$image_b_id"
-          jq -n \
-            --arg sourceCommit "$GITHUB_SHA" \
-            --arg sourceTag "$SOURCE_TAG" \
-            --arg imageAId "$image_a_id" \
-            --arg imageBId "$image_b_id" \
-            '{sourceCommit:$sourceCommit,sourceTag:$sourceTag,imageAId:$imageAId,imageBId:$imageBId,identical:($imageAId == $imageBId)}' \
-            > pretag-evidence/duplicate-build.json
-          docker save --output pretag-evidence/oxide-relayer-exact-v1.0.8.tar "$image_a"
-
-      - name: Generate exact pre-tag SBOM
-        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c
-        with:
-          image: oxide-relayer-pretag-a:${{ github.sha }}
-          format: spdx-json
-          output-file: pretag-evidence/image.spdx.json
-          upload-artifact: false
-
-      - name: Qualify offline runtime and record checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          image="oxide-relayer-pretag-a:${GITHUB_SHA}"
+          docker build \
+            --pull=false \
+            --network=none \
+            --build-arg "NODE_IMAGE=$NODE_RUNTIME_IMAGE" \
+            --file Dockerfile.oxide-relayer \
+            --tag "$image" \
+            .
           test "$(docker image inspect --format '{{.Config.User}}' "$image")" = root
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")" = '["node","dest/bin/oxide-relayer-init.js"]'
           docker run --rm --network=none --entrypoint getent "$image" passwd 65532 \
             | grep -E '^oxide-exact:x:65532:65532:.*:/nonexistent:/usr/sbin/nologin$'
           test "$(docker run --rm --network=none --entrypoint stat "$image" --format '%u:%g:%a' /control)" = '65532:65532:700'
-          docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" \
-            | grep -Fx 'OXIDE_EXACT_RUNTIME_UID=65532'
-          docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" \
-            | grep -Fx 'OXIDE_EXACT_RUNTIME_GID=65532'
           test "$(docker run --rm --network=none --entrypoint cat "$image" /app/source-commit)" = "$GITHUB_SHA"
-          docker run --rm --network=none --entrypoint sha256sum "$image" /app/approval-authority.pem \
-            | awk -v expected="$APPROVAL_AUTHORITY_SHA256" '$1 != expected { exit 1 }'
           docker run --rm --network=none --entrypoint node "$image" dest/bin/oxide-relayer.js relay-exact --help
           docker run --rm --network=none --entrypoint node "$image" dest/bin/oxide-relayer.js authorize-generic-restore --help
           OXIDE_SMOKE_DIAGNOSTIC=1 scripts/smoke-exact-relayer-entrypoint.sh "$image"
-          (
-            cd pretag-evidence
-            sha256sum \
-              duplicate-build.json \
-              image.spdx.json \
-              oxide-relayer-exact-v1.0.8.tar \
-              "zkmoney-public-${SOURCE_TAG}.tar.gz" \
-              > SHA256SUMS
-            sha256sum --check SHA256SUMS
-          )
 
       - name: Run complete source tests
         run: pnpm --filter @oxide/oxide-relayer test
-
-      - name: Upload pre-tag qualification evidence
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: oxide-relayer-exact-v1.0.8-pretag-evidence
-          path: pretag-evidence/
-          if-no-files-found: error
-          retention-days: 90
-
-  oidc-signing-preflight:
-    needs: build-and-test
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Require GitHub-hosted runner
-        env:
-          RUNNER_KIND: ${{ runner.environment }}
-        run: test "$RUNNER_KIND" = github-hosted
-
-      - name: Download exact pre-tag evidence
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          name: oxide-relayer-exact-v1.0.8-pretag-evidence
-          path: pretag-evidence
-
-      - name: Install exact Cosign
-        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532
-        with:
-          cosign-release: v3.1.4
-
-      - name: Prove one OIDC token signs every required evidence class
-        shell: bash
-        run: |
-          set -euo pipefail
-          sha256sum --check pretag-evidence/SHA256SUMS
-          oidc_response="$(
-            curl --fail --silent --show-error \
-              --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore"
-          )"
-          identity_token="$(jq -er '.value | select(type == "string" and length > 0)' <<< "$oidc_response")"
-          printf '::add-mask::%s\n' "$identity_token"
-          unset oidc_response
-
-          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/oxide-relayer-safety.yml@refs/heads/release/oxide-relayer-exact-v1.0.8"
-          for evidence in \
-            duplicate-build.json \
-            image.spdx.json \
-            SHA256SUMS \
-            "zkmoney-public-${SOURCE_TAG}.tar.gz"
-          do
-            cosign sign-blob --yes --identity-token "$identity_token" \
-              --bundle "pretag-evidence/${evidence}.sigstore.json" \
-              "pretag-evidence/$evidence"
-            cosign verify-blob \
-              --bundle "pretag-evidence/${evidence}.sigstore.json" \
-              --certificate-identity "$identity" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-github-workflow-sha "$GITHUB_SHA" \
-              "pretag-evidence/$evidence"
-          done
-          unset identity_token
-
-      - name: Upload pre-tag signing evidence
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: oxide-relayer-exact-v1.0.8-pretag-signing-evidence
-          path: pretag-evidence/
-          if-no-files-found: error
-          retention-days: 90

@@ -2,6 +2,8 @@ name: Publish exact-operation relayer
 
 on:
   push:
+    branches:
+      - release/oxide-relayer-exact-v1.0.8
     tags:
       - oxide-relayer-exact-v1.0.8
 
@@ -44,8 +46,11 @@ jobs:
     permissions:
       actions: read
       contents: read
+    outputs:
+      qualification-run-id: ${{ steps.admit.outputs.qualification-run-id }}
     steps:
-      - name: Require GitHub-hosted tag publication
+      - name: Admit exact pre-tag qualification or tag publication
+        id: admit
         env:
           GH_TOKEN: ${{ github.token }}
           IMMUTABLE_RELEASES_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_ADMIN_TOKEN }}
@@ -56,10 +61,25 @@ jobs:
           test "$RUNNER_KIND" = github-hosted
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_EVENT_NAME" = push
+          test "$SOURCE_TAG" = "oxide-relayer-exact-v$IMAGE_VERSION"
+
+          if test "$GITHUB_REF_TYPE" = branch; then
+            test "$GITHUB_REF" = "refs/heads/release/oxide-relayer-exact-v1.0.8"
+            test "$GITHUB_REF_NAME" = "release/oxide-relayer-exact-v1.0.8"
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$SOURCE_TAG" > /dev/null 2>&1; then
+              printf 'tag already exists for %s\n' "$SOURCE_TAG" >&2
+              exit 1
+            fi
+            if gh release view "$SOURCE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              printf 'release already exists for %s\n' "$SOURCE_TAG" >&2
+              exit 1
+            fi
+            exit 0
+          fi
+
           test "$GITHUB_REF_TYPE" = tag
           test "$GITHUB_REF_NAME" = "$SOURCE_TAG"
           test "$GITHUB_REF" = "refs/tags/$SOURCE_TAG"
-          test "$SOURCE_TAG" = "oxide-relayer-exact-v$IMAGE_VERSION"
 
           policy="$RUNNER_TEMP/immutable-releases.json"
           status="$(
@@ -90,18 +110,35 @@ jobs:
 
           qualification="$RUNNER_TEMP/pretag-qualification.json"
           gh api \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/oxide-relayer-safety.yml/runs?branch=release/oxide-relayer-exact-v1.0.8&event=push&status=completed&head_sha=$SOURCE_COMMIT&per_page=100" \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/publish-oxide-relayer.yml/runs?branch=release/oxide-relayer-exact-v1.0.8&event=push&status=completed&head_sha=$SOURCE_COMMIT&per_page=100" \
             > "$qualification"
+          qualification_run_id="$(
+            jq -er \
+              --arg sourceCommit "$SOURCE_COMMIT" \
+              '[.workflow_runs[]
+                | select(.head_sha == $sourceCommit
+                         and .head_branch == "release/oxide-relayer-exact-v1.0.8"
+                         and .event == "push"
+                         and .conclusion == "success"
+                         and .run_attempt == 1)]
+               | if length == 1 then .[0].id else error("expected exactly one successful pre-tag run") end' \
+              "$qualification"
+          )"
+          printf 'qualification-run-id=%s\n' "$qualification_run_id" >> "$GITHUB_OUTPUT"
+
+          publication_runs="$RUNNER_TEMP/publication-runs.json"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/publish-oxide-relayer.yml/runs?event=push&head_sha=$SOURCE_COMMIT&per_page=100" \
+            > "$publication_runs"
           jq -e \
-            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg sourceTag "$SOURCE_TAG" \
+            --argjson currentRunId "$GITHUB_RUN_ID" \
             '[.workflow_runs[]
-              | select(.head_sha == $sourceCommit
-                       and .head_branch == "release/oxide-relayer-exact-v1.0.8"
+              | select(.head_branch == $sourceTag
                        and .event == "push"
-                       and .conclusion == "success"
-                       and .run_attempt == 1)]
-             | length == 1' \
-            "$qualification"
+                       and .head_sha == env.SOURCE_COMMIT)]
+             | length == 1 and .[0].id == $currentRunId' \
+            "$publication_runs"
 
           if gh release view "$SOURCE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             printf 'release already exists for %s\n' "$SOURCE_TAG" >&2
@@ -109,16 +146,26 @@ jobs:
           fi
 
   build:
+    if: github.ref_type == 'branch'
     needs: admission
+    strategy:
+      fail-fast: false
+      matrix:
+        slot:
+          - a
+          - b
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
       contents: read
     steps:
-      - name: Require GitHub-hosted runner
+      - name: Require GitHub-hosted first attempt
         env:
           RUNNER_KIND: ${{ runner.environment }}
-        run: test "$RUNNER_KIND" = github-hosted
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
 
       - name: Check out the reviewed source commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -128,12 +175,13 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Require the exact reviewed source and release tag
+      - name: Require the exact pre-tag source
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
-          test "$(git rev-list -n 1 "$SOURCE_TAG")" = "$SOURCE_COMMIT"
+          test "$GITHUB_REF" = "refs/heads/release/oxide-relayer-exact-v1.0.8"
+          test -z "$(git tag --list "$SOURCE_TAG")"
           test -z "$(git status --porcelain)"
 
       - name: Set up exact Node
@@ -481,11 +529,13 @@ jobs:
         run: |
           set -euo pipefail
           docker pull "$NODE_RUNTIME_IMAGE"
-          docker build \
+          docker buildx build \
             --pull=false \
             --network=none \
             --no-cache \
             --build-arg "NODE_IMAGE=$NODE_RUNTIME_IMAGE" \
+            --build-arg SOURCE_DATE_EPOCH=0 \
+            --output type=docker,rewrite-timestamp=true \
             --label "org.opencontainers.image.source=https://github.com/DROOdotFOO/zkmoney-public" \
             --label "org.opencontainers.image.revision=$SOURCE_COMMIT" \
             --label "org.opencontainers.image.version=$IMAGE_VERSION" \
@@ -497,7 +547,323 @@ jobs:
           docker save --output release-build/oxide-relayer-exact-v1.0.8.tar "$LOCAL_IMAGE"
           (cd release-build && sha256sum oxide-relayer-exact-v1.0.8.tar > SHA256SUMS)
 
+      - name: Run complete source tests
+        run: pnpm --filter @oxide/oxide-relayer test
+
       - name: Upload unpublished image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: oxide-relayer-exact-v1.0.8-image-${{ matrix.slot }}
+          path: release-build/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload source and build materials
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: oxide-relayer-exact-v1.0.8-materials-${{ matrix.slot }}
+          path: release-materials/
+          if-no-files-found: error
+          retention-days: 90
+
+  compare-pretag-builds:
+    if: github.ref_type == 'branch'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require GitHub-hosted first attempt
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - name: Check out the exact smoke contract
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+
+      - name: Download build A image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.8-image-a
+          path: duplicate/image-a
+
+      - name: Download build B image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.8-image-b
+          path: duplicate/image-b
+
+      - name: Download build A materials
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.8-materials-a
+          path: duplicate/materials-a
+
+      - name: Download build B materials
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.8-materials-b
+          path: duplicate/materials-b
+
+      - name: Require independently staged image equivalence
+        shell: bash
+        run: |
+          set -euo pipefail
+          for slot in a b; do
+            (cd "duplicate/image-$slot" && sha256sum --check SHA256SUMS)
+            (cd "duplicate/materials-$slot" && sha256sum --check SHA256SUMS)
+          done
+          image_a=duplicate/image-a/oxide-relayer-exact-v1.0.8.tar
+          image_b=duplicate/image-b/oxide-relayer-exact-v1.0.8.tar
+          config_a="$(tar -xOf "$image_a" manifest.json | jq -er 'if length == 1 then .[0].Config else error("expected one image") end')"
+          config_b="$(tar -xOf "$image_b" manifest.json | jq -er 'if length == 1 then .[0].Config else error("expected one image") end')"
+          test "$config_a" = "$config_b"
+          cmp <(tar -xOf "$image_a" "$config_a") <(tar -xOf "$image_b" "$config_b")
+          for material in \
+            build-materials.json \
+            nargo-dependencies.lock \
+            nargo-dependency-resolutions.json \
+            solidity-dependencies.lock \
+            solidity-dependency-resolutions.json \
+            offline-build-inputs.json \
+            "zkmoney-public-${SOURCE_TAG}.tar.gz"
+          do
+            cmp "duplicate/materials-a/$material" "duplicate/materials-b/$material"
+          done
+          mkdir -p canonical-image canonical-materials
+          cp -a duplicate/image-a/. canonical-image/
+          cp -a duplicate/materials-a/. canonical-materials/
+          jq -n \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg sourceTag "$SOURCE_TAG" \
+            --arg imageConfigSha256 "${config_a%.json}" \
+            --arg buildMaterialsSha256 "$(sha256sum canonical-materials/build-materials.json | cut -d ' ' -f 1)" \
+            --arg stagedFilesystemSha256 "$(jq -er '.stagedFilesystemSha256' canonical-materials/build-materials.json)" \
+            --arg workflowRun "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{sourceCommit:$sourceCommit,sourceTag:$sourceTag,imageConfigSha256:$imageConfigSha256,buildMaterialsSha256:$buildMaterialsSha256,stagedFilesystemSha256:$stagedFilesystemSha256,duplicateBuilds:2,workflowRun:$workflowRun}' \
+            > canonical-materials/pretag-qualification.json
+          docker load --input "$image_a"
+          test "$(docker image inspect --format '{{.Id}}' "$LOCAL_IMAGE")" = "sha256:${config_a%.json}"
+
+      - name: Generate pre-tag SBOM from qualified bytes
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c
+        with:
+          image: ${{ env.LOCAL_IMAGE }}
+          format: spdx-json
+          output-file: canonical-materials/pretag-image.spdx.json
+          upload-artifact: false
+
+      - name: Smoke qualified bytes and seal pre-tag evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$LOCAL_IMAGE"
+          test "$(docker image inspect --format '{{.Config.User}}' "$image")" = root
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")" = '["node","dest/bin/oxide-relayer-init.js"]'
+          docker run --rm --network=none --entrypoint getent "$image" passwd 65532 \
+            | grep -E '^oxide-exact:x:65532:65532:.*:/nonexistent:/usr/sbin/nologin$'
+          test "$(docker run --rm --network=none --entrypoint stat "$image" --format '%u:%g:%a' /control)" = '65532:65532:700'
+          test "$(docker run --rm --network=none --entrypoint cat "$image" /app/source-commit)" = "$SOURCE_COMMIT"
+          docker run --rm --network=none --entrypoint sha256sum "$image" /app/approval-authority.pem \
+            | awk -v expected="$APPROVAL_AUTHORITY_SHA256" '$1 != expected { exit 1 }'
+          docker run --rm --network=none --entrypoint node "$image" dest/bin/oxide-relayer.js relay-exact --help
+          docker run --rm --network=none --entrypoint node "$image" dest/bin/oxide-relayer.js authorize-generic-restore --help
+          OXIDE_SMOKE_DIAGNOSTIC=1 scripts/smoke-exact-relayer-entrypoint.sh "$image"
+          (
+            cd canonical-materials
+            sha256sum \
+              build-materials.json \
+              nargo-dependencies.lock \
+              nargo-dependency-resolutions.json \
+              solidity-dependencies.lock \
+              solidity-dependency-resolutions.json \
+              offline-build-inputs.json \
+              pretag-image.spdx.json \
+              pretag-qualification.json \
+              "zkmoney-public-${SOURCE_TAG}.tar.gz" \
+              > PRETAG_SHA256SUMS
+            sha256sum --check PRETAG_SHA256SUMS
+          )
+
+      - name: Upload authoritative pre-tag image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: oxide-relayer-exact-v1.0.8-image
+          path: canonical-image/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload authoritative pre-tag materials
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: oxide-relayer-exact-v1.0.8-materials
+          path: canonical-materials/
+          if-no-files-found: error
+          retention-days: 90
+
+  pretag-oidc-signing:
+    if: github.ref_type == 'branch'
+    needs: compare-pretag-builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - name: Require GitHub-hosted first attempt
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - name: Download authoritative pre-tag image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.8-image
+          path: release-build
+
+      - name: Download authoritative pre-tag materials
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.8-materials
+          path: release-evidence
+
+      - name: Install exact Cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532
+        with:
+          cosign-release: v3.1.4
+
+      - name: Prove one token across registry and blob signing classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release-build && sha256sum --check SHA256SUMS)
+          (cd release-evidence && sha256sum --check PRETAG_SHA256SUMS)
+          docker load --input release-build/oxide-relayer-exact-v1.0.8.tar
+          docker pull registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          docker run --detach --rm --publish 127.0.0.1:5000:5000 \
+            --name oxide-relayer-pretag-registry \
+            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          trap 'docker rm --force oxide-relayer-pretag-registry > /dev/null 2>&1 || true' EXIT
+          local_tag=localhost:5000/oxide-relayer-exact-operation:pretag
+          docker tag "$LOCAL_IMAGE" "$local_tag"
+          docker push "$local_tag"
+          docker pull "$local_tag"
+          local_digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$local_tag")"
+          image="localhost:5000/oxide-relayer-exact-operation@${local_digest##*@}"
+
+          oidc_response="$(
+            curl --fail --silent --show-error \
+              --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore"
+          )"
+          identity_token="$(jq -er '.value | select(type == "string" and length > 0)' <<< "$oidc_response")"
+          printf '::add-mask::%s\n' "$identity_token"
+          unset oidc_response
+
+          cosign sign --yes --allow-insecure-registry \
+            --identity-token "$identity_token" "$image"
+          cosign attest --yes --allow-insecure-registry \
+            --identity-token "$identity_token" \
+            --type "$RELEASE_PREDICATE_TYPE" \
+            --predicate release-evidence/pretag-qualification.json "$image"
+          cosign attest --yes --allow-insecure-registry \
+            --identity-token "$identity_token" \
+            --type spdxjson \
+            --predicate release-evidence/pretag-image.spdx.json "$image"
+          cosign sign-blob --yes --identity-token "$identity_token" \
+            --bundle release-evidence/PRETAG_SHA256SUMS.sigstore.json \
+            release-evidence/PRETAG_SHA256SUMS
+          unset identity_token
+
+          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.8"
+          cosign verify --allow-insecure-registry \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            "$image" > release-evidence/pretag-image-signature.json
+          cosign verify-attestation --allow-insecure-registry \
+            --type "$RELEASE_PREDICATE_TYPE" \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            "$image" > release-evidence/pretag-release-attestation.json
+          cosign verify-attestation --allow-insecure-registry \
+            --type spdxjson \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            "$image" > release-evidence/pretag-sbom-attestation.json
+          cosign verify-blob \
+            --bundle release-evidence/PRETAG_SHA256SUMS.sigstore.json \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            release-evidence/PRETAG_SHA256SUMS
+
+      - name: Upload pre-tag signing evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: oxide-relayer-exact-v1.0.8-pretag-signing-evidence
+          path: release-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  import-pretag:
+    if: github.ref_type == 'tag'
+    needs: admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require GitHub-hosted first attempt
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - name: Download reviewed pre-tag image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.8-image
+          path: release-build
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.admission.outputs.qualification-run-id }}
+
+      - name: Download reviewed pre-tag materials
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.8-materials
+          path: release-materials
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.admission.outputs.qualification-run-id }}
+
+      - name: Require exact imported qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release-build && sha256sum --check SHA256SUMS)
+          (cd release-materials && sha256sum --check PRETAG_SHA256SUMS)
+          test "$(jq -er '.sourceCommit' release-materials/pretag-qualification.json)" = "$SOURCE_COMMIT"
+          test "$(jq -er '.sourceTag' release-materials/pretag-qualification.json)" = "$SOURCE_TAG"
+          test "$(jq -er '.duplicateBuilds' release-materials/pretag-qualification.json)" = 2
+
+      - name: Re-stage reviewed image in the tag run
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: oxide-relayer-exact-v1.0.8-image
@@ -505,7 +871,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload source and build materials
+      - name: Re-stage reviewed materials in the tag run
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: oxide-relayer-exact-v1.0.8-materials
@@ -514,16 +880,20 @@ jobs:
           retention-days: 90
 
   smoke-unpublished:
-    needs: build
+    if: github.ref_type == 'tag'
+    needs: import-pretag
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
     steps:
-      - name: Require GitHub-hosted runner
+      - name: Require GitHub-hosted first attempt
         env:
           RUNNER_KIND: ${{ runner.environment }}
-        run: test "$RUNNER_KIND" = github-hosted
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
 
       - name: Check out the exact smoke contract
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -567,10 +937,13 @@ jobs:
       image-digest: ${{ steps.publish.outputs.image-digest }}
       candidate-ref: ${{ steps.publish.outputs.candidate-ref }}
     steps:
-      - name: Require GitHub-hosted runner
+      - name: Require GitHub-hosted first attempt
         env:
           RUNNER_KIND: ${{ runner.environment }}
-        run: test "$RUNNER_KIND" = github-hosted
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
 
       - name: Download verified unpublished image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -608,10 +981,13 @@ jobs:
       contents: read
       packages: read
     steps:
-      - name: Require GitHub-hosted runner
+      - name: Require GitHub-hosted first attempt
         env:
           RUNNER_KIND: ${{ runner.environment }}
-        run: test "$RUNNER_KIND" = github-hosted
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
 
       - name: Check out exact source for independent archive verification
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -688,10 +1064,13 @@ jobs:
       image-attestation-url: ${{ steps.attest-image.outputs.attestation-url }}
       source-attestation-url: ${{ steps.attest-source.outputs.attestation-url }}
     steps:
-      - name: Require GitHub-hosted runner
+      - name: Require GitHub-hosted first attempt
         env:
           RUNNER_KIND: ${{ runner.environment }}
-        run: test "$RUNNER_KIND" = github-hosted
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
 
       - name: Download independently verified evidence
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
@@ -739,12 +1118,15 @@ jobs:
             --arg offlineBuildInputsSha256 "$(sha256sum release-evidence/offline-build-inputs.json | cut -d ' ' -f 1)" \
             --slurpfile offlineBuildInputs release-evidence/offline-build-inputs.json \
             --arg sbomSha256 "$sbom_sha256" \
+            --arg pretagSbomSha256 "$(sha256sum release-evidence/pretag-image.spdx.json | cut -d ' ' -f 1)" \
+            --arg pretagQualificationSha256 "$(sha256sum release-evidence/pretag-qualification.json | cut -d ' ' -f 1)" \
+            --arg pretagChecksumsSha256 "$(sha256sum release-evidence/PRETAG_SHA256SUMS | cut -d ' ' -f 1)" \
             --arg approvalAuthoritySha256 "$APPROVAL_AUTHORITY_SHA256" \
             --arg workflowRepository "$GITHUB_REPOSITORY" \
             --arg workflowCommit "$GITHUB_SHA" \
             --arg workflowRef "$GITHUB_REF" \
             --arg workflowRun "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{source:{repository:$sourceRepository,commit:$sourceCommit,tag:$sourceTag,archive:{sha256:$sourceArchiveSha256}},build:{workflowRepository:$workflowRepository,workflowCommit:$workflowCommit,workflowRef:$workflowRef,workflowRun:$workflowRun,stagedFilesystemSha256:$stagedFilesystemSha256,buildMaterialsSha256:$buildMaterialsSha256},materials:[{uri:$runtimeBase,digest:{sha256:$runtimeBaseDigest}}],dependencies:{nargo:{lockSha256:$nargoDependencyLockSha256,resolutionsSha256:$nargoDependencyResolutionsSha256,resolved:$nargoDependencies[0]},solidity:{lockSha256:$solidityDependencyLockSha256,resolutionsSha256:$solidityDependencyResolutionsSha256,resolved:$solidityDependencies[0]},offlineBuildInputs:{sha256:$offlineBuildInputsSha256,content:$offlineBuildInputs[0]}},sbom:{sha256:$sbomSha256},approvalAuthoritySha256:$approvalAuthoritySha256}' \
+            '{source:{repository:$sourceRepository,commit:$sourceCommit,tag:$sourceTag,archive:{sha256:$sourceArchiveSha256}},build:{workflowRepository:$workflowRepository,workflowCommit:$workflowCommit,workflowRef:$workflowRef,workflowRun:$workflowRun,stagedFilesystemSha256:$stagedFilesystemSha256,buildMaterialsSha256:$buildMaterialsSha256},materials:[{uri:$runtimeBase,digest:{sha256:$runtimeBaseDigest}}],dependencies:{nargo:{lockSha256:$nargoDependencyLockSha256,resolutionsSha256:$nargoDependencyResolutionsSha256,resolved:$nargoDependencies[0]},solidity:{lockSha256:$solidityDependencyLockSha256,resolutionsSha256:$solidityDependencyResolutionsSha256,resolved:$solidityDependencies[0]},offlineBuildInputs:{sha256:$offlineBuildInputsSha256,content:$offlineBuildInputs[0]}},pretagQualification:{sbomSha256:$pretagSbomSha256,manifestSha256:$pretagQualificationSha256,checksumsSha256:$pretagChecksumsSha256},sbom:{sha256:$sbomSha256},approvalAuthoritySha256:$approvalAuthoritySha256}' \
             > release-evidence/exact-release-predicate.json
 
       - name: Attest GitHub image provenance
@@ -784,12 +1166,15 @@ jobs:
             --arg solidityDependencyLockSha256 "$(sha256sum release-evidence/solidity-dependencies.lock | cut -d ' ' -f 1)" \
             --arg solidityDependencyResolutionsSha256 "$(sha256sum release-evidence/solidity-dependency-resolutions.json | cut -d ' ' -f 1)" \
             --arg offlineBuildInputsSha256 "$(sha256sum release-evidence/offline-build-inputs.json | cut -d ' ' -f 1)" \
+            --arg pretagSbomSha256 "$(sha256sum release-evidence/pretag-image.spdx.json | cut -d ' ' -f 1)" \
+            --arg pretagQualificationSha256 "$(sha256sum release-evidence/pretag-qualification.json | cut -d ' ' -f 1)" \
+            --arg pretagChecksumsSha256 "$(sha256sum release-evidence/PRETAG_SHA256SUMS | cut -d ' ' -f 1)" \
             --arg approvalAuthoritySha256 "$APPROVAL_AUTHORITY_SHA256" \
             --arg workflowCommit "$GITHUB_SHA" \
             --arg workflowRun "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --arg imageAttestationUrl "$IMAGE_ATTESTATION_URL" \
             --arg sourceAttestationUrl "$SOURCE_ATTESTATION_URL" \
-            '{sourceRepository:$sourceRepository,sourceCommit:$sourceCommit,sourceTag:$sourceTag,imageUri:$imageUri,imageDigest:$imageDigest,sbomSha256:$sbomSha256,sourceArchiveSha256:$sourceArchiveSha256,predicateSha256:$predicateSha256,nargoDependencyLockSha256:$nargoDependencyLockSha256,nargoDependencyResolutionsSha256:$nargoDependencyResolutionsSha256,solidityDependencyLockSha256:$solidityDependencyLockSha256,solidityDependencyResolutionsSha256:$solidityDependencyResolutionsSha256,offlineBuildInputsSha256:$offlineBuildInputsSha256,approvalAuthoritySha256:$approvalAuthoritySha256,workflowCommit:$workflowCommit,workflowRun:$workflowRun,imageAttestationUrl:$imageAttestationUrl,sourceAttestationUrl:$sourceAttestationUrl}' \
+            '{sourceRepository:$sourceRepository,sourceCommit:$sourceCommit,sourceTag:$sourceTag,imageUri:$imageUri,imageDigest:$imageDigest,sbomSha256:$sbomSha256,pretagSbomSha256:$pretagSbomSha256,pretagQualificationSha256:$pretagQualificationSha256,pretagChecksumsSha256:$pretagChecksumsSha256,sourceArchiveSha256:$sourceArchiveSha256,predicateSha256:$predicateSha256,nargoDependencyLockSha256:$nargoDependencyLockSha256,nargoDependencyResolutionsSha256:$nargoDependencyResolutionsSha256,solidityDependencyLockSha256:$solidityDependencyLockSha256,solidityDependencyResolutionsSha256:$solidityDependencyResolutionsSha256,offlineBuildInputsSha256:$offlineBuildInputsSha256,approvalAuthoritySha256:$approvalAuthoritySha256,workflowCommit:$workflowCommit,workflowRun:$workflowRun,imageAttestationUrl:$imageAttestationUrl,sourceAttestationUrl:$sourceAttestationUrl}' \
             > release-evidence/release-provenance.json
 
           oidc_response="$(
@@ -814,15 +1199,21 @@ jobs:
           unset identity_token
 
           sha256sum \
+            release-evidence/PRETAG_SHA256SUMS \
+            release-evidence/SBOM_SHA256 \
+            release-evidence/SHA256SUMS \
             release-evidence/build-materials.json \
             release-evidence/exact-release-predicate.json \
             release-evidence/image.spdx.json \
             release-evidence/nargo-dependencies.lock \
             release-evidence/nargo-dependency-resolutions.json \
+            release-evidence/offline-build-inputs.json \
+            release-evidence/pretag-image.spdx.json \
+            release-evidence/pretag-qualification.json \
+            release-evidence/release-provenance.json \
+            release-evidence/release-provenance.sigstore.json \
             release-evidence/solidity-dependencies.lock \
             release-evidence/solidity-dependency-resolutions.json \
-            release-evidence/offline-build-inputs.json \
-            release-evidence/release-provenance.json \
             "release-evidence/zkmoney-public-${SOURCE_TAG}.tar.gz" \
             > release-evidence/RELEASE_SHA256SUMS
 
@@ -845,10 +1236,13 @@ jobs:
       packages: read
       attestations: read
     steps:
-      - name: Require GitHub-hosted runner
+      - name: Require GitHub-hosted first attempt
         env:
           RUNNER_KIND: ${{ runner.environment }}
-        run: test "$RUNNER_KIND" = github-hosted
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
 
       - name: Check out exact source for independent verification
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -905,9 +1299,12 @@ jobs:
             --arg solidityDependencyLockSha256 "$SOLIDITY_DEPENDENCY_LOCK_SHA256" \
             --arg solidityDependencyResolutionsSha256 "$(sha256sum release-evidence/solidity-dependency-resolutions.json | cut -d ' ' -f 1)" \
             --arg offlineBuildInputsSha256 "$(sha256sum release-evidence/offline-build-inputs.json | cut -d ' ' -f 1)" \
+            --arg pretagSbomSha256 "$(sha256sum release-evidence/pretag-image.spdx.json | cut -d ' ' -f 1)" \
+            --arg pretagQualificationSha256 "$(sha256sum release-evidence/pretag-qualification.json | cut -d ' ' -f 1)" \
+            --arg pretagChecksumsSha256 "$(sha256sum release-evidence/PRETAG_SHA256SUMS | cut -d ' ' -f 1)" \
             --arg approvalAuthoritySha256 "$APPROVAL_AUTHORITY_SHA256" \
             --arg workflowCommit "$GITHUB_SHA" \
-            '.sourceRepository == $sourceRepository and .sourceCommit == $sourceCommit and .sourceTag == $sourceTag and .imageUri == $imageUri and .imageDigest == $imageDigest and .sbomSha256 == $sbomSha256 and .sourceArchiveSha256 == $sourceArchiveSha256 and .predicateSha256 == $predicateSha256 and .nargoDependencyLockSha256 == $nargoDependencyLockSha256 and .nargoDependencyResolutionsSha256 == $nargoDependencyResolutionsSha256 and .solidityDependencyLockSha256 == $solidityDependencyLockSha256 and .solidityDependencyResolutionsSha256 == $solidityDependencyResolutionsSha256 and .offlineBuildInputsSha256 == $offlineBuildInputsSha256 and .approvalAuthoritySha256 == $approvalAuthoritySha256 and .workflowCommit == $workflowCommit' \
+            '.sourceRepository == $sourceRepository and .sourceCommit == $sourceCommit and .sourceTag == $sourceTag and .imageUri == $imageUri and .imageDigest == $imageDigest and .sbomSha256 == $sbomSha256 and .pretagSbomSha256 == $pretagSbomSha256 and .pretagQualificationSha256 == $pretagQualificationSha256 and .pretagChecksumsSha256 == $pretagChecksumsSha256 and .sourceArchiveSha256 == $sourceArchiveSha256 and .predicateSha256 == $predicateSha256 and .nargoDependencyLockSha256 == $nargoDependencyLockSha256 and .nargoDependencyResolutionsSha256 == $nargoDependencyResolutionsSha256 and .solidityDependencyLockSha256 == $solidityDependencyLockSha256 and .solidityDependencyResolutionsSha256 == $solidityDependencyResolutionsSha256 and .offlineBuildInputsSha256 == $offlineBuildInputsSha256 and .approvalAuthoritySha256 == $approvalAuthoritySha256 and .workflowCommit == $workflowCommit' \
             release-evidence/release-provenance.json
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
           test "$(git rev-list -n 1 "$SOURCE_TAG")" = "$SOURCE_COMMIT"
@@ -1025,10 +1422,13 @@ jobs:
       contents: read
       packages: read
     steps:
-      - name: Require GitHub-hosted runner
+      - name: Require GitHub-hosted first attempt
         env:
           RUNNER_KIND: ${{ runner.environment }}
-        run: test "$RUNNER_KIND" = github-hosted
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
 
       - name: Check out the exact smoke contract
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -1076,13 +1476,15 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
-      packages: read
       attestations: read
     steps:
-      - name: Require GitHub-hosted runner
+      - name: Require GitHub-hosted first attempt
         env:
           RUNNER_KIND: ${{ runner.environment }}
-        run: test "$RUNNER_KIND" = github-hosted
+        shell: bash
+        run: |
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
 
       - name: Download authoritative signed release evidence
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333

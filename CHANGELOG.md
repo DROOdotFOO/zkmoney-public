@@ -4,6 +4,7 @@
 
 - Qualify two byte-identical offline image builds, complete tests, source archive, SPDX SBOM, checksums, and runtime smoke before creating the release tag.
 - Reuse one explicitly fetched Sigstore identity token for image signing, release and SBOM attestations, and release-manifest signing while preserving independent GitHub provenance and post-signature verification.
+- Publish only the authoritative pre-tag image bytes after importing their exact qualification manifest, SBOM, and checksums into the sole tag-origin workflow attempt.
 
 ## 1.0.7
 
