@@ -458,7 +458,6 @@ jobs:
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$LOCAL_IMAGE")" = '["node","dest/bin/oxide-relayer-init.js"]'
           docker run --rm --entrypoint getent "$LOCAL_IMAGE" passwd 65532 | grep -E '^oxide-exact:x:65532:65532:.*:/nonexistent:/usr/sbin/nologin$'
           test "$(docker run --rm --entrypoint stat "$LOCAL_IMAGE" --format '%u:%g:%a' /control)" = '65532:65532:700'
-          test "$(docker run --rm --entrypoint stat "$LOCAL_IMAGE" --format '%u:%g:%a' /canonical)" = '0:0:555'
           docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$LOCAL_IMAGE" | grep -Fx 'OXIDE_EXACT_RUNTIME_UID=65532'
           docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$LOCAL_IMAGE" | grep -Fx 'OXIDE_EXACT_RUNTIME_GID=65532'
           test "$(docker run --rm --entrypoint cat "$LOCAL_IMAGE" /app/source-commit)" = "$SOURCE_COMMIT"
@@ -890,7 +889,6 @@ jobs:
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")" = '["node","dest/bin/oxide-relayer-init.js"]'
           docker run --rm --entrypoint getent "$image" passwd 65532 | grep -E '^oxide-exact:x:65532:65532:.*:/nonexistent:/usr/sbin/nologin$'
           test "$(docker run --rm --entrypoint stat "$image" --format '%u:%g:%a' /control)" = '65532:65532:700'
-          test "$(docker run --rm --entrypoint stat "$image" --format '%u:%g:%a' /canonical)" = '0:0:555'
           docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | grep -Fx 'OXIDE_EXACT_RUNTIME_UID=65532'
           docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" | grep -Fx 'OXIDE_EXACT_RUNTIME_GID=65532'
           test "$(docker run --rm --entrypoint cat "$image" /app/source-commit)" = "$SOURCE_COMMIT"

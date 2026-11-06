@@ -10,7 +10,7 @@ RUN groupadd --gid 65532 oxide-exact \
     && useradd --uid 65532 --gid 65532 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin oxide-exact \
     && mkdir -p /canonical /control /run/config/oxide-relayer /run/secrets/oxide-relayer /tmp \
     && chown 65532:65532 /control \
-    && chmod 0555 /app /canonical \
+    && chmod 0555 /app \
     && chmod 0700 /control /run/config/oxide-relayer /run/secrets/oxide-relayer \
     && chmod 1777 /tmp \
     && rm -rf \

@@ -36,7 +36,7 @@ export async function preparePrivilegedRuntimeIdentity(
   let cleanHandoffDigest: `sha256:${string}` | undefined;
   if (profile !== 'generic-restore') {
     await assertNoUnresolvedGenericSubmissions(EXACT_GENERIC_SUBMISSION_JOURNAL_PATH);
-    cleanHandoffDigest = await readCleanHandoffDigest(EXACT_CLEAN_HANDOFF_PATH);
+    cleanHandoffDigest = await readPrivilegedCleanHandoffDigest(EXACT_CLEAN_HANDOFF_PATH);
   }
   let supplied: unknown;
   try {
@@ -82,7 +82,7 @@ export function assertCanonicalHandoffArtifact(metadata: {
   }
 }
 
-async function readCleanHandoffDigest(filename: string): Promise<`sha256:${string}`> {
+export async function readPrivilegedCleanHandoffDigest(filename: string): Promise<`sha256:${string}`> {
   const metadata = await lstat(filename);
   assertCanonicalHandoffArtifact(metadata);
   const contents = await readFile(filename);
