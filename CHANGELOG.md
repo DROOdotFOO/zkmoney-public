@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.8
+
+- Qualify two byte-identical offline image builds, complete tests, source archive, SPDX SBOM, checksums, and runtime smoke before creating the release tag.
+- Reuse one explicitly fetched Sigstore identity token for image signing, release and SBOM attestations, and release-manifest signing while preserving independent GitHub provenance and post-signature verification.
+
 ## 1.0.7
 
 - Publish only from the exact signed release tag after immutable-release, tag/version, GitHub-hosted runner, and verified tag-target admission checks.
