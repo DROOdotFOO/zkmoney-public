@@ -442,6 +442,12 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Check out the exact smoke contract
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+
       - name: Download unpublished image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -465,6 +471,7 @@ jobs:
             | awk -v expected="$APPROVAL_AUTHORITY_SHA256" '$1 != expected { exit 1 }'
           docker run --rm --entrypoint node "$LOCAL_IMAGE" dest/bin/oxide-relayer.js relay-exact --help
           docker run --rm --entrypoint node "$LOCAL_IMAGE" dest/bin/oxide-relayer.js authorize-generic-restore --help
+          scripts/smoke-exact-relayer-entrypoint.sh "$LOCAL_IMAGE"
 
   publish-candidate:
     needs: smoke-unpublished
@@ -908,6 +915,12 @@ jobs:
       contents: read
       packages: read
     steps:
+      - name: Check out the exact smoke contract
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+
       - name: Log in to GHCR read-only
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
         with:
@@ -937,3 +950,4 @@ jobs:
           test "$(docker run --rm --entrypoint cat "$image" /app/source-commit)" = "$SOURCE_COMMIT"
           docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js relay-exact --help
           docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js authorize-generic-restore --help
+          scripts/smoke-exact-relayer-entrypoint.sh "$image"

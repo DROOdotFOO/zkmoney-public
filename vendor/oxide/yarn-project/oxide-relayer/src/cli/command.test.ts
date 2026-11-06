@@ -85,7 +85,7 @@ describe('createCliProgram', () => {
     }
   });
   it('defines the fixed networkless preflight-exact caller contract', async () => {
-    const preflight = jest.fn(async () => {});
+    const preflight = jest.fn(async (_config: unknown) => {});
     const program = createCliProgram(() => {}, undefined, undefined, preflight);
     await program.parseAsync(
       [
