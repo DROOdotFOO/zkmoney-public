@@ -1,11 +1,20 @@
 import { describe, expect, it } from '@jest/globals';
 
+import {
+  EXACT_WITNESS_ACCESS_KEY_ID_PATH,
+  EXACT_WITNESS_CONFIG_PATH,
+  EXACT_WITNESS_SECRET_ACCESS_KEY_PATH,
+} from './paths.js';
 import { assertCanonicalHandoffArtifact } from './runtime_identity.js';
 import {
   assertCanonicalRootObject,
   assertDistinctRuntimeMounts,
   assertFinalPrivilegeState,
-  installInheritedBundleDescriptor,
+  assertStartupPrivilegeState,
+  consumePreparedInheritedBundle,
+  consumePreparedRuntimeInput,
+  installInheritedBundleBuffer,
+  prepareRootOnlyRuntimeInputs,
   parseDedicatedIdentity,
   parseMountInfo,
   rejectRawSecretEnvironment,
@@ -22,7 +31,7 @@ function status(overrides: Partial<Record<string, string>> = {}): string {
     CapInh: '0000000000000000',
     CapPrm: '0000000000000000',
     CapEff: '0000000000000000',
-    CapBnd: '00000000000000c0',
+    CapBnd: '00000000000000c4',
     CapAmb: '0000000000000000',
     NoNewPrivs: '1',
     ...overrides,
@@ -33,25 +42,65 @@ function status(overrides: Partial<Record<string, string>> = {}): string {
 }
 
 describe('runtime sandbox', () => {
-  it('assigns exact and restore commands to privileged-drop profiles', () => {
+  it('assigns exact, preflight, and restore commands to privileged-drop profiles', () => {
     expect(runtimeProfileFromArguments(['relay-exact'])).toBe('exact');
+    expect(runtimeProfileFromArguments(['preflight-exact'])).toBe('preflight-exact');
     expect(runtimeProfileFromArguments(['authorize-generic-restore'])).toBe('restore');
     expect(runtimeProfileFromArguments(['run'], { OXIDE_RUNTIME_PROFILE: 'generic-restore' })).toBe('generic-restore');
-    expect(() => runtimeProfileFromArguments(['run'])).toThrow('Root initializer permits only reviewed exact or restore runtime modes');
-  });
-
-  it('duplicates an inherited standard-input approval into a private descriptor', () => {
-    expect(installInheritedBundleDescriptor(['relay-exact', '--bundle-fd', '0'], () => 9)).toEqual({
-      argv: ['relay-exact', '--bundle-fd', '9'],
-      descriptor: 9,
-    });
-    expect(installInheritedBundleDescriptor(['relay-exact', '--bundle-fd', '3'], () => 9)).toEqual({
-      argv: ['relay-exact', '--bundle-fd', '3'],
-    });
-    expect(() => installInheritedBundleDescriptor(['relay-exact', '--bundle-fd', '0'], () => -1)).toThrow(
-      'could not be isolated',
+    expect(() => runtimeProfileFromArguments(['run'])).toThrow(
+      'Root initializer permits only reviewed exact, preflight, or restore runtime modes',
     );
   });
+
+  it('reads inherited standard input into memory before logical privilege drop and never reopens it', () => {
+    const input = Buffer.from('{\"schema\":\"oxide-relayer.preflight-exact.v1\"}');
+    let reads = 0;
+    let closed = false;
+    expect(
+      installInheritedBundleBuffer(
+        ['preflight-exact', '--bundle-fd', '0'],
+        fd => {
+          reads++;
+          expect(fd).toBe(0);
+          return input;
+        },
+        fd => {
+          expect(fd).toBe(0);
+          closed = true;
+        },
+      ),
+    ).toEqual(['preflight-exact', '--bundle-fd', '0']);
+    expect(reads).toBe(1);
+    expect(closed).toBe(true);
+
+    const prepared = consumePreparedInheritedBundle(0);
+    expect(prepared.toString('utf8')).toContain('preflight-exact.v1');
+    prepared.fill(0);
+    expect(reads).toBe(1);
+    expect(input.every(byte => byte === 0)).toBe(true);
+  });
+  it('consumes root-only inputs from memory without reopening their paths after logical drop', () => {
+    let dropped = false;
+    let reads = 0;
+    prepareRootOnlyRuntimeInputs('restore', filename => {
+      if (dropped) throw new Error(`post-drop reopen attempted: ${filename}`);
+      reads++;
+      return Buffer.from(`prepared:${filename}`);
+    });
+    dropped = true;
+
+    for (const filename of [
+      EXACT_WITNESS_ACCESS_KEY_ID_PATH,
+      EXACT_WITNESS_SECRET_ACCESS_KEY_PATH,
+      EXACT_WITNESS_CONFIG_PATH,
+    ]) {
+      const prepared = consumePreparedRuntimeInput(filename);
+      expect(prepared.toString('utf8')).toBe(`prepared:${filename}`);
+      prepared.fill(0);
+    }
+    expect(reads).toBe(3);
+  });
+
 
   it('requires the dedicated identity and prohibits root and UID/GID 1000', () => {
     expect(parseDedicatedIdentity(String(DEDICATED_IDENTITY), 'UID')).toBe(DEDICATED_IDENTITY);
@@ -68,7 +117,9 @@ describe('runtime sandbox', () => {
     expect(() => rejectRawSecretEnvironment({ OXIDE_SIGNER_PRIVATE_KEY: 'private' })).toThrow(
       'Raw credential environment variables are prohibited',
     );
-    expect(() => rejectRawSecretEnvironment({ AZTEC_NODE_URL_FILE: '/proc/self/fd/3' })).not.toThrow();
+    expect(() => rejectRawSecretEnvironment({ AZTEC_NODE_URL_FILE: '/proc/self/fd/3' })).toThrow(
+      'Raw credential environment variables are prohibited',
+    );
   });
 
   it('accepts only the dedicated final identity with no active capabilities', () => {
@@ -84,6 +135,18 @@ describe('runtime sandbox', () => {
     ).toThrow('Runtime capability bound differs');
     expect(() => assertFinalPrivilegeState(status({ NoNewPrivs: '0' }), DEDICATED_IDENTITY, DEDICATED_IDENTITY)).toThrow(
       'Final runtime process is missing no-new-privileges',
+    );
+  });
+  it('requires exactly DAC_READ_SEARCH, SETGID, and SETUID at startup', () => {
+    const startup = status({
+      Uid: '0\t0\t0\t0',
+      Gid: '0\t0\t0\t0',
+      CapPrm: '00000000000000c4',
+      CapEff: '00000000000000c4',
+    });
+    expect(() => assertStartupPrivilegeState(startup)).not.toThrow();
+    expect(() => assertStartupPrivilegeState(startup.replaceAll('00000000000000c4', '00000000000000c0'))).toThrow(
+      /DAC_READ_SEARCH/,
     );
   });
 

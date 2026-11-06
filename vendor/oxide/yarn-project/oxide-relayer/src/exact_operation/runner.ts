@@ -23,9 +23,9 @@ export interface ExactOperationExecution {
   /** Loads the L1 account without signing and verifies the signed runtime identity. */
   assertSignerIdentity(approval: ExactOperationApproval): Promise<void>;
   /** Builds all finalization material and signs one L1 transaction exactly once. */
-  signOnce(approval: ExactOperationApproval): Promise<SignedExactOperation>;
+  signOnce(approval: ExactOperationApproval, assertApprovalWindow: () => void): Promise<SignedExactOperation>;
   /** Makes one transport call with the durable signed bytes. */
-  sendOnce(signedTransaction: Buffer): Promise<string>;
+  sendOnce(signedTransaction: Buffer, assertApprovalWindow: () => void): Promise<string>;
   /** Observation only; this method cannot sign, send or replace a transaction. */
   waitForReceipt(txHash: string): Promise<{ status: 'success' | 'reverted' }>;
 }
@@ -36,6 +36,7 @@ export interface RelayExactOperationOptions {
   journal: ExactOperationJournal;
   execution: ExactOperationExecution;
   claimStore: ExactApprovalClaimStore;
+  now?: () => Date;
 }
 
 export async function relayExactOperation({
@@ -44,8 +45,10 @@ export async function relayExactOperation({
   journal,
   execution,
   claimStore,
+  now = () => new Date(),
 }: RelayExactOperationOptions): Promise<{ l1TxHash: string }> {
-  assertExactApprovalWindow(approval);
+  const assertApprovalWindow = () => assertExactApprovalWindow(approval, now());
+  assertApprovalWindow();
   const observation = await execution.observe(approval);
   assertExactOperationMatches(approval, observation);
 
@@ -58,11 +61,11 @@ export async function relayExactOperation({
   const witness = await consumeExactApprovalExternally(approval, approvalCommitment, claimStore);
   await journal.consumeApproval(approvalCommitment, approval.operation.id, approval.stageA.approvalDigest, witness);
   await journal.beginSigning(approval.operation.id);
-  assertExactApprovalWindow(approval);
+  assertApprovalWindow();
 
   let signed: SignedExactOperation;
   try {
-    signed = await execution.signOnce(approval);
+    signed = await execution.signOnce(approval, assertApprovalWindow);
   } catch (cause) {
     await journal.recordAmbiguous(approval.operation.id);
     throw new Error('Exact-operation signing outcome is ambiguous; approval is permanently locked', { cause });
@@ -72,7 +75,7 @@ export async function relayExactOperation({
 
   let l1TxHash: string;
   try {
-    l1TxHash = await execution.sendOnce(signed.bytes);
+    l1TxHash = await execution.sendOnce(signed.bytes, assertApprovalWindow);
     await journal.recordSent(approval.operation.id, l1TxHash);
   } catch (cause) {
     await journal.recordAmbiguous(approval.operation.id);

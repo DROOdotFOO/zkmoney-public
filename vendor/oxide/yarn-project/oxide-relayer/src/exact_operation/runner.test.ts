@@ -32,7 +32,8 @@ class RecordingExecution implements ExactOperationExecution {
     this.signerCheckCount++;
   }
 
-  async signOnce() {
+  async signOnce(_approval: ExactOperationApproval, assertApprovalWindow: () => void) {
+    assertApprovalWindow();
     this.signingCount++;
     return {
       hash: `0x${'aa'.repeat(32)}`,
@@ -40,7 +41,8 @@ class RecordingExecution implements ExactOperationExecution {
     };
   }
 
-  async sendOnce() {
+  async sendOnce(_signedTransaction: Buffer, assertApprovalWindow: () => void) {
+    assertApprovalWindow();
     this.sendCount++;
     return `0x${'aa'.repeat(32)}`;
   }
@@ -123,6 +125,50 @@ describe('relayExactOperation', () => {
     expect(claimStore.claim).toBeUndefined();
     await state.close();
   });
+  it('refuses to sign when the approval expires during pre-sign work', async () => {
+    const state = await journal();
+    const execution = new RecordingExecution();
+    const claimStore = new RecordingClaimStore();
+    const live = new Date(approval.notBefore);
+    const expired = new Date(approval.expiresAt);
+    const times = [live, live, expired];
+    await expect(
+      relayExactOperation({
+        approval,
+        approvalCommitment,
+        journal: state,
+        execution,
+        claimStore,
+        now: () => times.shift() ?? expired,
+      }),
+    ).rejects.toThrow(/signing outcome is ambiguous/);
+    expect(execution.signingCount).toBe(0);
+    expect(execution.sendCount).toBe(0);
+    await state.close();
+  });
+
+  it('refuses to send when the approval expires after signing', async () => {
+    const state = await journal();
+    const execution = new RecordingExecution();
+    const claimStore = new RecordingClaimStore();
+    const live = new Date(approval.notBefore);
+    const expired = new Date(approval.expiresAt);
+    const times = [live, live, live, expired];
+    await expect(
+      relayExactOperation({
+        approval,
+        approvalCommitment,
+        journal: state,
+        execution,
+        claimStore,
+        now: () => times.shift() ?? expired,
+      }),
+    ).rejects.toThrow(/send outcome is ambiguous/);
+    expect(execution.signingCount).toBe(1);
+    expect(execution.sendCount).toBe(0);
+    await state.close();
+  });
+
 
   it('signs and submits one exact matching operation once', async () => {
     const state = await journal();

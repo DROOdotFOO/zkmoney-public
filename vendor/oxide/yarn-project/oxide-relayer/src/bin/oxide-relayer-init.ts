@@ -1,9 +1,6 @@
-import { closeSync } from 'node:fs';
-
 import {
   closeRetainedSecretDescriptors,
   initializeRuntimeSandbox,
-  installInheritedBundleDescriptor,
   runtimeProfileFromArguments,
 } from '../exact_operation/runtime_sandbox.js';
 
@@ -11,23 +8,34 @@ import {
 async function main(): Promise<void> {
   const originalArgv = process.argv.slice(2);
   const profile = runtimeProfileFromArguments(originalArgv);
-  await initializeRuntimeSandbox(profile);
-  const { argv, descriptor } = installInheritedBundleDescriptor(originalArgv);
-  try {
-    const [{ createCliProgram }, { runRelayer }, { runExactOperation }, { authorizeGenericRestore }] = await Promise.all([
+  const argv = await initializeRuntimeSandbox(profile, originalArgv);
+  if (profile === 'preflight-exact') {
+    const [{ createCliProgram }, { preflightExactOperation }] = await Promise.all([
       import('../cli/command.js'),
-      import('../main.js'),
-      import('../exact_operation/run.js'),
-      import('../exact_operation/generic_quarantine.js'),
+      import('../exact_operation/preflight.js'),
     ]);
-    await createCliProgram(runRelayer, runExactOperation, authorizeGenericRestore).parseAsync([
+    const rejectGenericRun = () => {
+      throw new Error('Generic runtime is unavailable in the exact preflight profile');
+    };
+    await createCliProgram(rejectGenericRun, undefined, undefined, preflightExactOperation).parseAsync([
       process.execPath,
       'oxide-relayer',
       ...argv,
     ]);
-  } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
+    return;
   }
+
+  const [{ createCliProgram }, { runRelayer }, { runExactOperation }, { authorizeGenericRestore }] = await Promise.all([
+    import('../cli/command.js'),
+    import('../main.js'),
+    import('../exact_operation/run.js'),
+    import('../exact_operation/generic_quarantine.js'),
+  ]);
+  await createCliProgram(runRelayer, runExactOperation, authorizeGenericRestore).parseAsync([
+    process.execPath,
+    'oxide-relayer',
+    ...argv,
+  ]);
 }
 
 main()

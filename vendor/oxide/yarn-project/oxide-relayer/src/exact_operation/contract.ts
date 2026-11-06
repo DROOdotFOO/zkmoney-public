@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const EXACT_DATABASE_SCHEMA_IDENTITY =
-  'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v2+lease-v1+runtime-v2' as const;
+  'oxide-relayer.sqlite.portal-v4+exact-v3+generic-v2+lease-v1+runtime-v2' as const;
 
 export interface ExactStageAIdentity {
   approvalDigest: string;

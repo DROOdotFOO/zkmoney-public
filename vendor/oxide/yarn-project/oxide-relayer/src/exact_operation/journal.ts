@@ -73,7 +73,7 @@ export class ExactOperationJournal {
     });
     try {
       await db.exec('PRAGMA busy_timeout = 0');
-      await db.exec('PRAGMA locking_mode = EXCLUSIVE');
+      await db.exec('PRAGMA locking_mode = NORMAL');
       await db.exec('PRAGMA journal_mode = DELETE');
       await db.exec('PRAGMA synchronous = FULL');
       await db.exec('BEGIN EXCLUSIVE; COMMIT');

@@ -7,7 +7,7 @@ import type { OxidePortalContract } from '@oxide/l1-contracts';
 import { verifyWithdrawalInTx } from '@oxide/oxide-client/withdrawal_in_tx.js';
 import {
   type BroadcastL1Operation,
-  extractL1Operations,
+  extractL1OperationCalls,
   l1OperationEventSelector,
 } from '@oxide/oxide-lib/l1_operation_calldata.js';
 import { decodeFinalizationData } from '@oxide/oxide-lib/withdrawal_finalization_data.js';
@@ -46,30 +46,22 @@ export class ExactOperationObserver {
       throw new Error('Exact-operation source block is unavailable');
     }
 
-    const operations = extractL1Operations(
+    const operationCalls = extractL1OperationCalls(
       tx,
       await l1OperationEventSelector(),
       AztecAddress.fromStringUnsafe(this.identity.deployment.broadcaster),
     );
-    const observation = deriveExactOperationObservation(approval, {
-      ...this.identity,
-      sourceTxHash,
-      sourceBlockNumber: BigInt(receipt.blockNumber),
-      sourceBlockHash: receipt.blockHash.toString(),
-      provenBlockNumber: BigInt(provenBlockNumber),
-      sourceBlockTimestamp: new Date(Number(sourceBlock.header.globalVariables.timestamp) * 1000)
-        .toISOString()
-        .replace('.000Z', 'Z'),
-      operations,
-    });
-
-    const operation = operations[0]!;
+    if (operationCalls.length !== 1) {
+      throw new Error(
+        `Exact-operation source must contain exactly one deployment operation; found ${operationCalls.length}`,
+      );
+    }
+    const operation = operationCalls[0]!.operation;
     const verified = await verifyWithdrawalInTx(
       this.node,
       await this.portal.getPortalDomain(),
       { txHash: sourceTxHash, finalizationData: decodeFinalizationData(operation.calldata) },
     );
-    this.operation = operation;
     const witness = await this.node.getL2ToL1MembershipWitness(
       sourceTxHash,
       verified.messageHash,
@@ -78,9 +70,20 @@ export class ExactOperationObserver {
     if (!witness) {
       throw new Error('Exact-operation source event has no finalized Outbox witness');
     }
-    if (witness.leafIndex.toString() !== approval.operation.outboxWitness.leafIndex) {
-      throw new Error('Exact-operation Outbox leaf index differs from the approved witness');
-    }
+    const observation = await deriveExactOperationObservation(approval, {
+      ...this.identity,
+      sourceTxHash,
+      sourceBlockNumber: BigInt(receipt.blockNumber),
+      sourceBlockHash: receipt.blockHash.toString(),
+      provenBlockNumber: BigInt(provenBlockNumber),
+      sourceBlockTimestamp: new Date(Number(sourceBlock.header.globalVariables.timestamp) * 1000)
+        .toISOString()
+        .replace('.000Z', 'Z'),
+      operationCalls,
+      outboxMessageHash: verified.messageHash,
+      outboxWitness: witness,
+    });
+    this.operation = operation;
     return observation;
   }
 

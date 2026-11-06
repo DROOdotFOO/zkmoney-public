@@ -12,6 +12,7 @@ import {
 } from './monotonic_claim.js';
 import { EXACT_APPROVAL_AUTHORITY_PATH, EXACT_CONTROL_DIRECTORY, EXACT_JOURNAL_PATH } from './paths.js';
 import { loadExactRuntimeIdentity } from './runtime_identity.js';
+import { consumePreparedInheritedBundle } from './runtime_sandbox.js';
 import { loadWitnessConfiguration, loadWitnessCredentials } from './witness_configuration.js';
 
 const RESTORE_MARKER_PATH = `${EXACT_CONTROL_DIRECTORY}/generic-restore.json`;
@@ -284,13 +285,16 @@ async function recoverRestoreMarkerWrite(): Promise<void> {
 
 
 async function readBundle(fd: number): Promise<{ approval: unknown; approvalToken: string }> {
-  const input = await readFile(`/dev/fd/${fd}`, 'utf8');
-  if (Buffer.byteLength(input) > 64 * 1024) throw new Error('Generic restore approval exceeds 64 KiB');
-  const value = JSON.parse(input.trim()) as Record<string, unknown>;
-  if (Object.keys(value).sort().join(',') !== 'approval,approvalToken' || typeof value.approvalToken !== 'string') {
-    throw new Error('Generic restore approval bundle is malformed');
+  const bytes = consumePreparedInheritedBundle(fd);
+  try {
+    const value = JSON.parse(bytes.toString('utf8').trim()) as Record<string, unknown>;
+    if (Object.keys(value).sort().join(',') !== 'approval,approvalToken' || typeof value.approvalToken !== 'string') {
+      throw new Error('Generic restore approval bundle is malformed');
+    }
+    return { approval: value.approval, approvalToken: value.approvalToken };
+  } finally {
+    bytes.fill(0);
   }
-  return { approval: value.approval, approvalToken: value.approvalToken };
 }
 
 function assertRestoreSignature(

@@ -68,7 +68,7 @@ export class ExactL1Execution implements ExactOperationExecution {
     }
   }
 
-  async signOnce(approval: ExactOperationApproval): Promise<SignedExactOperation> {
+  async signOnce(approval: ExactOperationApproval, assertApprovalWindow: () => void): Promise<SignedExactOperation> {
     if (this.executorVersion !== approval.economics.executorVersion) {
       throw new Error('Exact-operation executor version differs from the approved economics');
     }
@@ -153,8 +153,9 @@ export class ExactL1Execution implements ExactOperationExecution {
       throw new Error('Exact-operation pending nonce differs from the approved runtime identity');
     }
     const chainId = approvedSigningChainId(approval, this.chainId);
-    const serialized = await this.limits.signL1Transaction(() =>
-      account.signTransaction({
+    const serialized = await this.limits.signL1Transaction(() => {
+      assertApprovalWindow();
+      return account.signTransaction({
         type: 'eip1559',
         chainId,
         nonce,
@@ -163,15 +164,16 @@ export class ExactL1Execution implements ExactOperationExecution {
         value: 0n,
         gas,
         ...feeValues,
-      }),
-    );
+      });
+    });
     return { hash: keccak256(serialized), bytes: Buffer.from(hexToBytes(serialized)) };
   }
 
-  async sendOnce(signedTransaction: Buffer): Promise<string> {
-    return await this.limits.sendRawTransaction(() =>
-      this.client.sendRawTransaction({ serializedTransaction: toHex(signedTransaction) }),
-    );
+  async sendOnce(signedTransaction: Buffer, assertApprovalWindow: () => void): Promise<string> {
+    return await this.limits.sendRawTransaction(() => {
+      assertApprovalWindow();
+      return this.client.sendRawTransaction({ serializedTransaction: toHex(signedTransaction) });
+    });
   }
 
   async waitForReceipt(txHash: string): Promise<{ status: 'success' | 'reverted' }> {

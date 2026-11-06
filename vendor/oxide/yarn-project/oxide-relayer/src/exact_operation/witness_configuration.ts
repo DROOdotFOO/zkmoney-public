@@ -1,7 +1,17 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 
 import { z } from 'zod';
+import {
+  EXACT_AZTEC_NODE_URL_PATH,
+  EXACT_WITNESS_ACCESS_KEY_ID_PATH,
+  EXACT_WITNESS_CONFIG_PATH,
+  EXACT_WITNESS_SECRET_ACCESS_KEY_PATH,
+} from './paths.js';
+import {
+  consumePreparedRuntimeInput,
+  hasPreparedRuntimeInput,
+} from './runtime_sandbox.js';
+
 
 const sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const configurationSchema = z.strictObject({
@@ -27,12 +37,14 @@ const configurationSchema = z.strictObject({
 export type WitnessConfiguration = z.infer<typeof configurationSchema>;
 
 export async function loadWitnessConfiguration(): Promise<WitnessConfiguration> {
-  const filename = requiredFileEnvironment('OXIDE_EXACT_WITNESS_CONFIG_FILE');
+  const bytes = consumePreparedRuntimeInput(EXACT_WITNESS_CONFIG_PATH);
   let input: unknown;
   try {
-    input = JSON.parse(await readFile(filename, 'utf8'));
+    input = JSON.parse(bytes.toString('utf8'));
   } catch (cause) {
     throw new Error('Private witness configuration is malformed', { cause });
+  } finally {
+    bytes.fill(0);
   }
   const configuration = configurationSchema.parse(input);
   const authority = {
@@ -56,17 +68,31 @@ export async function loadWitnessConfiguration(): Promise<WitnessConfiguration> 
 }
 
 export async function loadWitnessCredentials(): Promise<{ accessKeyId: string; secretAccessKey: string }> {
-  const [accessKeyId, secretAccessKey] = await Promise.all([
-    readSecretFile('OXIDE_EXACT_WITNESS_ACCESS_KEY_ID_FILE'),
-    readSecretFile('OXIDE_EXACT_WITNESS_SECRET_ACCESS_KEY_FILE'),
-  ]);
-  return { accessKeyId, secretAccessKey };
+  const accessKeyBytes = consumePreparedRuntimeInput(EXACT_WITNESS_ACCESS_KEY_ID_PATH);
+  const secretKeyBytes = consumePreparedRuntimeInput(EXACT_WITNESS_SECRET_ACCESS_KEY_PATH);
+  try {
+    return {
+      accessKeyId: preparedText(accessKeyBytes),
+      secretAccessKey: preparedText(secretKeyBytes),
+    };
+  } finally {
+    accessKeyBytes.fill(0);
+    secretKeyBytes.fill(0);
+  }
 }
 
 export async function loadAztecNodeUrl(): Promise<string> {
-  const value = process.env.AZTEC_NODE_URL_FILE
-    ? await readSecretFile('AZTEC_NODE_URL_FILE')
-    : requiredEnvironment('AZTEC_NODE_URL');
+  let value: string;
+  if (hasPreparedRuntimeInput(EXACT_AZTEC_NODE_URL_PATH)) {
+    const bytes = consumePreparedRuntimeInput(EXACT_AZTEC_NODE_URL_PATH);
+    try {
+      value = preparedText(bytes);
+    } finally {
+      bytes.fill(0);
+    }
+  } else {
+    value = requiredEnvironment('AZTEC_NODE_URL');
+  }
   try {
     return new URL(value).toString();
   } catch (cause) {
@@ -74,18 +100,10 @@ export async function loadAztecNodeUrl(): Promise<string> {
   }
 }
 
-async function readSecretFile(name: string): Promise<string> {
-  const value = (await readFile(requiredFileEnvironment(name), 'utf8')).trim();
-  if (!value || Buffer.byteLength(value) > 64 * 1024) throw new Error('Root-opened runtime input is empty or oversized');
+function preparedText(bytes: Buffer): string {
+  const value = bytes.toString('utf8').trim();
+  if (!value || bytes.length > 64 * 1024) throw new Error('Root-prepared runtime input is empty or oversized');
   return value;
-}
-
-function requiredFileEnvironment(name: string): string {
-  const value = process.env[name];
-  if (!/^\/proc\/self\/fd\/[0-9]+$/.test(value ?? '')) {
-    throw new Error('Runtime credential descriptor was not installed by the root initializer');
-  }
-  return value!;
 }
 
 function requiredEnvironment(name: string): string {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.3
+
+- Independently derive and verify the exact Portal deployment, registry, manifest, source transaction, public-call digest, operation identity, finalized source block, Outbox proof and economics before consuming the operation witness.
+- Add a credential-free production-image preflight that exercises the real root initializer, canonical read-only mount checks, state inventory, privilege drop and final UID/GID/capability assertions without network or state mutation.
+- Restrict root initialization to `DAC_READ_SEARCH`, `SETUID` and `SETGID`, then permanently drop to dedicated UID/GID 65532 before credential, witness, RPC, signing or transaction logic.
+- Move the exact journal to physical schema v3, use normal SQLite locking so a clean close removes rollback journals, and keep witness quarantine reads scoped to exact-operation claims.
+- Prevent public fixtures and durable witness/evidence projections from exposing private host or withdrawal linkage.
+
 ## 1.0.2
 
 - Add a fail-closed fork-only `relay-exact` runtime for one Ed25519-approved v4 withdrawal operation, including signed execution windows and Stage A identity binding.

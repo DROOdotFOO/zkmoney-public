@@ -87,13 +87,17 @@ bind aliases, and device/inode aliases fail closed. The launcher must independen
 immutable image digest with a read-only root filesystem and no `/app` mount. Approval material never enters
 inventory, environment files, generated Compose, argv, logs, witness records, or canonical state.
 
-The image starts only as container root with `SETUID` and `SETGID`; every other capability is dropped and
-`no-new-privileges` is mandatory. Before opening credentials, the initializer validates all mount and runtime
-identities. It opens only approved root-owned mode-0400 files beneath root-owned mode-0700 configuration and secret
-directories, retains those file descriptors in process memory, clears supplementary groups, and drops permanently
-to dedicated non-login UID/GID 65532. UID/GID 0 and 1000 are prohibited. The final process verifies that all real,
-effective, saved, filesystem, permitted, inheritable, effective, bounding, and ambient privilege sets are empty and
-that root cannot be regained. The host must reserve UID/GID 65532 exclusively for this runtime.
+The image starts only as container root with `DAC_READ_SEARCH`, `SETUID`, and `SETGID`;
+`no-new-privileges` is mandatory. `DAC_READ_SEARCH` is used only while root preflights the legacy-owned,
+read-only canonical state. Before opening credentials, the initializer validates all mount and runtime identities.
+It reads only approved root-owned mode-0400 files beneath root-owned mode-0700 configuration and secret directories
+directly into process-memory buffers, reads the inherited standard-input bundle into a separate memory buffer, closes
+the source descriptors, clears supplementary groups, and drops permanently to dedicated non-login UID/GID 65532.
+Post-drop code consumes and wipes those buffers; it never reopens `/proc/self/fd/*`, `/dev/fd/*`, or a root-only
+input path, and input values never enter environment variables, argv, logs, or disk. UID/GID 0 and 1000 are
+prohibited. The final process verifies that all real, effective, saved, and filesystem IDs are 65532, its permitted,
+inheritable, effective, and ambient capability sets are empty, the bounding set is exactly the reviewed three
+startup capabilities, and root cannot be regained. The host must reserve UID/GID 65532 exclusively for this runtime.
 
 Canonical state is mounted read-only. The final process cannot create SQLite journals, WAL/SHM files, locks,
 temporary files, migrations, or permission changes beside canonical data. Runtime temporary files use an isolated
@@ -101,6 +105,19 @@ temporary files, migrations, or permission changes beside canonical data. Runtim
 identity. Generic restore requires separate approval, exact terminal evidence, unchanged canonical bytes, no active
 exact lease, and a separately reviewed remount into the generic layout; it never removes exact-operation quarantine
 or performs a migration or permission change.
+The safe image preflight uses the real default entrypoint and the same mount, inventory, canonical-handoff, startup
+capability, privilege-drop, and post-drop readability path:
+
+```text
+preflight-exact --bundle-fd 0 --canonical-state /canonical --control-dir /control
+```
+
+Inherited standard input must contain exactly `{"schema":"oxide-relayer.preflight-exact.v1"}`. The fixed
+root-owned mode-0400 inputs are `/run/config/oxide-relayer/runtime-identity.json` and
+`/run/config/oxide-relayer/state-inventory.json`. `/run/secrets/oxide-relayer` remains a distinct, empty,
+writable root-owned mode-0700 tmpfs: preflight opens no signer, witness, AWS, S3, RPC, PXE, or relayer credential.
+It performs no network call, journal/control mutation, witness claim, signing, or send, and exits after the post-drop checks.
+
 
 Every generic L1 send now has the same durable ambiguity contract as exact mode. Before asking the
 account to sign, it fsyncs a `signing` reservation containing operation identity, signer commitment,
@@ -124,6 +141,13 @@ Cutover is fail closed:
 5. Enforce independent hard limits:
    `TEE_FINALIZATION_SIGNATURE_REQUESTS_MAX=1`, `L1_TRANSACTION_SIGNINGS_MAX=1`, and
    `ETH_SEND_RAW_TRANSACTION_CALLS_MAX=1`. The exact journal persists signed bytes and the pre-send boundary.
+The runtime independently derives the deployment registry from the observed Portal domain's `teeRegistry`, the
+manifest digest from the exact fetched manifest bytes, broadcaster contract/selector/call index/call digest from the
+observed public call, and Outbox root/proof digest from the fetched membership witness before the external claim.
+Approval values are comparison targets only. The signed execution window is checked again inside the one-shot
+signing sink immediately before `account.signTransaction()` and inside the one-shot transport sink immediately
+before `eth_sendRawTransaction`.
+
 6. Any ambiguous exact send blocks all submission for the signer and chain. Exact success remains permanently
    quarantined from generic submission; duplicate safety never relies on a destination revert.
 7. `authorize-generic-restore --bundle-fd 3` accepts a separate signed, non-persisted restore approval

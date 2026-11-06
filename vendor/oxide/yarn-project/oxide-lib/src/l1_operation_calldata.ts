@@ -1,6 +1,7 @@
 import type { Fr } from '@aztec-labs/aztec.js/fields';
 import { DomainSeparator } from '@aztec-labs/constants';
 import { keccak256 } from '@aztec-labs/foundation/crypto/keccak';
+import { sha256 } from '@aztec-labs/foundation/crypto/sha256';
 import { EthAddress } from '@aztec-labs/foundation/eth-address';
 import { EventSelector, FunctionSelector } from '@aztec-labs/stdlib/abi';
 import type { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
@@ -122,6 +123,18 @@ export interface BroadcastL1Operation {
   calldata: Buffer;
   condition: L1OperationCondition;
 }
+/**
+ * Immutable public-call identity. `callSha256` hashes the NUL-terminated v1 domain, 32-byte broadcaster address,
+ * 8-byte big-endian call index, 4-byte big-endian field count, and every 32-byte call field in original order.
+ */
+export interface BroadcastL1OperationCall {
+  operation: BroadcastL1Operation;
+  broadcasterContract: `0x${string}`;
+  eventSelector: `0x${string}`;
+  callIndex: number;
+  callSha256: `0x${string}`;
+}
+
 
 export function l1OperationEventSelector(): Promise<FunctionSelector> {
   return FunctionSelector.fromSignature('l1_operation_event()');
@@ -142,9 +155,22 @@ export function extractL1Operations(
   selector: FunctionSelector,
   broadcaster: AztecAddress,
 ): BroadcastL1Operation[] {
+  return extractL1OperationCalls(tx, selector, broadcaster).map(call => call.operation);
+}
+
+/**
+ * The same conservative extraction as {@link extractL1Operations}, with immutable source-call identity for callers
+ * that must independently bind an approval to the exact observed public call.
+ */
+export function extractL1OperationCalls(
+  tx: Tx,
+  selector: FunctionSelector,
+  broadcaster: AztecAddress,
+): BroadcastL1OperationCall[] {
   const selectorField = selector.toField();
-  const operations: BroadcastL1Operation[] = [];
-  for (const { request, calldata: values } of tx.getPublicCallRequestsWithCalldata()) {
+  const calls = tx.getPublicCallRequestsWithCalldata();
+  const operations: BroadcastL1OperationCall[] = [];
+  for (const [callIndex, { request, calldata: values }] of calls.entries()) {
     if (!request.contractAddress.equals(broadcaster) || !L1_OPERATION_EVENT_CALLDATA_LENS.has(values.length)) {
       continue;
     }
@@ -162,7 +188,7 @@ export function extractL1Operations(
       continue;
     }
     try {
-      operations.push({
+      const operation = {
         target: EthAddress.fromField(target),
         payoutToken: EthAddress.fromField(payoutToken),
         calldata: decodeL1OperationCalldata(Number(bytesLen.toBigInt()), l1Calldata),
@@ -171,6 +197,24 @@ export function extractL1Operations(
           EthAddress.fromField(conditionToken),
           EthAddress.fromField(conditionRecipient),
         ),
+      };
+      const index = Buffer.alloc(8);
+      index.writeBigUInt64BE(BigInt(callIndex));
+      const fieldCount = Buffer.alloc(4);
+      fieldCount.writeUInt32BE(values.length);
+      const callBytes = Buffer.concat([
+        Buffer.from('oxide/l1-operation-observed-call/v1\0', 'utf8'),
+        request.contractAddress.toBuffer(),
+        index,
+        fieldCount,
+        ...values.map(value => value.toBuffer()),
+      ]);
+      operations.push({
+        operation,
+        broadcasterContract: request.contractAddress.toString().toLowerCase() as `0x${string}`,
+        eventSelector: calldataSelector.toString().toLowerCase() as `0x${string}`,
+        callIndex,
+        callSha256: `0x${sha256(callBytes).toString('hex')}`,
       });
     } catch {
       continue;

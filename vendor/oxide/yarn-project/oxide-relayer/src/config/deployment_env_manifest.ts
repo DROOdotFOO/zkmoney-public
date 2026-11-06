@@ -63,6 +63,8 @@ export interface ResolveDeploymentEnvManifestOptions {
   /** When set, only entries whose `token` is listed get a worker. */
   acceptedPayoutTokens?: EthAddress[];
   fetch?: typeof fetch;
+  /** Exact raw response bytes, before JSON parsing. Used only by immutable-operation approval evidence. */
+  onManifestBytes?: (bytes: Buffer) => void;
 }
 
 interface RawDeployment {
@@ -99,7 +101,9 @@ export async function resolveDeploymentEnvManifest(
   opts: ResolveDeploymentEnvManifestOptions,
 ): Promise<ResolvedDeploymentEnvManifest> {
   const url = opts.deploymentEnvManifestUrl;
-  const entries = await readDocument(url, opts.fetch ?? fetch);
+  const document = await readDocument(url, opts.fetch ?? fetch);
+  opts.onManifestBytes?.(document.raw);
+  const entries = document.entries;
   const portal = opts.portal.toString().toLowerCase();
   const pinned = entries.find(entry => typeof entry.portal === 'string' && entry.portal.toLowerCase() === portal);
   if (!pinned) {
@@ -226,17 +230,17 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-async function readDocument(url: string, fetchFn: typeof fetch): Promise<RawDeployment[]> {
+async function readDocument(url: string, fetchFn: typeof fetch): Promise<{ entries: RawDeployment[]; raw: Buffer }> {
   const raw = await fetchRaw(url, fetchFn);
   let doc: DeploymentEnvManifestDocument;
   try {
-    doc = JSON.parse(raw) as DeploymentEnvManifestDocument;
+    doc = JSON.parse(raw.toString('utf8')) as DeploymentEnvManifestDocument;
   } catch (err: unknown) {
     throw new Error(`deployment env manifest ${url} is not valid JSON: ${message(err)}`);
   }
   if (doc?.schemaVersion !== '5') {
     throw new Error(
-      `deployment env manifest ${url} has unsupported schemaVersion ${JSON.stringify(doc?.schemaVersion)} (want "5").`,
+      `deployment env manifest ${url} has unsupported schemaVersion ${JSON.stringify(doc?.schemaVersion)} (want \"5\").`,
     );
   }
   if (!Array.isArray(doc.deployments)) {
@@ -246,7 +250,7 @@ async function readDocument(url: string, fetchFn: typeof fetch): Promise<RawDepl
   rejectDuplicateLabels(url, deployments);
   const entries = deployments.flatMap((deployment, index) => bridgesOf(url, deployment, index));
   rejectDuplicates(url, entries);
-  return entries;
+  return { entries, raw };
 }
 
 /** One entry for each bridge of a deployment. The bridges of one deployment share its label. */
@@ -321,16 +325,16 @@ function sameValue(a: unknown, b: unknown): boolean {
   return typeof a === 'string' && typeof b === 'string' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-async function fetchRaw(url: string, fetchFn: typeof fetch): Promise<string> {
+async function fetchRaw(url: string, fetchFn: typeof fetch): Promise<Buffer> {
   if (url.startsWith('file://')) {
-    return readFile(new URL(url), 'utf8');
+    return readFile(new URL(url));
   }
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    return readFile(url, 'utf8');
+    return readFile(url);
   }
   const res = await fetchFn(url);
   if (!res.ok) {
     throw new Error(`deployment env manifest fetch ${url} returned HTTP ${res.status}`);
   }
-  return res.text();
+  return Buffer.from(await res.arrayBuffer());
 }

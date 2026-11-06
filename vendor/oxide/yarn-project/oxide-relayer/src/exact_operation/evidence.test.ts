@@ -15,7 +15,7 @@ import { encodeFinalizationData } from '@oxide/oxide-lib/withdrawal_finalization
 import { describe, expect, it } from '@jest/globals';
 
 import type { ExactOperationApproval } from './contract.js';
-import { deriveExactOperationObservation } from './evidence.js';
+import { deriveExactOperationObservation, deriveOutboxEvidence } from './evidence.js';
 import { exactApprovalFixture } from './test_fixture.js';
 
 const portal = EthAddress.fromString('0x1111111111111111111111111111111111111111');
@@ -37,6 +37,8 @@ const operation: BroadcastL1Operation = {
   }),
 };
 const operationId = computeL1OperationId(operation, sourceTxHash);
+const outboxMessageHash = new Fr(789n);
+const outboxWitness = { leafIndex: 0n, siblingPath: [new Fr(321n)] };
 const baseApproval = exactApprovalFixture();
 const approval: ExactOperationApproval = {
   ...baseApproval,
@@ -74,6 +76,14 @@ const approval: ExactOperationApproval = {
     maximumTotalFee: '30000000000000000',
   },
 };
+const operationCall = {
+  operation,
+  broadcasterContract: approval.deployment.broadcaster as `0x${string}`,
+  eventSelector: approval.operation.broadcasterEvent.eventSignature as `0x${string}`,
+  callIndex: 0,
+  callSha256: approval.operation.broadcasterEvent.callSha256 as `0x${string}`,
+};
+
 
 function evidence(overrides: Record<string, unknown> = {}) {
   return {
@@ -85,56 +95,141 @@ function evidence(overrides: Record<string, unknown> = {}) {
     sourceBlockHash: approval.operation.sourceBlockHash,
     sourceBlockTimestamp: approval.operation.sourceBlockTimestamp,
     provenBlockNumber: 1234n,
-    operations: [operation],
+    operationCalls: [operationCall],
+    outboxMessageHash,
+    outboxWitness,
     ...overrides,
   };
 }
 
-function expected(overrides: Partial<ExactOperationApproval> = {}): ExactOperationApproval {
-  return structuredClone({ ...approval, ...overrides });
+async function expected(overrides: Partial<ExactOperationApproval> = {}): Promise<ExactOperationApproval> {
+  const reviewed = structuredClone({ ...approval, ...overrides });
+  reviewed.operation.outboxWitness = await deriveOutboxEvidence(outboxMessageHash, outboxWitness);
+  return reviewed;
 }
 
 describe('deriveExactOperationObservation', () => {
-  it('derives one finalized withdrawal operation from exact source evidence', () => {
-    expect(deriveExactOperationObservation(expected(), evidence())).toEqual(approval);
+  it('derives one finalized withdrawal operation from exact source evidence', async () => {
+    const reviewed = await expected();
+    await expect(deriveExactOperationObservation(reviewed, evidence())).resolves.toEqual(reviewed);
   });
 
-  it('fails when the operation targets another portal', () => {
+  it('fails when the operation targets another portal', async () => {
     const wrong = { ...operation, target: EthAddress.fromString('0x9999999999999999999999999999999999999999') };
-    expect(() => deriveExactOperationObservation(expected(), evidence({ operations: [wrong] }))).toThrow(/portal/);
+    await expect(
+      deriveExactOperationObservation(await expected(), evidence({ operationCalls: [{ ...operationCall, operation: wrong }] })),
+    ).rejects.toThrow(/portal/);
   });
 
-  it('fails when source evidence belongs to another deployment', () => {
-    expect(() =>
+  it('fails when source evidence belongs to another deployment', async () => {
+    await expect(
       deriveExactOperationObservation(
-        expected({ deployment: { ...approval.deployment, broadcaster: `0x${'44'.repeat(32)}` } }),
+        await expected({ deployment: { ...approval.deployment, broadcaster: `0x${'44'.repeat(32)}` } }),
         evidence(),
       ),
-    ).toThrow(/deployment.broadcaster/);
+    ).rejects.toThrow(/deployment.broadcaster/);
   });
 
-  it('fails when the source transaction changes the operation ID', () => {
-    expect(() =>
+  it('fails when the source transaction changes the operation ID', async () => {
+    await expect(
       deriveExactOperationObservation(
-        expected(),
+        await expected(),
         evidence({ sourceTxHash: TxHash.fromString(`0x${'22'.repeat(32)}`) }),
       ),
-    ).toThrow(/operation.id/);
+    ).rejects.toThrow(/operation.id/);
   });
-  it('fails when the finalized source event block identity changes', () => {
-    expect(() =>
-      deriveExactOperationObservation(expected(), evidence({ sourceBlockHash: `0x${'ab'.repeat(32)}` })),
-    ).toThrow(/operation.sourceBlockHash/);
+
+  it('fails when the finalized source event block identity changes', async () => {
+    await expect(
+      deriveExactOperationObservation(await expected(), evidence({ sourceBlockHash: `0x${'ab'.repeat(32)}` })),
+    ).rejects.toThrow(/operation.sourceBlockHash/);
+  });
+  it.each<[string, (reviewed: ExactOperationApproval) => void]>([
+    [
+      'deployment registry',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.deployment.registry = `0x${'31'.repeat(20)}`;
+      },
+    ],
+    [
+      'manifest digest',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.deployment.manifestDigest = `sha256:${'32'.repeat(32)}`;
+      },
+    ],
+    [
+      'broadcaster contract',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.operation.broadcasterEvent.contract = `0x${'33'.repeat(32)}`;
+      },
+    ],
+    [
+      'broadcaster selector',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.operation.broadcasterEvent.eventSignature = `0x${'34'.repeat(32)}`;
+      },
+    ],
+    [
+      'broadcaster call index',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.operation.broadcasterEvent.logIndex = '1';
+      },
+    ],
+    [
+      'broadcaster call digest',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.operation.broadcasterEvent.callSha256 = `0x${'35'.repeat(32)}`;
+      },
+    ],
+    [
+      'Outbox root',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.operation.outboxWitness.root = `0x${'36'.repeat(32)}`;
+      },
+    ],
+    [
+      'Outbox proof digest',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.operation.outboxWitness.proofDigest = `sha256:${'37'.repeat(32)}`;
+      },
+    ],
+    [
+      'recipient commitment',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.withdrawal.recipientCommitment = `0x${'38'.repeat(32)}`;
+      },
+    ],
+    [
+      'withdrawal amount',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.withdrawal.amount = '1000001';
+      },
+    ],
+    [
+      'approved economics',
+      (reviewed: ExactOperationApproval) => {
+        reviewed.economics.maximumGas = '999999';
+      },
+    ],
+  ])('fails when signed %s is substituted', async (_label, substitute) => {
+    const reviewed = await expected();
+    substitute(reviewed);
+    await expect(deriveExactOperationObservation(reviewed, evidence())).rejects.toThrow(/mismatch/);
   });
 
 
-  it('fails before finality', () => {
-    expect(() => deriveExactOperationObservation(expected(), evidence({ provenBlockNumber: 1233n }))).toThrow(/not proven/);
+  it('fails before finality', async () => {
+    await expect(
+      deriveExactOperationObservation(await expected(), evidence({ provenBlockNumber: 1233n })),
+    ).rejects.toThrow(/not proven/);
   });
 
-  it('fails when a second matching operation exists', () => {
-    expect(() => deriveExactOperationObservation(expected(), evidence({ operations: [operation, operation] }))).toThrow(
-      /exactly one/,
-    );
+  it('fails when a second matching operation exists', async () => {
+    await expect(
+      deriveExactOperationObservation(
+        await expected(),
+        evidence({ operationCalls: [operationCall, operationCall] }),
+      ),
+    ).rejects.toThrow(/exactly one/);
   });
 });

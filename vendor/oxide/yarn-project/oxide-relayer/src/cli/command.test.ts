@@ -84,6 +84,28 @@ describe('createCliProgram', () => {
       environment.restore();
     }
   });
+  it('defines the fixed networkless preflight-exact caller contract', async () => {
+    const preflight = jest.fn(async () => {});
+    const program = createCliProgram(() => {}, undefined, undefined, preflight);
+    await program.parseAsync(
+      [
+        'preflight-exact',
+        '--bundle-fd',
+        '0',
+        '--canonical-state',
+        '/canonical',
+        '--control-dir',
+        '/control',
+      ],
+      { from: 'user' },
+    );
+    expect(preflight).toHaveBeenCalledWith({
+      bundleFd: 0,
+      canonicalState: '/canonical',
+      controlDir: '/control',
+    });
+  });
+
 
 
   it('parses public docker one-liner flags', async () => {

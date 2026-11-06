@@ -242,10 +242,11 @@ export class S3ExactApprovalClaimStore implements ExactApprovalClaimStore {
     if (!/^[A-Za-z0-9._/-]{1,256}$/.test(normalizedPrefix)) {
       throw new Error('Exact-operation witness claim prefix is malformed');
     }
+    const claimPrefix = `${normalizedPrefix}/exact-operation-consumption/`;
     const response = await this.client.send(
       new ListObjectVersionsCommand({
         Bucket: this.config.bucket,
-        Prefix: `${normalizedPrefix}/`,
+        Prefix: claimPrefix,
         ExpectedBucketOwner: this.config.expectedOwner,
       }),
     );
@@ -256,7 +257,7 @@ export class S3ExactApprovalClaimStore implements ExactApprovalClaimStore {
       if (
         !version.Key ||
         !version.VersionId ||
-        !version.Key.startsWith(`${normalizedPrefix}/`) ||
+        !version.Key.startsWith(claimPrefix) ||
         !version.Key.endsWith('.json')
       ) {
         throw new Error('Exact-operation witness prefix contains an unrecognized object');

@@ -18,6 +18,7 @@ import {
   computeL1OperationId,
   decodeL1OperationCalldata,
   encodeL1OperationCalldata,
+  extractL1OperationCalls,
   extractL1Operations,
   l1OperationEventSelector,
   l1OperationLogTag,
@@ -172,6 +173,27 @@ describe('l1 operation broadcast decoder', () => {
     expect(operations[1].calldata.equals(large.calldata)).toBe(true);
     expect(operations[1].condition).toEqual(balance);
   });
+  it('adds deterministic observed call identity without changing generic extraction', async () => {
+    const selector = await l1OperationEventSelector();
+    const other = AztecAddress.fromNumberUnsafe(2);
+    const tx = txFrom([
+      { contractAddress: other, calldata: callValues(selector) },
+      { contractAddress: broadcaster, calldata: callValues(selector) },
+    ]);
+    const [observed] = extractL1OperationCalls(tx, selector, broadcaster);
+    const [repeated] = extractL1OperationCalls(tx, selector, broadcaster);
+    const [generic] = extractL1Operations(tx, selector, broadcaster);
+
+    expect(observed).toMatchObject({
+      broadcasterContract: broadcaster.toString().toLowerCase(),
+      eventSelector: selector.toField().toString().toLowerCase(),
+      callIndex: 1,
+      callSha256: repeated.callSha256,
+    });
+    expect(observed.callSha256).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(generic.calldata).toEqual(observed.operation.calldata);
+  });
+
 
   it('recovers only the operations that the given broadcaster enqueued', async () => {
     const selector = await l1OperationEventSelector();

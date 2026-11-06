@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { chmod, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,6 +39,7 @@ describe('ExactOperationJournal', () => {
       witness,
     );
     await first.close();
+    expect(existsSync(`${path}-journal`)).toBe(false);
 
     const restarted = await ExactOperationJournal.open(path);
     await expect(

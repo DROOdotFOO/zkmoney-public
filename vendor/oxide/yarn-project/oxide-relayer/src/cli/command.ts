@@ -3,9 +3,14 @@ import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { Command } from 'commander';
 
+import type { PreflightExactOperationConfig } from '../exact_operation/preflight.js';
 import type { RunExactOperationConfig } from '../exact_operation/run.js';
+import {
+  EXACT_SIGNER_KEYSTORE_PATH,
+  EXACT_SIGNER_PASSWORD_PATH,
+} from '../exact_operation/paths.js';
+import { consumePreparedRuntimeInput, hasPreparedRuntimeInput } from '../exact_operation/runtime_sandbox.js';
 import { loadAztecNodeUrl } from '../exact_operation/witness_configuration.js';
-
 import type { PredicateScreenerConfig } from '../l1_operations/predicate_screener.js';
 import { toProverRunConfig } from '../prover/cli.js';
 import { relayerVersion } from '../version.js';
@@ -31,6 +36,7 @@ export function createCliProgram(
   run: (config: RunConfig) => Promise<void> | void,
   runExact?: (config: RunExactOperationConfig) => Promise<unknown> | void,
   authorizeRestore?: (bundleFd: number) => Promise<unknown> | void,
+  preflightExact?: (config: PreflightExactOperationConfig) => Promise<unknown> | void,
 ): Command {
   const program = new Command();
   program
@@ -60,6 +66,27 @@ export function createCliProgram(
             await runExact(await exactConfigFromEnvironment(options));
           } catch {
             throw new Error('relay-exact failed closed; sensitive failure details suppressed');
+          }
+        }),
+    );
+  }
+  if (preflightExact) {
+    program.addCommand(
+      new Command('preflight-exact')
+        .description('validate the exact-operation image and immutable runtime handoff without credentials or side effects')
+        .requiredOption('--bundle-fd <fd>', 'inherited descriptor containing the nonsecret preflight bundle', integerFd)
+        .requiredOption('--canonical-state <path>', 'fixed read-only canonical state root')
+        .requiredOption('--control-dir <path>', 'fixed owner-only control root; no files are created')
+        .allowExcessArguments(false)
+        .action(async options => {
+          try {
+            await preflightExact({
+              bundleFd: options.bundleFd,
+              canonicalState: options.canonicalState,
+              controlDir: options.controlDir,
+            });
+          } catch {
+            throw new Error('preflight-exact failed closed; sensitive failure details suppressed');
           }
         }),
     );
@@ -138,6 +165,12 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
       keystorePath: opts.keystore,
       keystorePassword: opts.keystorePassword,
       keystorePasswordFile: opts.keystorePasswordFile,
+      keystoreJson: hasPreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
+        ? consumePreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
+        : undefined,
+      keystorePasswordBytes: hasPreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
+        ? consumePreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
+        : undefined,
     },
     state: {
       backend: 'sqlite',
@@ -237,8 +270,12 @@ async function exactConfigFromEnvironment(options: {
     signer: {
       backend: signer,
       privateKeyEnvVar: process.env.OXIDE_RELAYER_PRIVATE_KEY_ENV ?? 'OXIDE_RELAYER_PRIVATE_KEY',
-      keystorePath: process.env.OXIDE_RELAYER_KEYSTORE,
-      keystorePasswordFile: process.env.OXIDE_RELAYER_KEYSTORE_PASSWORD_FILE,
+      keystoreJson: hasPreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
+        ? consumePreparedRuntimeInput(EXACT_SIGNER_KEYSTORE_PATH)
+        : undefined,
+      keystorePasswordBytes: hasPreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
+        ? consumePreparedRuntimeInput(EXACT_SIGNER_PASSWORD_PATH)
+        : undefined,
     },
   };
 }

@@ -17,7 +17,7 @@ import {
 } from './paths.js';
 import { preparePrivilegedRuntimeIdentity } from './runtime_identity.js';
 
-export type RuntimeProfile = 'exact' | 'restore' | 'generic-restore';
+export type RuntimeProfile = 'exact' | 'preflight-exact' | 'restore' | 'generic-restore';
 
 interface MountEntry {
   device: string;
@@ -32,8 +32,14 @@ interface MountEntry {
 const RAW_SECRET_ENVIRONMENT = [
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
+  'AZTEC_NODE_URL_FILE',
   'L1_PRIVATE_KEY',
+  'OXIDE_EXACT_WITNESS_ACCESS_KEY_ID_FILE',
+  'OXIDE_EXACT_WITNESS_CONFIG_FILE',
+  'OXIDE_EXACT_WITNESS_SECRET_ACCESS_KEY_FILE',
+  'OXIDE_RELAYER_KEYSTORE',
   'OXIDE_RELAYER_KEYSTORE_PASSWORD',
+  'OXIDE_RELAYER_KEYSTORE_PASSWORD_FILE',
   'OXIDE_RELAYER_PRIVATE_KEY',
   'OXIDE_SIGNER_PRIVATE_KEY',
 ] as const;
@@ -47,6 +53,7 @@ const PROFILE_FILES: Record<RuntimeProfile, readonly string[]> = {
     EXACT_WITNESS_CONFIG_PATH,
     EXACT_AZTEC_NODE_URL_PATH,
   ],
+  'preflight-exact': [],
   restore: [EXACT_WITNESS_ACCESS_KEY_ID_PATH, EXACT_WITNESS_SECRET_ACCESS_KEY_PATH, EXACT_WITNESS_CONFIG_PATH],
   'generic-restore': [
     EXACT_SIGNER_KEYSTORE_PATH,
@@ -58,63 +65,74 @@ const PROFILE_FILES: Record<RuntimeProfile, readonly string[]> = {
   ],
 };
 
-const FILE_ENVIRONMENT = new Map<string, string>([
-  [EXACT_SIGNER_KEYSTORE_PATH, 'OXIDE_RELAYER_KEYSTORE'],
-  [EXACT_SIGNER_PASSWORD_PATH, 'OXIDE_RELAYER_KEYSTORE_PASSWORD_FILE'],
-  [EXACT_WITNESS_ACCESS_KEY_ID_PATH, 'OXIDE_EXACT_WITNESS_ACCESS_KEY_ID_FILE'],
-  [EXACT_WITNESS_SECRET_ACCESS_KEY_PATH, 'OXIDE_EXACT_WITNESS_SECRET_ACCESS_KEY_FILE'],
-  [EXACT_WITNESS_CONFIG_PATH, 'OXIDE_EXACT_WITNESS_CONFIG_FILE'],
-  [EXACT_AZTEC_NODE_URL_PATH, 'AZTEC_NODE_URL_FILE'],
-]);
+const preparedRuntimeInputs = new Map<string, Buffer>();
+const preparedInheritedBundles = new Map<number, Buffer>();
+const MAX_RUNTIME_INPUT_BYTES = 1024 * 1024;
+const MAX_INHERITED_BUNDLE_BYTES = 64 * 1024;
+const readInheritedDescriptor = (fd: number): Buffer => readFileSync(fd);
 
-const retainedDescriptors: number[] = [];
 
 export async function initializeRuntimeSandbox(
   profile: RuntimeProfile,
+  argv: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
-): Promise<void> {
+): Promise<string[]> {
   const runtimeUid = parseDedicatedIdentity(env.OXIDE_EXACT_RUNTIME_UID, 'UID');
   const runtimeGid = parseDedicatedIdentity(env.OXIDE_EXACT_RUNTIME_GID, 'GID');
   if (process.getuid?.() !== 0 || process.getgid?.() !== 0) {
     throw new Error('Runtime initialization must begin as container root');
   }
+  const startupStatus = readFileSync('/proc/self/status', 'utf8');
+  assertStartupPrivilegeState(startupStatus);
   rejectRawSecretEnvironment(env);
   await validateMountContract(profile, readFileSync('/proc/self/mountinfo', 'utf8'), runtimeUid, runtimeGid);
   await preparePrivilegedRuntimeIdentity(profile, runtimeUid, runtimeGid);
 
-  const files = [...PROFILE_FILES[profile]];
-  const descriptors = files.map(openRootOnlyFile);
-  for (let index = 0; index < files.length; index += 1) {
-    const name = FILE_ENVIRONMENT.get(files[index]!);
-    if (name) env[name] = `/proc/self/fd/${descriptors[index]}`;
-  }
+  prepareRootOnlyRuntimeInputs(profile);
+  const normalized = installInheritedBundleBuffer(argv);
   env.OXIDE_RELAYER_SIGNER = 'keystore';
 
   dropPrivileges(runtimeUid, runtimeGid);
-  retainedDescriptors.push(...descriptors);
+  return normalized;
 }
 
 export function runtimeProfileFromArguments(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): RuntimeProfile {
   const command = argv[0];
   if (command === 'relay-exact') return 'exact';
+  if (command === 'preflight-exact') return 'preflight-exact';
   if (command === 'authorize-generic-restore') return 'restore';
   if (command === 'run' && env.OXIDE_RUNTIME_PROFILE === 'generic-restore') return 'generic-restore';
-  throw new Error('Root initializer permits only reviewed exact or restore runtime modes');
+  throw new Error('Root initializer permits only reviewed exact, preflight, or restore runtime modes');
 }
 
-export function installInheritedBundleDescriptor(
+export function installInheritedBundleBuffer(
   argv: readonly string[],
-  duplicateStandardInput: () => number = () => openSync('/proc/self/fd/0', constants.O_RDONLY),
-): { argv: string[]; descriptor?: number } {
+  readDescriptor: (fd: number) => Buffer = readInheritedDescriptor,
+  closeDescriptor: (fd: number) => void = readDescriptor === readInheritedDescriptor ? closeSync : () => {},
+): string[] {
   const normalized = [...argv];
   const option = normalized.indexOf('--bundle-fd');
-  if (option < 0 || normalized[option + 1] !== '0') return { argv: normalized };
-  const descriptor = duplicateStandardInput();
-  if (!Number.isSafeInteger(descriptor) || descriptor < 3) {
-    throw new Error('Inherited approval descriptor could not be isolated from standard input');
+  if (option < 0) return normalized;
+  const rawFd = normalized[option + 1];
+  if (!/^(0|[3-9][0-9]*)$/.test(rawFd ?? '')) {
+    throw new Error('Inherited approval descriptor must be standard input or an inherited descriptor of at least 3');
   }
-  normalized[option + 1] = String(descriptor);
-  return { argv: normalized, descriptor };
+  const descriptor = Number(rawFd);
+  if (preparedInheritedBundles.has(descriptor)) {
+    throw new Error('Inherited approval descriptor was already prepared');
+  }
+  let input: Buffer;
+  try {
+    input = readDescriptor(descriptor);
+  } finally {
+    closeDescriptor(descriptor);
+  }
+  if (input.length === 0 || input.length > MAX_INHERITED_BUNDLE_BYTES) {
+    input.fill(0);
+    throw new Error('Inherited approval bundle is empty or exceeds 64 KiB');
+  }
+  preparedInheritedBundles.set(descriptor, input);
+  return normalized;
 }
 
 export async function validateMountContract(
@@ -140,7 +158,7 @@ export async function validateMountContract(
   requireReadOnly(canonicalMount, profile !== 'generic-restore', 'canonical state');
   requireReadOnly(controlMount, false, 'control state');
   requireReadOnly(configMount, true, 'runtime configuration');
-  requireReadOnly(secretMount, true, 'runtime credentials');
+  requireReadOnly(secretMount, profile !== 'preflight-exact', 'runtime credentials');
   requireReadOnly(temporaryMount, false, 'temporary runtime state');
   if (
     temporaryMount.type !== 'tmpfs' ||
@@ -215,18 +233,42 @@ export function parseMountInfo(input: string): MountEntry[] {
     });
 }
 
+export function assertStartupPrivilegeState(status: string): void {
+  const values = parseProcessStatus(status);
+  const expected = 0xc4n;
+  for (const name of ['Uid', 'Gid']) {
+    const identities = (values.get(name) ?? '').split(/\s+/).filter(Boolean).map(Number);
+    if (identities.length !== 4 || identities.some(value => value !== 0)) {
+      throw new Error('Runtime initialization must begin with every process identity set to root');
+    }
+  }
+  for (const name of ['CapPrm', 'CapEff', 'CapBnd']) {
+    const encoded = values.get(name) ?? '';
+    if (!/^[0-9a-fA-F]+$/.test(encoded) || BigInt(`0x${encoded}`) !== expected) {
+      throw new Error('Startup capabilities must be exactly DAC_READ_SEARCH, SETGID and SETUID');
+    }
+  }
+  for (const name of ['CapInh', 'CapAmb']) {
+    if (!/^0+$/.test(values.get(name) ?? '')) {
+      throw new Error('Startup process retains an unexpected inheritable or ambient capability');
+    }
+  }
+  if (values.get('NoNewPrivs') !== '1') {
+    throw new Error('Startup process is missing no-new-privileges');
+  }
+}
+
 export function assertFinalPrivilegeState(status: string, runtimeUid: number, runtimeGid: number): void {
-  const values = new Map(
-    status
-      .split('\n')
-      .filter(line => line.includes(':'))
-      .map(line => {
-        const separator = line.indexOf(':');
-        return [line.slice(0, separator), line.slice(separator + 1).trim()] as const;
-      }),
-  );
+  const values = parseProcessStatus(status);
   const ids = (name: string) => (values.get(name) ?? '').split(/\s+/).filter(Boolean).map(Number);
-  if (ids('Uid').some(value => value !== runtimeUid) || ids('Gid').some(value => value !== runtimeGid)) {
+  const uids = ids('Uid');
+  const gids = ids('Gid');
+  if (
+    uids.length !== 4 ||
+    gids.length !== 4 ||
+    uids.some(value => value !== runtimeUid) ||
+    gids.some(value => value !== runtimeGid)
+  ) {
     throw new Error('Final runtime process identity drifted');
   }
   if ((values.get('Groups') ?? '').trim() !== '') {
@@ -236,16 +278,69 @@ export function assertFinalPrivilegeState(status: string, runtimeUid: number, ru
     if (!/^0+$/.test(values.get(name) ?? '')) throw new Error('Final runtime process retains Linux capabilities');
   }
   const bounding = values.get('CapBnd') ?? '';
-  if (!/^[0-9a-fA-F]+$/.test(bounding) || BigInt(`0x${bounding}`) !== 0xc0n) {
-    throw new Error('Runtime capability bound differs from SETGID and SETUID only');
+  if (!/^[0-9a-fA-F]+$/.test(bounding) || BigInt(`0x${bounding}`) !== 0xc4n) {
+    throw new Error('Runtime capability bound differs from DAC_READ_SEARCH, SETGID and SETUID');
   }
   if (values.get('NoNewPrivs') !== '1') {
     throw new Error('Final runtime process is missing no-new-privileges');
   }
 }
 
+export function consumePreparedRuntimeInput(filename: string): Buffer {
+  const input = preparedRuntimeInputs.get(filename);
+  if (!input) throw new Error('Root initializer did not prepare the required runtime input');
+  preparedRuntimeInputs.delete(filename);
+  return input;
+}
+
+export function hasPreparedRuntimeInput(filename: string): boolean {
+  return preparedRuntimeInputs.has(filename);
+}
+
+export function consumePreparedInheritedBundle(descriptor: number): Buffer {
+  const input = preparedInheritedBundles.get(descriptor);
+  if (!input) throw new Error('Root initializer did not prepare the inherited approval bundle');
+  preparedInheritedBundles.delete(descriptor);
+  return input;
+}
+
 export function closeRetainedSecretDescriptors(): void {
-  while (retainedDescriptors.length > 0) closeSync(retainedDescriptors.pop()!);
+  for (const input of preparedRuntimeInputs.values()) input.fill(0);
+  for (const input of preparedInheritedBundles.values()) input.fill(0);
+  preparedRuntimeInputs.clear();
+  preparedInheritedBundles.clear();
+}
+
+function parseProcessStatus(status: string): Map<string, string> {
+  return new Map(
+    status
+      .split('\n')
+      .filter(line => line.includes(':'))
+      .map(line => {
+        const separator = line.indexOf(':');
+        return [line.slice(0, separator), line.slice(separator + 1).trim()] as const;
+      }),
+  );
+}
+
+export function prepareRootOnlyRuntimeInputs(
+  profile: RuntimeProfile,
+  readInput: (filename: string) => Buffer = readRootOnlyFile,
+): void {
+  if (preparedRuntimeInputs.size > 0) throw new Error('Runtime inputs were already prepared');
+  try {
+    for (const filename of PROFILE_FILES[profile]) {
+      const input = readInput(filename);
+      if (input.length === 0 || input.length > MAX_RUNTIME_INPUT_BYTES) {
+        input.fill(0);
+        throw new Error('Root-owned runtime input is empty or oversized');
+      }
+      preparedRuntimeInputs.set(filename, input);
+    }
+  } catch (cause) {
+    closeRetainedSecretDescriptors();
+    throw cause;
+  }
 }
 
 function dropPrivileges(runtimeUid: number, runtimeGid: number): void {
@@ -265,18 +360,36 @@ function dropPrivileges(runtimeUid: number, runtimeGid: number): void {
   }
 }
 
-function openRootOnlyFile(filename: string): number {
+function readRootOnlyFile(filename: string): Buffer {
   const before = statSync(filename, { bigint: true });
-  if (!before.isFile() || before.uid !== 0n || before.gid !== 0n || (before.mode & 0o777n) !== 0o400n || before.nlink !== 1n) {
+  if (
+    !before.isFile() ||
+    before.uid !== 0n ||
+    before.gid !== 0n ||
+    (before.mode & 0o777n) !== 0o400n ||
+    before.nlink !== 1n
+  ) {
     throw new Error('Approved runtime inputs must be one root-owned mode-0400 regular file');
   }
   const descriptor = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
-  const after = fstatSync(descriptor, { bigint: true });
-  if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size) {
+  try {
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      !after.isFile() ||
+      after.uid !== 0n ||
+      after.gid !== 0n ||
+      (after.mode & 0o777n) !== 0o400n ||
+      after.nlink !== 1n ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size
+    ) {
+      throw new Error('Approved runtime input changed while opening');
+    }
+    return readFileSync(descriptor);
+  } finally {
     closeSync(descriptor);
-    throw new Error('Approved runtime input changed while opening');
   }
-  return descriptor;
 }
 
 export function rejectRawSecretEnvironment(env: NodeJS.ProcessEnv): void {

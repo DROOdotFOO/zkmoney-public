@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import { EthAddress } from '@aztec-labs/foundation/eth-address';
@@ -22,6 +23,7 @@ import { S3ExactApprovalClaimStore } from './monotonic_claim.js';
 import { ExactOperationObserver } from './observer.js';
 import { EXACT_APPROVAL_AUTHORITY_PATH } from './paths.js';
 import { loadExactRuntimeIdentity, loadPreparedCleanHandoffDigest } from './runtime_identity.js';
+import { consumePreparedInheritedBundle } from './runtime_sandbox.js';
 import { relayExactOperation } from './runner.js';
 import { RuntimeLease } from './runtime_lease.js';
 import { resolveExactStorageRoots } from './storage_roots.js';
@@ -61,11 +63,16 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
     // Fixed journal schema validation precedes manifest, enclave and signer work.
     journal = await ExactOperationJournal.open(storage.exactJournal);
     const node = createNodeClient({ url: config.aztecNodeUrl, apiKey: config.aztecNodeApiKey });
+    let manifestDigest: `sha256:${string}` | undefined;
     const manifest = await resolveDeploymentEnvManifest({
       deploymentEnvManifestUrl: config.deploymentEnvManifestUrl,
       portal: config.portal,
+      onManifestBytes: bytes => {
+        manifestDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+      },
     });
-    const { publicClient: identityClient, chainId, rollupVersion } = await getL1PublicClient(config.readL1RpcUrl, node);
+    if (!manifestDigest) throw new Error('Exact-operation deployment manifest bytes were not observed');
+    const { publicClient: identityClient, chainId } = await getL1PublicClient(config.readL1RpcUrl, node);
     const publicClient = config.submissionL1RpcUrl
       ? createPublicClient({
           chain: chainFor(chainId),
@@ -73,18 +80,22 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
         })
       : identityClient;
     const { publicConfig } = manifest.current;
+    const portal = new OxidePortalContract(publicClient, publicConfig.portal);
+    const portalDomain = await portal.getPortalDomain();
+    if (portalDomain.l1ChainId !== chainId) {
+      throw new Error('Observed portal domain chain differs from the verified L1 chain');
+    }
     const deployment = {
       label: manifest.current.label,
-      chainId: chainId.toString(),
-      rollupVersion: rollupVersion.toString(),
-      portal: publicConfig.portal.toString().toLowerCase(),
-      registry: approval.deployment.registry,
-      manifestDigest: approval.deployment.manifestDigest,
-      l2Token: publicConfig.l2Token.toString().toLowerCase(),
+      chainId: portalDomain.l1ChainId.toString(),
+      rollupVersion: portalDomain.rollupVersion.toString(),
+      portal: portalDomain.l1Portal.toString().toLowerCase(),
+      registry: portalDomain.teeRegistry.toString().toLowerCase(),
+      manifestDigest,
+      l2Token: portalDomain.l2Token.toString().toLowerCase(),
       broadcaster: publicConfig.broadcaster.toString().toLowerCase(),
       operationExecutor: publicConfig.operationExecutor.toString().toLowerCase(),
     };
-    const portal = new OxidePortalContract(publicClient, publicConfig.portal);
     const observer = new ExactOperationObserver(node, portal, {
       runtime,
       deployment,
@@ -153,21 +164,15 @@ async function readApprovalMaterial(bundleFd: number): Promise<{
 }
 
 async function readJsonFd(fd: number, label: string): Promise<unknown> {
-  const input = await readTextFd(fd, label);
+  const bytes = consumePreparedInheritedBundle(fd);
   try {
-    return JSON.parse(input);
-  } catch (cause) {
-    throw new Error(`Exact-operation ${label} is malformed JSON`, { cause });
+    const input = bytes.toString('utf8').trim();
+    try {
+      return JSON.parse(input);
+    } catch (cause) {
+      throw new Error(`Exact-operation ${label} is malformed JSON`, { cause });
+    }
+  } finally {
+    bytes.fill(0);
   }
-}
-
-async function readTextFd(fd: number, label: string): Promise<string> {
-  if (!Number.isSafeInteger(fd) || fd < 3) {
-    throw new Error(`Exact-operation ${label} file descriptor must be an integer of at least 3`);
-  }
-  const input = await readFile(`/dev/fd/${fd}`, 'utf8');
-  if (Buffer.byteLength(input) > 64 * 1024) {
-    throw new Error(`Exact-operation ${label} exceeds 64 KiB`);
-  }
-  return input.trim();
 }
