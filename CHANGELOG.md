@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+
+- Run the production-entrypoint smoke against the Linux Docker daemon without host sudo and expose only credential-free preflight failure reasons.
+
 ## 1.0.4
 
 - Recompute exact Outbox roots with the indexer's `sha256Trunc(left || right)` Merkle algorithm and bind the actual typed L2-to-L1 sibling path.

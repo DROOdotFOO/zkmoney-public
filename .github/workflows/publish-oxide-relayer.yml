@@ -3,7 +3,7 @@ name: Publish exact-operation relayer
 on:
   push:
     branches:
-      - release/oxide-relayer-exact-v1.0.4
+      - release/oxide-relayer-exact-v1.0.5
     paths:
       - .github/workflows/publish-oxide-relayer.yml
 
@@ -12,9 +12,9 @@ permissions:
 
 env:
   SOURCE_COMMIT: ${{ github.sha }}
-  SOURCE_TAG: oxide-relayer-exact-v1.0.4
+  SOURCE_TAG: oxide-relayer-exact-v1.0.5
   IMAGE_URI: ghcr.io/droodotfoo/oxide-relayer-exact-operation
-  IMAGE_VERSION: 1.0.4
+  IMAGE_VERSION: 1.0.5
   LOCAL_IMAGE: oxide-relayer-exact-operation:release
   APPROVAL_AUTHORITY_PEM_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQXVmMTNWdlAxUWZoU2dSM1d2d2dvMmJXbkMyNkhCSEZVMmtwTkoxQkRmQTg9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=
   APPROVAL_AUTHORITY_SHA256: 3ceda4bf55e4c1b17765a28fc01e824765d4c02ef852749a76eb5d877c1cf137
@@ -36,7 +36,7 @@ env:
   RELEASE_PREDICATE_TYPE: https://xochimilco.dev/attestations/oxide-relayer-exact/v1
 
 concurrency:
-  group: publish-oxide-relayer-exact-v1.0.4
+  group: publish-oxide-relayer-exact-v1.0.5
   cancel-in-progress: false
 
 jobs:
@@ -416,13 +416,13 @@ jobs:
             --file Dockerfile.oxide-relayer \
             --tag "$LOCAL_IMAGE" \
             .
-          docker save --output release-build/oxide-relayer-exact-v1.0.4.tar "$LOCAL_IMAGE"
-          (cd release-build && sha256sum oxide-relayer-exact-v1.0.4.tar > SHA256SUMS)
+          docker save --output release-build/oxide-relayer-exact-v1.0.5.tar "$LOCAL_IMAGE"
+          (cd release-build && sha256sum oxide-relayer-exact-v1.0.5.tar > SHA256SUMS)
 
       - name: Upload unpublished image
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: oxide-relayer-exact-v1.0.4-image
+          name: oxide-relayer-exact-v1.0.5-image
           path: release-build/
           if-no-files-found: error
           retention-days: 7
@@ -430,7 +430,7 @@ jobs:
       - name: Upload source and build materials
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: oxide-relayer-exact-v1.0.4-materials
+          name: oxide-relayer-exact-v1.0.5-materials
           path: release-materials/
           if-no-files-found: error
           retention-days: 90
@@ -451,7 +451,7 @@ jobs:
       - name: Download unpublished image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: oxide-relayer-exact-v1.0.4-image
+          name: oxide-relayer-exact-v1.0.5-image
           path: release-build
 
       - name: Smoke the exact unpublished bytes
@@ -459,7 +459,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd release-build && sha256sum --check SHA256SUMS)
-          docker load --input release-build/oxide-relayer-exact-v1.0.4.tar
+          docker load --input release-build/oxide-relayer-exact-v1.0.5.tar
           test "$(docker image inspect --format '{{.Config.User}}' "$LOCAL_IMAGE")" = root
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$LOCAL_IMAGE")" = '["node","dest/bin/oxide-relayer-init.js"]'
           docker run --rm --entrypoint getent "$LOCAL_IMAGE" passwd 65532 | grep -E '^oxide-exact:x:65532:65532:.*:/nonexistent:/usr/sbin/nologin$'
@@ -487,7 +487,7 @@ jobs:
       - name: Download verified unpublished image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: oxide-relayer-exact-v1.0.4-image
+          name: oxide-relayer-exact-v1.0.5-image
           path: release-build
 
       - name: Log in to GHCR
@@ -504,7 +504,7 @@ jobs:
           set -euo pipefail
           candidate="$IMAGE_URI:candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           (cd release-build && sha256sum --check SHA256SUMS)
-          docker load --input release-build/oxide-relayer-exact-v1.0.4.tar
+          docker load --input release-build/oxide-relayer-exact-v1.0.5.tar
           docker tag "$LOCAL_IMAGE" "$candidate"
           docker push "$candidate"
           digest="sha256:$(docker buildx imagetools inspect --raw "$candidate" | sha256sum | cut -d ' ' -f 1)"
@@ -530,7 +530,7 @@ jobs:
       - name: Download source and build materials
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: oxide-relayer-exact-v1.0.4-materials
+          name: oxide-relayer-exact-v1.0.5-materials
           path: release-evidence
 
       - name: Log in to GHCR read-only
@@ -575,7 +575,7 @@ jobs:
       - name: Upload independently generated candidate evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: oxide-relayer-exact-v1.0.4-candidate-evidence
+          name: oxide-relayer-exact-v1.0.5-candidate-evidence
           path: release-evidence/
           if-no-files-found: error
           retention-days: 90
@@ -598,7 +598,7 @@ jobs:
       - name: Download independently verified evidence
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: oxide-relayer-exact-v1.0.4-candidate-evidence
+          name: oxide-relayer-exact-v1.0.5-candidate-evidence
           path: release-evidence
 
       - name: Log in to GHCR
@@ -724,7 +724,7 @@ jobs:
       - name: Upload signed release evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: oxide-relayer-exact-v1.0.4-release-evidence
+          name: oxide-relayer-exact-v1.0.5-release-evidence
           path: release-evidence/
           if-no-files-found: error
           retention-days: 90
@@ -750,7 +750,7 @@ jobs:
       - name: Download signed release evidence
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: oxide-relayer-exact-v1.0.4-release-evidence
+          name: oxide-relayer-exact-v1.0.5-release-evidence
           path: release-evidence
 
       - name: Log in to GHCR read-only
@@ -773,7 +773,7 @@ jobs:
         run: |
           set -euo pipefail
           image="$IMAGE_URI@$IMAGE_DIGEST"
-          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.4"
+          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.5"
           sha256sum --check release-evidence/RELEASE_SHA256SUMS
           cosign verify-blob \
             --bundle release-evidence/release-provenance.sigstore.json \
@@ -940,7 +940,7 @@ jobs:
         run: |
           set -euo pipefail
           image="$IMAGE_URI@$IMAGE_DIGEST"
-          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.4"
+          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.5"
           cosign verify \
             --certificate-identity "$identity" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
