@@ -42,6 +42,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
     steps:
       - name: Require GitHub-hosted tag publication
@@ -53,6 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_EVENT_NAME" = push
           test "$GITHUB_REF_TYPE" = tag
           test "$GITHUB_REF_NAME" = "$SOURCE_TAG"
@@ -85,6 +87,21 @@ jobs:
              and .object.sha == $sourceCommit
              and .verification.verified == true' \
             "$tag"
+
+          qualification="$RUNNER_TEMP/pretag-qualification.json"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/oxide-relayer-safety.yml/runs?branch=release/oxide-relayer-exact-v1.0.8&event=push&status=completed&head_sha=$SOURCE_COMMIT&per_page=100" \
+            > "$qualification"
+          jq -e \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            '[.workflow_runs[]
+              | select(.head_sha == $sourceCommit
+                       and .head_branch == "release/oxide-relayer-exact-v1.0.8"
+                       and .event == "push"
+                       and .conclusion == "success"
+                       and .run_attempt == 1)]
+             | length == 1' \
+            "$qualification"
 
           if gh release view "$SOURCE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             printf 'release already exists for %s\n' "$SOURCE_TAG" >&2
