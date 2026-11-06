@@ -1,4 +1,4 @@
-import { constants, closeSync, fstatSync, openSync, readFileSync, statSync } from 'node:fs';
+import { constants, closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -69,7 +69,16 @@ const preparedRuntimeInputs = new Map<string, Buffer>();
 const preparedInheritedBundles = new Map<number, Buffer>();
 const MAX_RUNTIME_INPUT_BYTES = 1024 * 1024;
 const MAX_INHERITED_BUNDLE_BYTES = 64 * 1024;
-const readInheritedDescriptor = (fd: number): Buffer => readFileSync(fd);
+function readInheritedDescriptor(fd: number): Buffer {
+  const input = Buffer.allocUnsafe(MAX_INHERITED_BUNDLE_BYTES + 1);
+  let offset = 0;
+  while (offset < input.length) {
+    const bytesRead = readSync(fd, input, offset, input.length - offset, null);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  return input.subarray(0, offset);
+}
 
 
 export async function initializeRuntimeSandbox(
@@ -367,7 +376,9 @@ function readRootOnlyFile(filename: string): Buffer {
     before.uid !== 0n ||
     before.gid !== 0n ||
     (before.mode & 0o777n) !== 0o400n ||
-    before.nlink !== 1n
+    before.nlink !== 1n ||
+    before.size === 0n ||
+    before.size > BigInt(MAX_RUNTIME_INPUT_BYTES)
   ) {
     throw new Error('Approved runtime inputs must be one root-owned mode-0400 regular file');
   }
@@ -380,6 +391,8 @@ function readRootOnlyFile(filename: string): Buffer {
       after.gid !== 0n ||
       (after.mode & 0o777n) !== 0o400n ||
       after.nlink !== 1n ||
+      after.size === 0n ||
+      after.size > BigInt(MAX_RUNTIME_INPUT_BYTES) ||
       before.dev !== after.dev ||
       before.ino !== after.ino ||
       before.size !== after.size

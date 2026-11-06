@@ -79,6 +79,23 @@ describe('runtime sandbox', () => {
     expect(reads).toBe(1);
     expect(input.every(byte => byte === 0)).toBe(true);
   });
+
+  it('refuses empty or oversized inherited approval input', () => {
+    expect(() =>
+      installInheritedBundleBuffer(
+        ['preflight-exact', '--bundle-fd', '0'],
+        () => Buffer.alloc(0),
+        () => {},
+      ),
+    ).toThrow('Inherited approval bundle is empty or exceeds 64 KiB');
+    expect(() =>
+      installInheritedBundleBuffer(
+        ['preflight-exact', '--bundle-fd', '0'],
+        () => Buffer.alloc(64 * 1024 + 1, 0x61),
+        () => {},
+      ),
+    ).toThrow('Inherited approval bundle is empty or exceeds 64 KiB');
+  });
   it('consumes root-only inputs from memory without reopening their paths after logical drop', () => {
     let dropped = false;
     let reads = 0;
@@ -127,9 +144,11 @@ describe('runtime sandbox', () => {
     expect(() => assertFinalPrivilegeState(status({ Groups: '1000' }), DEDICATED_IDENTITY, DEDICATED_IDENTITY)).toThrow(
       'Final runtime process retains supplementary groups',
     );
-    expect(() =>
-      assertFinalPrivilegeState(status({ CapEff: '0000000000000001' }), DEDICATED_IDENTITY, DEDICATED_IDENTITY),
-    ).toThrow('Final runtime process retains Linux capabilities');
+    for (const capability of ['CapEff', 'CapPrm', 'CapInh', 'CapAmb']) {
+      expect(() =>
+        assertFinalPrivilegeState(status({ [capability]: '0000000000000001' }), DEDICATED_IDENTITY, DEDICATED_IDENTITY),
+      ).toThrow('Final runtime process retains Linux capabilities');
+    }
     expect(() =>
       assertFinalPrivilegeState(status({ CapBnd: '00000000000000c1' }), DEDICATED_IDENTITY, DEDICATED_IDENTITY),
     ).toThrow('Runtime capability bound differs');
