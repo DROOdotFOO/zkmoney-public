@@ -2,19 +2,17 @@ name: Publish exact-operation relayer
 
 on:
   push:
-    branches:
-      - release/oxide-relayer-exact-v1.0.6
-    paths:
-      - .github/workflows/publish-oxide-relayer.yml
+    tags:
+      - oxide-relayer-exact-v1.0.7
 
 permissions:
   contents: read
 
 env:
   SOURCE_COMMIT: ${{ github.sha }}
-  SOURCE_TAG: oxide-relayer-exact-v1.0.6
+  SOURCE_TAG: oxide-relayer-exact-v1.0.7
   IMAGE_URI: ghcr.io/droodotfoo/oxide-relayer-exact-operation
-  IMAGE_VERSION: 1.0.6
+  IMAGE_VERSION: 1.0.7
   LOCAL_IMAGE: oxide-relayer-exact-operation:release
   APPROVAL_AUTHORITY_PEM_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQXVmMTNWdlAxUWZoU2dSM1d2d2dvMmJXbkMyNkhCSEZVMmtwTkoxQkRmQTg9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=
   APPROVAL_AUTHORITY_SHA256: 3ceda4bf55e4c1b17765a28fc01e824765d4c02ef852749a76eb5d877c1cf137
@@ -36,16 +34,75 @@ env:
   RELEASE_PREDICATE_TYPE: https://xochimilco.dev/attestations/oxide-relayer-exact/v1
 
 concurrency:
-  group: publish-oxide-relayer-exact-v1.0.6
+  group: publish-oxide-relayer-exact-v1.0.7
   cancel-in-progress: false
 
 jobs:
+  admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require GitHub-hosted tag publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMMUTABLE_RELEASES_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_ADMIN_TOKEN }}
+          RUNNER_KIND: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_KIND" = github-hosted
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "$SOURCE_TAG"
+          test "$GITHUB_REF" = "refs/tags/$SOURCE_TAG"
+          test "$SOURCE_TAG" = "oxide-relayer-exact-v$IMAGE_VERSION"
+
+          policy="$RUNNER_TEMP/immutable-releases.json"
+          status="$(
+            curl --silent --show-error --location \
+              --output "$policy" \
+              --write-out '%{http_code}' \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer $IMMUTABLE_RELEASES_TOKEN" \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/immutable-releases"
+          )"
+          test "$status" = 200
+          jq -e '.enabled == true and (.enforced_by_owner | type == "boolean")' "$policy"
+
+          ref="$RUNNER_TEMP/release-tag-ref.json"
+          tag="$RUNNER_TEMP/release-tag-object.json"
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$SOURCE_TAG" > "$ref"
+          tag_object="$(jq -er 'select(.object.type == "tag") | .object.sha' "$ref")"
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" > "$tag"
+          jq -e \
+            --arg sourceTag "$SOURCE_TAG" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            '.tag == $sourceTag
+             and .object.type == "commit"
+             and .object.sha == $sourceCommit
+             and .verification.verified == true' \
+            "$tag"
+
+          if gh release view "$SOURCE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            printf 'release already exists for %s\n' "$SOURCE_TAG" >&2
+            exit 1
+          fi
+
   build:
+    needs: admission
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
       contents: read
     steps:
+      - name: Require GitHub-hosted runner
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: test "$RUNNER_KIND" = github-hosted
+
       - name: Check out the reviewed source commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -416,13 +473,13 @@ jobs:
             --file Dockerfile.oxide-relayer \
             --tag "$LOCAL_IMAGE" \
             .
-          docker save --output release-build/oxide-relayer-exact-v1.0.6.tar "$LOCAL_IMAGE"
-          (cd release-build && sha256sum oxide-relayer-exact-v1.0.6.tar > SHA256SUMS)
+          docker save --output release-build/oxide-relayer-exact-v1.0.7.tar "$LOCAL_IMAGE"
+          (cd release-build && sha256sum oxide-relayer-exact-v1.0.7.tar > SHA256SUMS)
 
       - name: Upload unpublished image
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: oxide-relayer-exact-v1.0.6-image
+          name: oxide-relayer-exact-v1.0.7-image
           path: release-build/
           if-no-files-found: error
           retention-days: 7
@@ -430,7 +487,7 @@ jobs:
       - name: Upload source and build materials
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: oxide-relayer-exact-v1.0.6-materials
+          name: oxide-relayer-exact-v1.0.7-materials
           path: release-materials/
           if-no-files-found: error
           retention-days: 90
@@ -442,6 +499,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Require GitHub-hosted runner
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: test "$RUNNER_KIND" = github-hosted
+
       - name: Check out the exact smoke contract
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -451,7 +513,7 @@ jobs:
       - name: Download unpublished image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: oxide-relayer-exact-v1.0.6-image
+          name: oxide-relayer-exact-v1.0.7-image
           path: release-build
 
       - name: Smoke the exact unpublished bytes
@@ -459,7 +521,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd release-build && sha256sum --check SHA256SUMS)
-          docker load --input release-build/oxide-relayer-exact-v1.0.6.tar
+          docker load --input release-build/oxide-relayer-exact-v1.0.7.tar
           test "$(docker image inspect --format '{{.Config.User}}' "$LOCAL_IMAGE")" = root
           test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$LOCAL_IMAGE")" = '["node","dest/bin/oxide-relayer-init.js"]'
           docker run --rm --entrypoint getent "$LOCAL_IMAGE" passwd 65532 | grep -E '^oxide-exact:x:65532:65532:.*:/nonexistent:/usr/sbin/nologin$'
@@ -484,10 +546,15 @@ jobs:
       image-digest: ${{ steps.publish.outputs.image-digest }}
       candidate-ref: ${{ steps.publish.outputs.candidate-ref }}
     steps:
+      - name: Require GitHub-hosted runner
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: test "$RUNNER_KIND" = github-hosted
+
       - name: Download verified unpublished image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: oxide-relayer-exact-v1.0.6-image
+          name: oxide-relayer-exact-v1.0.7-image
           path: release-build
 
       - name: Log in to GHCR
@@ -504,7 +571,7 @@ jobs:
           set -euo pipefail
           candidate="$IMAGE_URI:candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           (cd release-build && sha256sum --check SHA256SUMS)
-          docker load --input release-build/oxide-relayer-exact-v1.0.6.tar
+          docker load --input release-build/oxide-relayer-exact-v1.0.7.tar
           docker tag "$LOCAL_IMAGE" "$candidate"
           docker push "$candidate"
           digest="sha256:$(docker buildx imagetools inspect --raw "$candidate" | sha256sum | cut -d ' ' -f 1)"
@@ -520,6 +587,11 @@ jobs:
       contents: read
       packages: read
     steps:
+      - name: Require GitHub-hosted runner
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: test "$RUNNER_KIND" = github-hosted
+
       - name: Check out exact source for independent archive verification
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -530,7 +602,7 @@ jobs:
       - name: Download source and build materials
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: oxide-relayer-exact-v1.0.6-materials
+          name: oxide-relayer-exact-v1.0.7-materials
           path: release-evidence
 
       - name: Log in to GHCR read-only
@@ -575,7 +647,7 @@ jobs:
       - name: Upload independently generated candidate evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: oxide-relayer-exact-v1.0.6-candidate-evidence
+          name: oxide-relayer-exact-v1.0.7-candidate-evidence
           path: release-evidence/
           if-no-files-found: error
           retention-days: 90
@@ -595,10 +667,15 @@ jobs:
       image-attestation-url: ${{ steps.attest-image.outputs.attestation-url }}
       source-attestation-url: ${{ steps.attest-source.outputs.attestation-url }}
     steps:
+      - name: Require GitHub-hosted runner
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: test "$RUNNER_KIND" = github-hosted
+
       - name: Download independently verified evidence
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: oxide-relayer-exact-v1.0.6-candidate-evidence
+          name: oxide-relayer-exact-v1.0.7-candidate-evidence
           path: release-evidence
 
       - name: Log in to GHCR
@@ -724,7 +801,7 @@ jobs:
       - name: Upload signed release evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: oxide-relayer-exact-v1.0.6-release-evidence
+          name: oxide-relayer-exact-v1.0.7-release-evidence
           path: release-evidence/
           if-no-files-found: error
           retention-days: 90
@@ -740,6 +817,11 @@ jobs:
       packages: read
       attestations: read
     steps:
+      - name: Require GitHub-hosted runner
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: test "$RUNNER_KIND" = github-hosted
+
       - name: Check out exact source for independent verification
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -750,7 +832,7 @@ jobs:
       - name: Download signed release evidence
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: oxide-relayer-exact-v1.0.6-release-evidence
+          name: oxide-relayer-exact-v1.0.7-release-evidence
           path: release-evidence
 
       - name: Log in to GHCR read-only
@@ -773,7 +855,7 @@ jobs:
         run: |
           set -euo pipefail
           image="$IMAGE_URI@$IMAGE_DIGEST"
-          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.6"
+          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/tags/oxide-relayer-exact-v1.0.7"
           sha256sum --check release-evidence/RELEASE_SHA256SUMS
           cosign verify-blob \
             --bundle release-evidence/release-provenance.sigstore.json \
@@ -915,6 +997,11 @@ jobs:
       contents: read
       packages: read
     steps:
+      - name: Require GitHub-hosted runner
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: test "$RUNNER_KIND" = github-hosted
+
       - name: Check out the exact smoke contract
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -940,7 +1027,7 @@ jobs:
         run: |
           set -euo pipefail
           image="$IMAGE_URI@$IMAGE_DIGEST"
-          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.6"
+          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/tags/oxide-relayer-exact-v1.0.7"
           cosign verify \
             --certificate-identity "$identity" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -951,3 +1038,97 @@ jobs:
           docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js relay-exact --help
           docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js authorize-generic-restore --help
           OXIDE_SMOKE_DIAGNOSTIC=1 scripts/smoke-exact-relayer-entrypoint.sh "$image"
+
+  publish-release:
+    needs:
+      - publish-candidate
+      - sign-and-attest
+      - final-verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: read
+      attestations: read
+    steps:
+      - name: Require GitHub-hosted runner
+        env:
+          RUNNER_KIND: ${{ runner.environment }}
+        run: test "$RUNNER_KIND" = github-hosted
+
+      - name: Download authoritative signed release evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: oxide-relayer-exact-v1.0.7-release-evidence
+          path: release-evidence
+
+      - name: Publish one immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMMUTABLE_RELEASES_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_ADMIN_TOKEN }}
+          IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/tags/$SOURCE_TAG"
+          test "$GITHUB_REF_TYPE" = tag
+          test "$SOURCE_TAG" = "oxide-relayer-exact-v$IMAGE_VERSION"
+          sha256sum --check release-evidence/RELEASE_SHA256SUMS
+          test "$(jq -r '.sourceCommit' release-evidence/release-provenance.json)" = "$SOURCE_COMMIT"
+          test "$(jq -r '.sourceTag' release-evidence/release-provenance.json)" = "$SOURCE_TAG"
+          test "$(jq -r '.imageDigest' release-evidence/release-provenance.json)" = "$IMAGE_DIGEST"
+
+          policy="$RUNNER_TEMP/immutable-releases.json"
+          status="$(
+            curl --silent --show-error --location \
+              --output "$policy" \
+              --write-out '%{http_code}' \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer $IMMUTABLE_RELEASES_TOKEN" \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/immutable-releases"
+          )"
+          test "$status" = 200
+          jq -e '.enabled == true and (.enforced_by_owner | type == "boolean")' "$policy"
+
+          ref="$RUNNER_TEMP/release-tag-ref.json"
+          tag="$RUNNER_TEMP/release-tag-object.json"
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$SOURCE_TAG" > "$ref"
+          tag_object="$(jq -er 'select(.object.type == "tag") | .object.sha' "$ref")"
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" > "$tag"
+          jq -e \
+            --arg sourceTag "$SOURCE_TAG" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            '.tag == $sourceTag
+             and .object.type == "commit"
+             and .object.sha == $sourceCommit
+             and .verification.verified == true' \
+            "$tag"
+
+          if gh release view "$SOURCE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            printf 'release already exists for %s\n' "$SOURCE_TAG" >&2
+            exit 1
+          fi
+
+          gh release create "$SOURCE_TAG" release-evidence/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$SOURCE_TAG" \
+            --notes-from-tag \
+            --latest=false
+
+          release="$RUNNER_TEMP/release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$SOURCE_TAG" > "$release"
+          jq -e \
+            --arg sourceTag "$SOURCE_TAG" \
+            '.tag_name == $sourceTag
+             and .draft == false
+             and .immutable == true' \
+            "$release"
+          gh release verify "$SOURCE_TAG" --repo "$GITHUB_REPOSITORY" --format json \
+            > "$RUNNER_TEMP/release-attestation.json"
+          jq -e '. | type == "object"' "$RUNNER_TEMP/release-attestation.json"
+
+          while IFS= read -r -d '' asset; do
+            gh release verify-asset "$SOURCE_TAG" "$asset" --repo "$GITHUB_REPOSITORY"
+          done < <(find release-evidence -maxdepth 1 -type f -print0)

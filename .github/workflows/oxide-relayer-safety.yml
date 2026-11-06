@@ -13,9 +13,12 @@ on:
       - "vendor/oxide/l1-contracts/**"
       - "vendor/oxide/yarn-project/**"
       - ".github/workflows/oxide-relayer-safety.yml"
+      - ".github/workflows/publish-oxide-relayer.yml"
+      - "CHANGELOG.md"
   push:
     branches:
       - security/exact-operation-relay
+      - release/oxide-relayer-exact-v1.0.7
     paths:
       - "Dockerfile.oxide-relayer"
       - ".dockerignore"
@@ -27,6 +30,8 @@ on:
       - "vendor/oxide/l1-contracts/**"
       - "vendor/oxide/yarn-project/**"
       - ".github/workflows/oxide-relayer-safety.yml"
+      - ".github/workflows/publish-oxide-relayer.yml"
+      - "CHANGELOG.md"
 
 env:
   AZTEC_VERSION: 6.0.0

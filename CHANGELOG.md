@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.7
+
+- Publish only from the exact signed release tag after immutable-release, tag/version, GitHub-hosted runner, and verified tag-target admission checks.
+- Attach authoritative CI evidence through one staged `gh release create` invocation, then require the immutable GitHub release attestation and verify every attached asset.
+
 ## 1.0.6
 
 - Disable both viem fallback-level and HTTP-level automatic retries so one exact or generic send boundary makes at most one `eth_sendRawTransaction` network call.
