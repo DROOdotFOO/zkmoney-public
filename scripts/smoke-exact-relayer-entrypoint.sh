@@ -2,11 +2,14 @@
 set -euo pipefail
 
 image=${1:?usage: smoke-exact-relayer-entrypoint.sh IMAGE}
-[[ $(uname -s) == Linux ]] || { printf '%s\n' 'exact entrypoint smoke requires Linux' >&2; exit 1; }
+[[ $(docker info --format '{{.OSType}}') == linux ]] || { printf '%s\n' 'exact entrypoint smoke requires a Linux Docker daemon' >&2; exit 1; }
 
 fixture=$(mktemp -d)
 cleanup() {
-  sudo rm -rf "$fixture"
+  docker run --rm --entrypoint rm \
+    --mount "type=bind,src=$fixture,dst=/fixture" \
+    "$image" -rf /fixture/canonical /fixture/config >/dev/null 2>&1 || true
+  rm -rf "$fixture"
 }
 trap cleanup EXIT
 canonical="$fixture/canonical"
@@ -17,7 +20,6 @@ chmod 0700 "$canonical" "$config"
 printf 'smoke portal state\n' > "$canonical/oxide-relayer-smoke.sqlite3"
 printf '{"schema":1,"kind":"generic","clean":true}\n' > "$canonical/oxide-relayer.runtime-lease.sqlite3.clean-handoff.json"
 chmod 0600 "$canonical"/*
-sudo chown -R 1000:1000 "$canonical"
 
 source_commit=$(docker run --rm --entrypoint cat "$image" /app/source-commit)
 image_digest="sha256:$(printf '%064d' 0)"
@@ -52,8 +54,8 @@ for path in sorted(candidate for candidate in canonical.rglob('*') if candidate.
         'present': True,
         'size': metadata.st_size,
         'sha256': digest(path.read_bytes()),
-        'uid': metadata.st_uid,
-        'gid': metadata.st_gid,
+        'uid': 1000,
+        'gid': 1000,
         'mode': format(stat.S_IMODE(metadata.st_mode), '04o'),
     })
 state_hash = hashlib.sha256(b'oxide-relayer-canonical-state-v2\0')
@@ -118,9 +120,16 @@ runtime = {
 (config / 'runtime-identity.json').write_text(canonical_json(runtime) + '\n')
 PY
 chmod 0400 "$config"/*.json
-sudo chown root:root "$config" "$config"/*.json
+docker run --rm --entrypoint chown \
+  --mount "type=bind,src=$fixture,dst=/fixture" \
+  "$image" -R 1000:1000 /fixture/canonical
+docker run --rm --entrypoint chown \
+  --mount "type=bind,src=$fixture,dst=/fixture" \
+  "$image" 0:0 /fixture/config /fixture/config/runtime-identity.json /fixture/config/state-inventory.json
 
-before=$(sudo tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$canonical" -cf - . | sha256sum)
+before=$(docker run --rm --entrypoint tar \
+  --mount "type=bind,src=$canonical,dst=/canonical,readonly" \
+  "$image" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C /canonical -cf - . | sha256sum)
 printf '%s' '{"schema":"oxide-relayer.preflight-exact.v1"}' | docker run --rm --pull never --interactive \
   --read-only \
   --user 0:0 \
@@ -141,5 +150,7 @@ printf '%s' '{"schema":"oxide-relayer.preflight-exact.v1"}' | docker run --rm --
   --env OXIDE_EXACT_RUNTIME_GID=65532 \
   "$image" \
   preflight-exact --bundle-fd 0 --canonical-state /canonical --control-dir /control
-after=$(sudo tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$canonical" -cf - . | sha256sum)
+after=$(docker run --rm --entrypoint tar \
+  --mount "type=bind,src=$canonical,dst=/canonical,readonly" \
+  "$image" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C /canonical -cf - . | sha256sum)
 [[ $after == "$before" ]]
