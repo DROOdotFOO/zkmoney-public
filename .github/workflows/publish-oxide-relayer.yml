@@ -22,6 +22,7 @@ env:
   NODE_NATIVE_BUILD_IMAGE: node:24.15.0-bookworm@sha256:f22d6a1f082c02f292e86929b5b0442ac2e5eaf438a5dea9b1566601c3e05940
   NODE_RUNTIME_IMAGE: node:24.15.0-bookworm-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
   NODE_RUNTIME_DIGEST: sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
+  BUILDKIT_IMAGE: moby/buildkit:v0.25.2@sha256:0f63d66f8d2de0bd16438284831a3e9ee6ca7cd57b6eb3ed6e38a7a456590fa7
   FOUNDRY_VERSION: v1.9.0
   FOUNDRY_COMMIT: 6056c5845d34205a83cf7108042adb137325c9df
   AZTEC_VERSION: 6.0.0
@@ -62,25 +63,6 @@ jobs:
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_EVENT_NAME" = push
           test "$SOURCE_TAG" = "oxide-relayer-exact-v$IMAGE_VERSION"
-
-          if test "$GITHUB_REF_TYPE" = branch; then
-            test "$GITHUB_REF" = "refs/heads/release/oxide-relayer-exact-v1.0.8"
-            test "$GITHUB_REF_NAME" = "release/oxide-relayer-exact-v1.0.8"
-            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$SOURCE_TAG" > /dev/null 2>&1; then
-              printf 'tag already exists for %s\n' "$SOURCE_TAG" >&2
-              exit 1
-            fi
-            if gh release view "$SOURCE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-              printf 'release already exists for %s\n' "$SOURCE_TAG" >&2
-              exit 1
-            fi
-            exit 0
-          fi
-
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "$SOURCE_TAG"
-          test "$GITHUB_REF" = "refs/tags/$SOURCE_TAG"
-
           policy="$RUNNER_TEMP/immutable-releases.json"
           status="$(
             curl --silent --show-error --location \
@@ -93,6 +75,36 @@ jobs:
           )"
           test "$status" = 200
           jq -e '.enabled == true and (.enforced_by_owner | type == "boolean")' "$policy"
+
+
+          if test "$GITHUB_REF_TYPE" = branch; then
+            test "$GITHUB_REF" = "refs/heads/release/oxide-relayer-exact-v1.0.8"
+            test "$GITHUB_REF_NAME" = "release/oxide-relayer-exact-v1.0.8"
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$SOURCE_TAG" > /dev/null 2>&1; then
+              printf 'tag already exists for %s\n' "$SOURCE_TAG" >&2
+              exit 1
+            fi
+            if gh release view "$SOURCE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              printf 'release already exists for %s\n' "$SOURCE_TAG" >&2
+              exit 1
+            fi
+            publication_history="$RUNNER_TEMP/publication-history.json"
+            gh api \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/publish-oxide-relayer.yml/runs?branch=$SOURCE_TAG&event=push&per_page=100" \
+              > "$publication_history"
+            jq -e \
+              --arg sourceTag "$SOURCE_TAG" \
+              '[.workflow_runs[]
+                | select(.head_branch == $sourceTag and .event == "push")]
+               | length == 0' \
+              "$publication_history"
+            exit 0
+          fi
+
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "$SOURCE_TAG"
+          test "$GITHUB_REF" = "refs/tags/$SOURCE_TAG"
+
 
           ref="$RUNNER_TEMP/release-tag-ref.json"
           tag="$RUNNER_TEMP/release-tag-object.json"
@@ -143,15 +155,13 @@ jobs:
 
           publication_runs="$RUNNER_TEMP/publication-runs.json"
           gh api \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/publish-oxide-relayer.yml/runs?event=push&head_sha=$SOURCE_COMMIT&per_page=100" \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/publish-oxide-relayer.yml/runs?branch=$SOURCE_TAG&event=push&per_page=100" \
             > "$publication_runs"
           jq -e \
             --arg sourceTag "$SOURCE_TAG" \
             --argjson currentRunId "$GITHUB_RUN_ID" \
             '[.workflow_runs[]
-              | select(.head_branch == $sourceTag
-                       and .event == "push"
-                       and .head_sha == env.SOURCE_COMMIT)]
+              | select(.head_branch == $sourceTag and .event == "push")]
              | length == 1 and .[0].id == $currentRunId' \
             "$publication_runs"
 
@@ -412,6 +422,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source_epoch="$(git show -s --format=%ct "$SOURCE_COMMIT")"
           authority="$RUNNER_TEMP/approval-public.pem"
           printf '%s' "$APPROVAL_AUTHORITY_PEM_B64" | base64 --decode > "$authority"
           test "$(sha256sum "$authority" | cut -d ' ' -f 1)" = "$APPROVAL_AUTHORITY_SHA256"
@@ -463,10 +474,25 @@ jobs:
               --env HOME=/tmp \
               --env npm_config_build_from_source=true \
               --env npm_config_nodedir=/usr/local \
+              --env PYTHONDONTWRITEBYTECODE=1 \
+              --env PYTHONHASHSEED=0 \
               --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
               --workdir "$sqlite_dir" \
               "$NODE_NATIVE_BUILD_IMAGE" \
               ./node_modules/.bin/node-gyp rebuild
+            rm -f "$sqlite_dir/build/Makefile"
+            find "$destination" -type f -name '*.pyc' -delete
+            find "$destination" -type d -name __pycache__ -empty -delete
+            node -e '
+              const fs = require("node:fs");
+              const path = process.argv[1];
+              const input = fs.readFileSync(path, "utf8");
+              if (!/^prunedAt: .*$/m.test(input)) {
+                throw new Error("pnpm metadata has no prunedAt field");
+              }
+              const value = new Date(Number(process.env.SOURCE_DATE_EPOCH) * 1000).toUTCString();
+              fs.writeFileSync(path, input.replace(/^prunedAt: .*$/m, `prunedAt: ${value}`));
+            ' "$destination/node_modules/.modules.yaml"
             node -e 'require(process.argv[1])' "$destination/node_modules/sqlite3"
             exit 0
           fi
@@ -479,6 +505,7 @@ jobs:
             "PNPM_HOME=$PNPM_HOME" \
             "RELEASE_REAL_COREPACK=$real_corepack" \
             "RELEASE_PREWARM_DEPLOY=$RELEASE_PREWARM_DEPLOY" \
+            "SOURCE_DATE_EPOCH=$source_epoch" \
             "GITHUB_WORKSPACE=$GITHUB_WORKSPACE" \
             "NODE_NATIVE_BUILD_IMAGE=$NODE_NATIVE_BUILD_IMAGE" \
             "pnpm_config_store_dir=$store_dir" \
@@ -494,6 +521,7 @@ jobs:
             "FOUNDRY_OFFLINE=true" \
             "OXIDE_EXACT_APPROVAL_PUBLIC_KEY_FILE=$authority" \
             bash -euc 'pnpm build-contracts; pnpm prepare:relayer-image'
+          find .relayer-image -exec touch -h -d "@$source_epoch" {} +
           test "$(cat .relayer-image/source-commit)" = "$SOURCE_COMMIT"
           test "$(sha256sum .relayer-image/approval-authority.pem | cut -d ' ' -f 1)" = "$APPROVAL_AUTHORITY_SHA256"
           test "$(tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$RELEASE_YARN_OFFLINE_CACHE" -cf - . | sha256sum | cut -d ' ' -f 1)" = "$RELEASE_YARN_OFFLINE_CACHE_SHA256"
@@ -534,22 +562,41 @@ jobs:
             --arg solidityDependencyLockSha256 "$(sha256sum release-materials/solidity-dependencies.lock | cut -d ' ' -f 1)" \
             --arg solidityDependencyResolutionsSha256 "$(sha256sum release-materials/solidity-dependency-resolutions.json | cut -d ' ' -f 1)" \
             --arg offlineBuildInputsSha256 "$(sha256sum release-materials/offline-build-inputs.json | cut -d ' ' -f 1)" \
+            --arg buildkitImage "$BUILDKIT_IMAGE" \
             --arg dockerVersion "$(docker version --format '{{.Client.Version}}/{{.Server.Version}}')" \
-            '{sourceCommit:$sourceCommit,sourceArchiveSha256:$sourceArchiveSha256,stagedFilesystemSha256:$stagedFilesystemSha256,nodeVersion:$nodeVersion,nodeBinarySha256:$nodeBinarySha256,pnpmVersion:$pnpmVersion,forgeVersion:$forgeVersion,nargoVersion:$nargoVersion,nargoBinarySha256:$nargoBinarySha256,nargoDependencyLockSha256:$nargoDependencyLockSha256,nargoDependencyResolutionsSha256:$nargoDependencyResolutionsSha256,solidityDependencyLockSha256:$solidityDependencyLockSha256,solidityDependencyResolutionsSha256:$solidityDependencyResolutionsSha256,offlineBuildInputsSha256:$offlineBuildInputsSha256,aztecVersion:$aztecVersion,aztecBinarySha256:$aztecBinarySha256,aztecInstallerSha256:$aztecInstallerSha256,nativeBuildBase:$nativeBuildBase,runtimeBase:$runtimeBase,dockerVersion:$dockerVersion}' \
+            '{sourceCommit:$sourceCommit,sourceArchiveSha256:$sourceArchiveSha256,stagedFilesystemSha256:$stagedFilesystemSha256,nodeVersion:$nodeVersion,nodeBinarySha256:$nodeBinarySha256,pnpmVersion:$pnpmVersion,forgeVersion:$forgeVersion,nargoVersion:$nargoVersion,nargoBinarySha256:$nargoBinarySha256,nargoDependencyLockSha256:$nargoDependencyLockSha256,nargoDependencyResolutionsSha256:$nargoDependencyResolutionsSha256,solidityDependencyLockSha256:$solidityDependencyLockSha256,solidityDependencyResolutionsSha256:$solidityDependencyResolutionsSha256,offlineBuildInputsSha256:$offlineBuildInputsSha256,aztecVersion:$aztecVersion,aztecBinarySha256:$aztecBinarySha256,aztecInstallerSha256:$aztecInstallerSha256,nativeBuildBase:$nativeBuildBase,runtimeBase:$runtimeBase,buildkitImage:$buildkitImage,dockerVersion:$dockerVersion}' \
             > release-materials/build-materials.json
           (cd release-materials && sha256sum build-materials.json nargo-dependencies.lock nargo-dependency-resolutions.json solidity-dependencies.lock solidity-dependency-resolutions.json offline-build-inputs.json "zkmoney-public-${SOURCE_TAG}.tar.gz" > SHA256SUMS)
 
       - name: Build the candidate without publication credentials or build-network access
+        env:
+          BUILD_SLOT: ${{ matrix.slot }}
         shell: bash
         run: |
           set -euo pipefail
+          source_epoch="$(git show -s --format=%ct "$SOURCE_COMMIT")"
+          find .relayer-image -exec touch -h -d "@$source_epoch" {} +
+          builder="oxide-relayer-v108-${GITHUB_RUN_ID}-${BUILD_SLOT}"
+          docker buildx create \
+            --driver docker-container \
+            --driver-opt "image=$BUILDKIT_IMAGE" \
+            --name "$builder" \
+            --use
+          cleanup_builder() {
+            docker buildx rm "$builder"
+          }
+          trap cleanup_builder EXIT
+          docker buildx inspect --bootstrap "$builder"
           docker pull "$NODE_RUNTIME_IMAGE"
           docker buildx build \
             --pull=false \
             --network=none \
             --no-cache \
             --build-arg "NODE_IMAGE=$NODE_RUNTIME_IMAGE" \
-            --build-arg SOURCE_DATE_EPOCH=0 \
+            --build-arg "SOURCE_DATE_EPOCH=$source_epoch" \
+            --builder "$builder" \
+            --provenance=false \
+            --sbom=false \
             --output type=docker,rewrite-timestamp=true \
             --label "org.opencontainers.image.source=https://github.com/DROOdotFOO/zkmoney-public" \
             --label "org.opencontainers.image.revision=$SOURCE_COMMIT" \
@@ -638,7 +685,12 @@ jobs:
           image_b=duplicate/image-b/oxide-relayer-exact-v1.0.8.tar
           config_a="$(tar -xOf "$image_a" manifest.json | jq -er 'if length == 1 then .[0].Config else error("expected one image") end')"
           config_b="$(tar -xOf "$image_b" manifest.json | jq -er 'if length == 1 then .[0].Config else error("expected one image") end')"
-          test "$config_a" = "$config_b"
+          config_digest_a="${config_a##*/}"
+          config_digest_b="${config_b##*/}"
+          test "$config_digest_a" = "$config_digest_b"
+          cmp \
+            <(tar -xOf "$image_a" manifest.json | jq -S .) \
+            <(tar -xOf "$image_b" manifest.json | jq -S .)
           cmp <(tar -xOf "$image_a" "$config_a") <(tar -xOf "$image_b" "$config_b")
           for material in \
             build-materials.json \
@@ -657,14 +709,14 @@ jobs:
           jq -n \
             --arg sourceCommit "$SOURCE_COMMIT" \
             --arg sourceTag "$SOURCE_TAG" \
-            --arg imageConfigSha256 "${config_a%.json}" \
+            --arg imageConfigSha256 "$config_digest_a" \
             --arg buildMaterialsSha256 "$(sha256sum canonical-materials/build-materials.json | cut -d ' ' -f 1)" \
             --arg stagedFilesystemSha256 "$(jq -er '.stagedFilesystemSha256' canonical-materials/build-materials.json)" \
             --arg workflowRun "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             '{sourceCommit:$sourceCommit,sourceTag:$sourceTag,imageConfigSha256:$imageConfigSha256,buildMaterialsSha256:$buildMaterialsSha256,stagedFilesystemSha256:$stagedFilesystemSha256,duplicateBuilds:2,workflowRun:$workflowRun}' \
             > canonical-materials/pretag-qualification.json
           docker load --input "$image_a"
-          test "$(docker image inspect --format '{{.Id}}' "$LOCAL_IMAGE")" = "sha256:${config_a%.json}"
+          test "$(docker image inspect --format '{{.Id}}' "$LOCAL_IMAGE")" = "sha256:$config_digest_a"
 
       - name: Generate pre-tag SBOM from qualified bytes
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c
@@ -865,6 +917,7 @@ jobs:
           path: release-materials
           github-token: ${{ github.token }}
           run-id: ${{ needs.admission.outputs.qualification-run-id }}
+
       - name: Download reviewed pre-tag signing evidence
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -872,6 +925,12 @@ jobs:
           path: pretag-signing
           github-token: ${{ github.token }}
           run-id: ${{ needs.admission.outputs.qualification-run-id }}
+
+      - name: Install exact Cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532
+        with:
+          cosign-release: v3.1.4
+
 
 
       - name: Require exact imported qualification
@@ -884,6 +943,16 @@ jobs:
           test "$(jq -er '.sourceCommit' release-materials/pretag-qualification.json)" = "$SOURCE_COMMIT"
           test "$(jq -er '.sourceTag' release-materials/pretag-qualification.json)" = "$SOURCE_TAG"
           test "$(jq -er '.duplicateBuilds' release-materials/pretag-qualification.json)" = 2
+          docker load --input release-build/oxide-relayer-exact-v1.0.8.tar
+          expected_image_id="sha256:$(jq -er '.imageConfigSha256' release-materials/pretag-qualification.json)"
+          test "$(docker image inspect --format '{{.Id}}' "$LOCAL_IMAGE")" = "$expected_image_id"
+          identity="https://github.com/DROOdotFOO/zkmoney-public/.github/workflows/publish-oxide-relayer.yml@refs/heads/release/oxide-relayer-exact-v1.0.8"
+          cosign verify-blob \
+            --bundle pretag-signing/PRETAG_SHA256SUMS.sigstore.json \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-sha "$SOURCE_COMMIT" \
+            pretag-signing/PRETAG_SHA256SUMS
           cp \
             pretag-signing/PRETAG_SHA256SUMS.sigstore.json \
             pretag-signing/pretag-image-signature.json \
@@ -1567,6 +1636,9 @@ jobs:
              and .object.sha == $sourceCommit
              and .verification.verified == true' \
             "$tag"
+          jq -er '.message | select(type == "string" and length > 0)' "$tag" \
+            > "$RUNNER_TEMP/release-notes.md"
+
 
           if gh release view "$SOURCE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             printf 'release already exists for %s\n' "$SOURCE_TAG" >&2
@@ -1577,7 +1649,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "$SOURCE_TAG" \
-            --notes-from-tag \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             --latest=false
 
           release="$RUNNER_TEMP/release.json"
