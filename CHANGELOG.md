@@ -3,7 +3,7 @@
 ## 1.0.2
 
 - Add a fail-closed fork-only `relay-exact` runtime for one Ed25519-approved v4 withdrawal operation, including signed execution windows and Stage A identity binding.
-- Run the exact process as dedicated UID/GID 65532 after a root-only initializer opens protected inputs, drops privileges and verifies the final no-capability, no-new-privileges state.
+- Run the exact process as dedicated UID/GID 65532 after a root-only initializer opens protected inputs and drops privileges; no active, permitted, inheritable, or ambient capability remains, the bound is limited to the already-spent SETUID/SETGID transition, and no-new-privileges prevents reacquisition.
 - Preflight legacy UID/GID 1000 canonical state, inventory, generic journal and clean-handoff evidence as root, retain only immutable identities, then keep every exact lease, journal and ambiguity write under runtime-owned control state.
 - Consume each operation once with a stable operation-scoped conditional S3 claim, compliance Object Lock retention, exact-version verification, and no local-only fallback.
 - Bind source, image, host, expected signer, schema, Portal, operation, complete state inventory, canonical-state digest, approval-signature commitment, and witness authority in approval and monotonic claim evidence without exposing the approval nonce or recipient linkage.

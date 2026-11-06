@@ -102,6 +102,21 @@ export function runtimeProfileFromArguments(argv: readonly string[], env: NodeJS
   throw new Error('Root initializer permits only reviewed exact or restore runtime modes');
 }
 
+export function installInheritedBundleDescriptor(
+  argv: readonly string[],
+  duplicateStandardInput: () => number = () => openSync('/proc/self/fd/0', constants.O_RDONLY),
+): { argv: string[]; descriptor?: number } {
+  const normalized = [...argv];
+  const option = normalized.indexOf('--bundle-fd');
+  if (option < 0 || normalized[option + 1] !== '0') return { argv: normalized };
+  const descriptor = duplicateStandardInput();
+  if (!Number.isSafeInteger(descriptor) || descriptor < 3) {
+    throw new Error('Inherited approval descriptor could not be isolated from standard input');
+  }
+  normalized[option + 1] = String(descriptor);
+  return { argv: normalized, descriptor };
+}
+
 export async function validateMountContract(
   profile: RuntimeProfile,
   mountInfo: string,
@@ -217,8 +232,12 @@ export function assertFinalPrivilegeState(status: string, runtimeUid: number, ru
   if ((values.get('Groups') ?? '').trim() !== '') {
     throw new Error('Final runtime process retains supplementary groups');
   }
-  for (const name of ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb']) {
+  for (const name of ['CapInh', 'CapPrm', 'CapEff', 'CapAmb']) {
     if (!/^0+$/.test(values.get(name) ?? '')) throw new Error('Final runtime process retains Linux capabilities');
+  }
+  const bounding = values.get('CapBnd') ?? '';
+  if (!/^[0-9a-fA-F]+$/.test(bounding) || BigInt(`0x${bounding}`) !== 0xc0n) {
+    throw new Error('Runtime capability bound differs from SETGID and SETUID only');
   }
   if (values.get('NoNewPrivs') !== '1') {
     throw new Error('Final runtime process is missing no-new-privileges');

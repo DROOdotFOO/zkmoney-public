@@ -35,7 +35,7 @@ describe('RuntimeLease', () => {
     await generic.close({ cleanHandoff: true });
 
     const exact = await acquireExact(path);
-    await exact.activateExactHandoff();
+    await exact.activateExactHandoff(PREVALIDATED_HANDOFF_DIGEST);
     await exact.close();
     await expect(readFile(cleanHandoffPath(path), 'utf8')).resolves.toBe(
       JSON.stringify({ schema: 1, kind: 'generic', clean: true }),
@@ -47,9 +47,12 @@ describe('RuntimeLease', () => {
     await generic.close({ cleanHandoff: true });
 
     const rejectedIdentity = await acquireExact(path);
+    await expect(rejectedIdentity.activateExactHandoff(`sha256:${'22'.repeat(32)}`)).rejects.toThrow(
+      /evidence changed/,
+    );
     await rejectedIdentity.close();
     const correctedIdentity = await acquireExact(path);
-    await correctedIdentity.activateExactHandoff();
+    await correctedIdentity.activateExactHandoff(PREVALIDATED_HANDOFF_DIGEST);
     await correctedIdentity.close();
   });
   it('recovers a complete interrupted handoff marker write', async () => {
@@ -63,7 +66,7 @@ describe('RuntimeLease', () => {
     await generic.close({ cleanHandoff: true });
 
     const exact = await acquireExact(path);
-    await exact.activateExactHandoff();
+    await exact.activateExactHandoff(PREVALIDATED_HANDOFF_DIGEST);
     await exact.close();
   });
   it('replaces a torn handoff temp only while the generic lease is held', async () => {
@@ -73,7 +76,7 @@ describe('RuntimeLease', () => {
     await generic.close({ cleanHandoff: true });
 
     const exact = await acquireExact(path);
-    await exact.activateExactHandoff();
+    await exact.activateExactHandoff(PREVALIDATED_HANDOFF_DIGEST);
     await exact.close();
   });
 

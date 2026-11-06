@@ -5,6 +5,7 @@ import {
   assertCanonicalRootObject,
   assertDistinctRuntimeMounts,
   assertFinalPrivilegeState,
+  installInheritedBundleDescriptor,
   parseDedicatedIdentity,
   parseMountInfo,
   rejectRawSecretEnvironment,
@@ -21,7 +22,7 @@ function status(overrides: Partial<Record<string, string>> = {}): string {
     CapInh: '0000000000000000',
     CapPrm: '0000000000000000',
     CapEff: '0000000000000000',
-    CapBnd: '0000000000000000',
+    CapBnd: '00000000000000c0',
     CapAmb: '0000000000000000',
     NoNewPrivs: '1',
     ...overrides,
@@ -37,6 +38,19 @@ describe('runtime sandbox', () => {
     expect(runtimeProfileFromArguments(['authorize-generic-restore'])).toBe('restore');
     expect(runtimeProfileFromArguments(['run'], { OXIDE_RUNTIME_PROFILE: 'generic-restore' })).toBe('generic-restore');
     expect(() => runtimeProfileFromArguments(['run'])).toThrow('Root initializer permits only reviewed exact or restore runtime modes');
+  });
+
+  it('duplicates an inherited standard-input approval into a private descriptor', () => {
+    expect(installInheritedBundleDescriptor(['relay-exact', '--bundle-fd', '0'], () => 9)).toEqual({
+      argv: ['relay-exact', '--bundle-fd', '9'],
+      descriptor: 9,
+    });
+    expect(installInheritedBundleDescriptor(['relay-exact', '--bundle-fd', '3'], () => 9)).toEqual({
+      argv: ['relay-exact', '--bundle-fd', '3'],
+    });
+    expect(() => installInheritedBundleDescriptor(['relay-exact', '--bundle-fd', '0'], () => -1)).toThrow(
+      'could not be isolated',
+    );
   });
 
   it('requires the dedicated identity and prohibits root and UID/GID 1000', () => {
@@ -57,7 +71,7 @@ describe('runtime sandbox', () => {
     expect(() => rejectRawSecretEnvironment({ AZTEC_NODE_URL_FILE: '/proc/self/fd/3' })).not.toThrow();
   });
 
-  it('accepts only the dedicated final identity with no groups or capabilities', () => {
+  it('accepts only the dedicated final identity with no active capabilities', () => {
     expect(() => assertFinalPrivilegeState(status(), DEDICATED_IDENTITY, DEDICATED_IDENTITY)).not.toThrow();
     expect(() => assertFinalPrivilegeState(status({ Groups: '1000' }), DEDICATED_IDENTITY, DEDICATED_IDENTITY)).toThrow(
       'Final runtime process retains supplementary groups',
@@ -65,6 +79,9 @@ describe('runtime sandbox', () => {
     expect(() =>
       assertFinalPrivilegeState(status({ CapEff: '0000000000000001' }), DEDICATED_IDENTITY, DEDICATED_IDENTITY),
     ).toThrow('Final runtime process retains Linux capabilities');
+    expect(() =>
+      assertFinalPrivilegeState(status({ CapBnd: '00000000000000c1' }), DEDICATED_IDENTITY, DEDICATED_IDENTITY),
+    ).toThrow('Runtime capability bound differs');
     expect(() => assertFinalPrivilegeState(status({ NoNewPrivs: '0' }), DEDICATED_IDENTITY, DEDICATED_IDENTITY)).toThrow(
       'Final runtime process is missing no-new-privileges',
     );

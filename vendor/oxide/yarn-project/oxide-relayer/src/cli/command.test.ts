@@ -39,6 +39,17 @@ describe('createCliProgram', () => {
     expect(config).not.toHaveProperty('journalPath');
     expect(config).not.toHaveProperty('runtimeLeasePath');
     expect(config.bundleFd).toBe(3);
+    const stdinConfig = await parseExactOperationConfig(
+      ['--bundle-fd', '0', '--canonical-state', '/canonical', '--control-dir', '/control'],
+      env,
+    );
+    expect(stdinConfig.bundleFd).toBe(0);
+    await expect(
+      parseExactOperationConfig(
+        ['--bundle-fd', '1', '--canonical-state', '/canonical', '--control-dir', '/control'],
+        env,
+      ),
+    ).rejects.toThrow(/standard input/);
     await expect(parseExactOperationConfig([], env)).rejects.toThrow(/bundle-fd/);
     await expect(parseExactOperationConfig(['--bundle-fd', '3'], env)).rejects.toThrow(/canonical-state/);
     await expect(

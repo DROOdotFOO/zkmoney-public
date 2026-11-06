@@ -245,8 +245,8 @@ async function exactConfigFromEnvironment(options: {
 
 function integerFd(value: string): number {
   const fd = Number(value);
-  if (!Number.isSafeInteger(fd) || fd < 3) {
-    throw new Error('file descriptor must be an integer of at least 3');
+  if (!Number.isSafeInteger(fd) || fd < 0 || fd === 1 || fd === 2) {
+    throw new Error('file descriptor must be standard input or an inherited descriptor of at least 3');
   }
   return fd;
 }

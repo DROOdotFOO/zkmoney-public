@@ -26,6 +26,7 @@ export class RuntimeLease {
     readonly path: string,
     readonly kind: RuntimeKind,
     private readonly db: SqliteDatabase,
+    private readonly prevalidatedExactHandoffDigest?: `sha256:${string}`,
   ) {
     this.exactHandoffActivated = kind === 'generic';
   }
@@ -74,7 +75,7 @@ export class RuntimeLease {
         await setLeaseKind(db, kind);
       }
       await chmod(resolved, 0o600);
-      return new RuntimeLease(resolved, kind, db);
+      return new RuntimeLease(resolved, kind, db, options.prevalidatedExactHandoffDigest);
     } catch (error) {
       await db.close();
       if (isBusy(error)) {
@@ -84,9 +85,12 @@ export class RuntimeLease {
     }
   }
 
-  async activateExactHandoff(): Promise<void> {
+  async activateExactHandoff(prevalidatedExactHandoffDigest: `sha256:${string}`): Promise<void> {
     if (this.kind !== 'exact-operation' || this.exactHandoffActivated) {
       throw new Error('Exact-operation handoff activation is not available');
+    }
+    if (prevalidatedExactHandoffDigest !== this.prevalidatedExactHandoffDigest) {
+      throw new Error('Exact-operation handoff evidence changed after privileged preflight');
     }
     await setLeaseKind(this.db, this.kind);
     this.exactHandoffActivated = true;
