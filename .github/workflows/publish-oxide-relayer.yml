@@ -471,7 +471,7 @@ jobs:
             | awk -v expected="$APPROVAL_AUTHORITY_SHA256" '$1 != expected { exit 1 }'
           docker run --rm --entrypoint node "$LOCAL_IMAGE" dest/bin/oxide-relayer.js relay-exact --help
           docker run --rm --entrypoint node "$LOCAL_IMAGE" dest/bin/oxide-relayer.js authorize-generic-restore --help
-          scripts/smoke-exact-relayer-entrypoint.sh "$LOCAL_IMAGE"
+          OXIDE_SMOKE_DIAGNOSTIC=1 scripts/smoke-exact-relayer-entrypoint.sh "$LOCAL_IMAGE"
 
   publish-candidate:
     needs: smoke-unpublished
@@ -950,4 +950,4 @@ jobs:
           test "$(docker run --rm --entrypoint cat "$image" /app/source-commit)" = "$SOURCE_COMMIT"
           docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js relay-exact --help
           docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js authorize-generic-restore --help
-          scripts/smoke-exact-relayer-entrypoint.sh "$image"
+          OXIDE_SMOKE_DIAGNOSTIC=1 scripts/smoke-exact-relayer-entrypoint.sh "$image"

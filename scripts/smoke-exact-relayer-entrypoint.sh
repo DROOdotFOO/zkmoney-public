@@ -130,26 +130,46 @@ docker run --rm --entrypoint chown \
 before=$(docker run --rm --entrypoint tar \
   --mount "type=bind,src=$canonical,dst=/canonical,readonly" \
   "$image" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C /canonical -cf - . | sha256sum)
-printf '%s' '{"schema":"oxide-relayer.preflight-exact.v1"}' | docker run --rm --pull never --interactive \
-  --read-only \
-  --user 0:0 \
-  --network none \
-  --hostname exact-smoke \
-  --mount "type=bind,src=$canonical,dst=/canonical,readonly" \
-  --tmpfs /control:rw,noexec,nosuid,nodev,uid=65532,gid=65532,mode=0700 \
-  --mount "type=bind,src=$config,dst=/run/config/oxide-relayer,readonly" \
-  --tmpfs /run/secrets/oxide-relayer:rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700 \
-  --tmpfs /tmp:rw,noexec,nosuid,nodev,uid=65532,gid=65532,mode=0700 \
-  --cap-drop ALL \
-  --cap-add SETUID \
-  --cap-add SETGID \
-  --cap-add DAC_READ_SEARCH \
-  --security-opt no-new-privileges:true \
-  --pids-limit 256 \
-  --env OXIDE_EXACT_RUNTIME_UID=65532 \
-  --env OXIDE_EXACT_RUNTIME_GID=65532 \
-  "$image" \
-  preflight-exact --bundle-fd 0 --canonical-state /canonical --control-dir /control
+runtime_args=(
+  --rm --pull never --interactive
+  --read-only
+  --user 0:0
+  --network none
+  --hostname exact-smoke
+  --mount "type=bind,src=$canonical,dst=/canonical,readonly"
+  --tmpfs /control:rw,noexec,nosuid,nodev,uid=65532,gid=65532,mode=0700
+  --mount "type=bind,src=$config,dst=/run/config/oxide-relayer,readonly"
+  --tmpfs /run/secrets/oxide-relayer:rw,noexec,nosuid,nodev,uid=0,gid=0,mode=0700
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,uid=65532,gid=65532,mode=0700
+  --cap-drop ALL
+  --cap-add SETUID
+  --cap-add SETGID
+  --cap-add DAC_READ_SEARCH
+  --security-opt no-new-privileges:true
+  --pids-limit 256
+  --env OXIDE_EXACT_RUNTIME_UID=65532
+  --env OXIDE_EXACT_RUNTIME_GID=65532
+)
+if ! printf '%s' '{"schema":"oxide-relayer.preflight-exact.v1"}' | docker run "${runtime_args[@]}" \
+  "$image" preflight-exact --bundle-fd 0 --canonical-state /canonical --control-dir /control; then
+  if [[ ${OXIDE_SMOKE_DIAGNOSTIC:-0} == 1 ]]; then
+    printf '%s' '{"schema":"oxide-relayer.preflight-exact.v1"}' | docker run "${runtime_args[@]}" \
+      --entrypoint node "$image" --input-type=module --eval '
+        const argv = ["preflight-exact", "--bundle-fd", "0", "--canonical-state", "/canonical", "--control-dir", "/control"];
+        try {
+          const sandbox = await import("/app/dest/exact_operation/runtime_sandbox.js");
+          await sandbox.initializeRuntimeSandbox(sandbox.runtimeProfileFromArguments(argv), argv);
+          console.error("synthetic smoke: sandbox initialization passed");
+          const { preflightExactOperation } = await import("/app/dest/exact_operation/preflight.js");
+          await preflightExactOperation({ bundleFd: 0, canonicalState: "/canonical", controlDir: "/control" });
+          console.error("synthetic smoke: preflight passed");
+        } catch (error) {
+          console.error(error instanceof Error ? error.stack : String(error));
+          process.exitCode = 1;
+        }'
+  fi
+  exit 1
+fi
 after=$(docker run --rm --entrypoint tar \
   --mount "type=bind,src=$canonical,dst=/canonical,readonly" \
   "$image" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C /canonical -cf - . | sha256sum)

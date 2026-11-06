@@ -93,6 +93,6 @@ jobs:
           docker run --rm --entrypoint test "$image" -r /app/approval-authority.pem
           docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js relay-exact --help
           docker run --rm --entrypoint node "$image" dest/bin/oxide-relayer.js authorize-generic-restore --help
-          scripts/smoke-exact-relayer-entrypoint.sh "$image"
+          OXIDE_SMOKE_DIAGNOSTIC=1 scripts/smoke-exact-relayer-entrypoint.sh "$image"
       - name: Run complete source tests
         run: pnpm --filter @oxide/oxide-relayer test
