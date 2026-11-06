@@ -1,5 +1,6 @@
 import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
 import type { AztecNode } from '@aztec-labs/aztec.js/node';
+import { BlockNumber } from '@aztec-labs/foundation/branded-types';
 import { TxHash } from '@aztec-labs/stdlib/tx';
 
 import type { OxidePortalContract } from '@oxide/l1-contracts';
@@ -21,7 +22,7 @@ export class ExactOperationObserver {
   constructor(
     private readonly node: Pick<
       AztecNode,
-      'getTxByHash' | 'getTxReceipt' | 'getTxEffect' | 'getBlockNumber' | 'getL2ToL1MembershipWitness'
+      'getTxByHash' | 'getTxReceipt' | 'getTxEffect' | 'getBlock' | 'getBlockNumber' | 'getL2ToL1MembershipWitness'
     >,
     private readonly portal: OxidePortalContract,
     private readonly identity: Pick<ExactSourceEvidence, 'runtime' | 'deployment' | 'economics'>,
@@ -40,6 +41,10 @@ export class ExactOperationObserver {
     if (!receipt?.blockNumber || !receipt.blockHash) {
       throw new Error('Exact-operation source transaction is not included in a block');
     }
+    const sourceBlock = await this.node.getBlock(BlockNumber(receipt.blockNumber));
+    if (!sourceBlock) {
+      throw new Error('Exact-operation source block is unavailable');
+    }
 
     const operations = extractL1Operations(
       tx,
@@ -52,6 +57,9 @@ export class ExactOperationObserver {
       sourceBlockNumber: BigInt(receipt.blockNumber),
       sourceBlockHash: receipt.blockHash.toString(),
       provenBlockNumber: BigInt(provenBlockNumber),
+      sourceBlockTimestamp: new Date(Number(sourceBlock.header.globalVariables.timestamp) * 1000)
+        .toISOString()
+        .replace('.000Z', 'Z'),
       operations,
     });
 
@@ -69,6 +77,9 @@ export class ExactOperationObserver {
     );
     if (!witness) {
       throw new Error('Exact-operation source event has no finalized Outbox witness');
+    }
+    if (witness.leafIndex.toString() !== approval.operation.outboxWitness.leafIndex) {
+      throw new Error('Exact-operation Outbox leaf index differs from the approved witness');
     }
     return observation;
   }

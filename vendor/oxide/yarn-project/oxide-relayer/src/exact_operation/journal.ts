@@ -5,10 +5,11 @@ import { type Database, open } from 'sqlite';
 import sqlite3Driver, { type Database as Sqlite3Database, type Statement as Sqlite3Statement } from 'sqlite3';
 import type { ExactApprovalClaimReceipt } from './monotonic_claim.js';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const META_TABLE_SQL = `CREATE TABLE exact_operation_meta (schema_version INTEGER NOT NULL)`;
 const OPERATIONS_TABLE_SQL = `CREATE TABLE exact_operations (
   approval_digest TEXT PRIMARY KEY,
+  stage_a_approval_digest TEXT NOT NULL,
   operation_id TEXT NOT NULL UNIQUE,
   state TEXT NOT NULL CHECK (state IN ('approved', 'signing', 'signed', 'send_started', 'sent', 'confirmed', 'failed', 'ambiguous')),
   witness_key TEXT NOT NULL,
@@ -38,6 +39,7 @@ export interface ExactOperationRecord {
   state: ExactOperationState;
   operationId: string;
   approvalCommitment: string;
+  stageAApprovalDigest: string;
   signedTx?: Buffer;
   signedTxHash?: string;
   l1TxHash?: string;
@@ -88,6 +90,7 @@ export class ExactOperationJournal {
   async consumeApproval(
     approvalCommitment: string,
     operationId: string,
+    stageAApprovalDigest: string,
     witness: ExactApprovalClaimReceipt,
   ): Promise<void> {
     await this.transaction(async () => {
@@ -101,11 +104,12 @@ export class ExactOperationJournal {
       }
       await this.db.run(
         `INSERT INTO exact_operations
-          (approval_digest, operation_id, state, witness_key, witness_version_id,
+          (approval_digest, operation_id, stage_a_approval_digest, state, witness_key, witness_version_id,
            witness_checksum_sha256, witness_retain_until, witness_body, created_at, updated_at)
-         VALUES (?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?)`,
         approvalCommitment,
         operationId,
+        stageAApprovalDigest,
         witness.key,
         witness.versionId,
         witness.checksumSha256,
@@ -217,6 +221,7 @@ export class ExactOperationJournal {
       operation_id: string;
       approval_digest: string;
       witness_key: string;
+      stage_a_approval_digest: string;
       witness_version_id: string;
       witness_checksum_sha256: string;
       witness_retain_until: string;
@@ -225,7 +230,7 @@ export class ExactOperationJournal {
       signed_tx_hash: string | null;
       l1_tx_hash: string | null;
     }>(
-      `SELECT state, operation_id, approval_digest, witness_key, witness_version_id,
+      `SELECT state, operation_id, approval_digest, stage_a_approval_digest, witness_key, witness_version_id,
               witness_checksum_sha256, witness_retain_until, witness_body,
               signed_tx, signed_tx_hash, l1_tx_hash
        FROM exact_operations WHERE operation_id = ?`,
@@ -238,6 +243,7 @@ export class ExactOperationJournal {
       state: row.state,
       operationId: row.operation_id,
       approvalCommitment: row.approval_digest,
+      stageAApprovalDigest: row.stage_a_approval_digest,
       witness: {
         key: row.witness_key,
         versionId: row.witness_version_id,
@@ -339,6 +345,7 @@ export async function auditExactOperationJournal(filename: string): Promise<Exac
         state: ExactOperationState;
         operation_id: string;
         approval_digest: string;
+        stage_a_approval_digest: string;
         signed_tx: Buffer | null;
         signed_tx_hash: string | null;
         l1_tx_hash: string | null;
@@ -349,7 +356,7 @@ export async function auditExactOperationJournal(filename: string): Promise<Exac
         witness_body: string;
       }>
     >(
-      `SELECT state, operation_id, approval_digest, signed_tx, signed_tx_hash, l1_tx_hash,
+      `SELECT state, operation_id, approval_digest, stage_a_approval_digest, signed_tx, signed_tx_hash, l1_tx_hash,
               witness_key, witness_version_id, witness_checksum_sha256, witness_retain_until, witness_body
        FROM exact_operations ORDER BY operation_id`,
     );
@@ -357,6 +364,7 @@ export async function auditExactOperationJournal(filename: string): Promise<Exac
       state: row.state,
       operationId: row.operation_id,
       approvalCommitment: row.approval_digest,
+      stageAApprovalDigest: row.stage_a_approval_digest,
       ...(row.signed_tx === null ? {} : { signedTx: row.signed_tx }),
       ...(row.signed_tx_hash === null ? {} : { signedTxHash: row.signed_tx_hash }),
       ...(row.l1_tx_hash === null ? {} : { l1TxHash: row.l1_tx_hash }),

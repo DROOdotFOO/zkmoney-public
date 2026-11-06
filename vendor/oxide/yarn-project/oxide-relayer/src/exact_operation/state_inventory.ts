@@ -8,10 +8,12 @@ import { z } from 'zod';
 const sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const artifactSchema = z.strictObject({
   path: z.string().regex(/^[A-Za-z0-9._/-]{1,512}$/),
-  mutable: z.boolean(),
   present: z.boolean(),
   size: z.number().int().nonnegative().optional(),
   sha256: sha256.optional(),
+  uid: z.number().int().nonnegative().optional(),
+  gid: z.number().int().nonnegative().optional(),
+  mode: z.string().regex(/^[0-7]{4}$/).optional(),
 });
 const mountSchema = z.strictObject({
   destination: z.string().min(1),
@@ -26,7 +28,7 @@ const environmentSchema = z.strictObject({
   valueSha256: sha256,
 });
 const inventorySchema = z.strictObject({
-  schema: z.literal('oxide-relayer.state-inventory.v2'),
+  schema: z.literal('oxide-relayer.state-inventory.v3'),
   container: z.strictObject({
     capAdd: z.array(z.string()),
     capDrop: z.array(z.string()),
@@ -88,13 +90,20 @@ export async function verifyStateInventory(
   for (const artifact of inventory.artifacts) {
     const filename = path.join(dataDirectory, artifact.path);
     const present = actualPaths.includes(artifact.path);
-    if (!artifact.mutable && present !== artifact.present) {
+    if (present !== artifact.present) {
       throw new Error(`Canonical relayer state artifact presence changed: ${artifact.path}`);
     }
-    if (!artifact.mutable && present) {
+    if (present) {
       const metadata = await lstat(filename);
       const digest = await fileDigest(filename);
-      if (metadata.size !== artifact.size || digest !== artifact.sha256) {
+      const mode = (metadata.mode & 0o7777).toString(8).padStart(4, '0');
+      if (
+        metadata.size !== artifact.size ||
+        metadata.uid !== artifact.uid ||
+        metadata.gid !== artifact.gid ||
+        mode !== artifact.mode ||
+        digest !== artifact.sha256
+      ) {
         throw new Error(`Canonical relayer state artifact changed: ${artifact.path}`);
       }
     }
@@ -106,7 +115,7 @@ export async function verifyStateInventory(
   }
   return {
     stateInventoryDigest: `sha256:${createHash('sha256')
-      .update('oxide-relayer-state-inventory-v2\0')
+      .update('oxide-relayer-state-inventory-v3\0')
       .update(input)
       .digest('hex')}`,
     canonicalStateDigest,
@@ -139,11 +148,12 @@ function validateArtifacts(artifacts: StateInventory['artifacts']): void {
     if (artifact.path.startsWith('/') || artifact.path.split('/').includes('..')) {
       throw new Error('State inventory artifact path escapes the state directory');
     }
-    if (artifact.present !== (artifact.size !== undefined && artifact.sha256 !== undefined)) {
+    const metadata = [artifact.size, artifact.sha256, artifact.uid, artifact.gid, artifact.mode];
+    if (artifact.present !== metadata.every(value => value !== undefined)) {
       throw new Error('State inventory artifact presence metadata is inconsistent');
     }
   }
-  if (!artifacts.some(artifact => !artifact.mutable && /^oxide-relayer-.*\.sqlite3$/.test(artifact.path))) {
+  if (!artifacts.some(artifact => /^oxide-relayer-.*\.sqlite3$/.test(artifact.path))) {
     throw new Error('State inventory contains no canonical portal database');
   }
 }
@@ -178,9 +188,12 @@ async function fileDigest(filename: string): Promise<`sha256:${string}`> {
 }
 
 function canonicalDigest(artifacts: StateInventory['artifacts']): `sha256:${string}` {
-  const digest = createHash('sha256').update('oxide-relayer-canonical-state-v1\0');
-  for (const artifact of artifacts.filter(candidate => !candidate.mutable)) {
-    digest.update(`${artifact.path}\0${artifact.present ? artifact.size : '-'}\0${artifact.sha256 ?? '-'}\0`);
+  const digest = createHash('sha256').update('oxide-relayer-canonical-state-v2\0');
+  for (const artifact of artifacts) {
+    digest.update(
+      `${artifact.path}\0${artifact.present ? artifact.size : '-'}\0${artifact.sha256 ?? '-'}\0` +
+        `${artifact.uid ?? '-'}\0${artifact.gid ?? '-'}\0${artifact.mode ?? '-'}\0`,
+    );
   }
   return `sha256:${digest.digest('hex')}`;
 }

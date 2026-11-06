@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,20 +17,21 @@ async function fixture() {
   const databaseName = `oxide-relayer-0x${'11'.repeat(20)}.sqlite3`;
   const database = Buffer.from('canonical database');
   await writeFile(join(dataDirectory, databaseName), database, { mode: 0o600 });
+  const metadata = await lstat(join(dataDirectory, databaseName));
   const artifacts = [
     {
       path: databaseName,
-      mutable: false,
       present: true,
       size: database.length,
       sha256: digest(database),
+      uid: metadata.uid,
+      gid: metadata.gid,
+      mode: (metadata.mode & 0o7777).toString(8).padStart(4, '0'),
     },
-    { path: 'exact-operation.sqlite3', mutable: true, present: false },
-    { path: 'generic-submission.sqlite3', mutable: true, present: false },
-  ].sort((left, right) => left.path.localeCompare(right.path));
+  ];
   const canonicalStateDigest = canonicalDigest(artifacts);
   const inventory = {
-    schema: 'oxide-relayer.state-inventory.v2',
+    schema: 'oxide-relayer.state-inventory.v3',
     container: {
       capAdd: [],
       capDrop: ['ALL'],
@@ -91,7 +92,7 @@ describe('state inventory', () => {
     const { dataDirectory, manifest, inventory, input } = await fixture();
     await expect(verifyStateInventory(manifest, dataDirectory)).resolves.toEqual({
       stateInventoryDigest: `sha256:${createHash('sha256')
-        .update('oxide-relayer-state-inventory-v2\0')
+        .update('oxide-relayer-state-inventory-v3\0')
         .update(input)
         .digest('hex')}`,
       canonicalStateDigest: inventory.canonicalStateDigest,
@@ -104,12 +105,12 @@ describe('state inventory', () => {
     await expect(verifyStateInventory(manifest, dataDirectory)).rejects.toThrow('Unrecognized relayer state artifact');
   });
 
-  it('allows the approved exact journal to appear without changing canonical state', async () => {
-    const { dataDirectory, manifest, inventory } = await fixture();
-    await writeFile(join(dataDirectory, 'exact-operation.sqlite3'), 'append-only control state');
-    await expect(verifyStateInventory(manifest, dataDirectory)).resolves.toMatchObject({
-      canonicalStateDigest: inventory.canonicalStateDigest,
-    });
+  it('refuses an exact journal beside canonical state', async () => {
+    const { dataDirectory, manifest } = await fixture();
+    await writeFile(join(dataDirectory, 'exact-operation.sqlite3'), 'misplaced control state');
+    await expect(verifyStateInventory(manifest, dataDirectory)).rejects.toThrow(
+      'Unrecognized relayer state artifact',
+    );
   });
 
   it('refuses any byte change to unrelated canonical state', async () => {
@@ -124,9 +125,12 @@ function digest(input: Buffer): `sha256:${string}` {
 }
 
 function canonicalDigest(artifacts: Array<Record<string, unknown>>): `sha256:${string}` {
-  const digestValue = createHash('sha256').update('oxide-relayer-canonical-state-v1\0');
-  for (const artifact of artifacts.filter(candidate => candidate.mutable === false)) {
-    digestValue.update(`${artifact.path}\0${artifact.present ? artifact.size : '-'}\0${artifact.sha256 ?? '-'}\0`);
+  const digestValue = createHash('sha256').update('oxide-relayer-canonical-state-v2\0');
+  for (const artifact of artifacts) {
+    digestValue.update(
+      `${artifact.path}\0${artifact.present ? artifact.size : '-'}\0${artifact.sha256 ?? '-'}\0` +
+        `${artifact.uid ?? '-'}\0${artifact.gid ?? '-'}\0${artifact.mode ?? '-'}\0`,
+    );
   }
   return `sha256:${digestValue.digest('hex')}`;
 }

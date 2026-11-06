@@ -149,6 +149,9 @@ export class ExactL1Execution implements ExactOperationExecution {
       tokenWeiPerEth: BigInt(approval.economics.tokenWeiPerEth),
     });
     const nonce = await this.client.getTransactionCount({ address: account.address, blockTag: 'pending' });
+    if (nonce !== approval.runtime.expectedNonce) {
+      throw new Error('Exact-operation pending nonce differs from the approved runtime identity');
+    }
     const chainId = approvedSigningChainId(approval, this.chainId);
     const serialized = await this.limits.signL1Transaction(() =>
       account.signTransaction({

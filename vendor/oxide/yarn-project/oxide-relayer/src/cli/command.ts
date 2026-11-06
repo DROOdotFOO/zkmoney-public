@@ -4,6 +4,7 @@ import { EthAddress } from '@aztec-labs/foundation/eth-address';
 import { Command } from 'commander';
 
 import type { RunExactOperationConfig } from '../exact_operation/run.js';
+import { loadAztecNodeUrl } from '../exact_operation/witness_configuration.js';
 
 import type { PredicateScreenerConfig } from '../l1_operations/predicate_screener.js';
 import { toProverRunConfig } from '../prover/cli.js';
@@ -51,10 +52,12 @@ export function createCliProgram(
       new Command('relay-exact')
         .description('submit one approved finalized L1 operation without discovery or retry')
         .requiredOption('--bundle-fd <fd>', 'inherited descriptor containing the signed one-run approval', integerFd)
+        .requiredOption('--canonical-state <path>', 'read-only canonical state root')
+        .requiredOption('--control-dir <path>', 'owner-only exact-operation control root')
         .allowExcessArguments(false)
         .action(async options => {
           try {
-            await runExact(exactConfigFromEnvironment(options));
+            await runExact(await exactConfigFromEnvironment(options));
           } catch {
             throw new Error('relay-exact failed closed; sensitive failure details suppressed');
           }
@@ -212,18 +215,24 @@ function missing(label: string): never {
   throw new Error(`missing required config: ${label}`);
 }
 
-function exactConfigFromEnvironment(options: { bundleFd: number }): RunExactOperationConfig {
+async function exactConfigFromEnvironment(options: {
+  bundleFd: number;
+  canonicalState: string;
+  controlDir: string;
+}): Promise<RunExactOperationConfig> {
   const signer = process.env.OXIDE_RELAYER_SIGNER ?? 'env';
   if (signer !== 'env' && signer !== 'keystore') {
     throw new Error("OXIDE_RELAYER_SIGNER must be 'env' or 'keystore' for relay-exact");
   }
   return {
     bundleFd: options.bundleFd,
+    canonicalState: options.canonicalState,
+    controlDir: options.controlDir,
     deploymentEnvManifestUrl: requiredEnv('OXIDE_DEPLOYMENT_ENV_MANIFEST_URL'),
     portal: EthAddress.fromString(requiredEnv('OXIDE_PORTAL')),
     readL1RpcUrl: requiredEnv('READ_L1_RPC_URL'),
     submissionL1RpcUrl: process.env.OXIDE_EXACT_SUBMISSION_L1_RPC_URL,
-    aztecNodeUrl: requiredEnv('AZTEC_NODE_URL'),
+    aztecNodeUrl: await loadAztecNodeUrl(),
     aztecNodeApiKey: aztecNodeApiKeyFromEnv(),
     signer: {
       backend: signer,

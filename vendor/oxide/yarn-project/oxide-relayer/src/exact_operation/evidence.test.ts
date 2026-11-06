@@ -16,6 +16,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import type { ExactOperationApproval } from './contract.js';
 import { deriveExactOperationObservation } from './evidence.js';
+import { exactApprovalFixture } from './test_fixture.js';
 
 const portal = EthAddress.fromString('0x1111111111111111111111111111111111111111');
 const payoutToken = EthAddress.fromString('0x8888888888888888888888888888888888888888');
@@ -36,43 +37,19 @@ const operation: BroadcastL1Operation = {
   }),
 };
 const operationId = computeL1OperationId(operation, sourceTxHash);
+const baseApproval = exactApprovalFixture();
 const approval: ExactOperationApproval = {
-  schema: 'oxide-relayer.exact-operation.v2',
-  approvalNonce: `0x${'aa'.repeat(32)}`,
-  runtime: {
-    host: 'ovh-ubuntu1',
-    sourceCommit: '0123456789abcdef0123456789abcdef01234567',
-    imageDigest: `sha256:${'11'.repeat(32)}`,
-    signerAddress: `0x${'10'.repeat(20)}`,
-    schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v2+lease-v1',
-    stateInventoryDigest: `sha256:${'22'.repeat(32)}`,
-    canonicalStateDigest: `sha256:${'33'.repeat(32)}`,
-  },
-  witness: {
-    bucket: 'oxide-approval-witness',
-    region: 'us-east-1',
-    expectedOwner: '123456789012',
-    prefix: 'oxide-relayer/production',
-    retentionMode: 'COMPLIANCE',
-    retainUntil: '9999-12-31T23:59:59.000Z',
-  },
+  ...baseApproval,
   deployment: {
-    label: 'dep-v6',
-    chainId: '1',
-    rollupVersion: '2070860440',
+    ...baseApproval.deployment,
     portal: portal.toString().toLowerCase(),
-    l2Token: `0x${'22'.repeat(32)}`,
-    broadcaster: `0x${'33'.repeat(32)}`,
-    operationExecutor: '0x4444444444444444444444444444444444444444',
   },
   operation: {
+    ...baseApproval.operation,
     id: operationId,
-    kind: 'withdrawal_finalization',
     sourceTxHash: sourceTxHash.toString(),
     sourceBlockNumber: '1234',
     sourceBlockHash: `0x${'77'.repeat(32)}`,
-    sourceFinalized: true,
-    sourceEventCount: 1,
     target: portal.toString().toLowerCase(),
     payoutToken: payoutToken.toString().toLowerCase(),
     calldataSha256: `0x${createHash('sha256').update(operation.calldata).digest('hex')}`,
@@ -87,6 +64,8 @@ const approval: ExactOperationApproval = {
   economics: {
     executorVersion: 'gas-to-cover',
     minimumPayout: '1',
+    minimumProceeds: '1',
+    executorFeeCeiling: '30000000000000000',
     maximumGasToCover: '500000',
     tokenWeiPerEth: '1000000000000000000',
     maximumGas: '1000000',
@@ -104,6 +83,7 @@ function evidence(overrides: Record<string, unknown> = {}) {
     sourceTxHash,
     sourceBlockNumber: 1234n,
     sourceBlockHash: approval.operation.sourceBlockHash,
+    sourceBlockTimestamp: approval.operation.sourceBlockTimestamp,
     provenBlockNumber: 1234n,
     operations: [operation],
     ...overrides,

@@ -18,6 +18,7 @@ const CLAIM_SCHEMA = 'oxide-relayer.exact-operation-consumption.v2' as const;
 export interface ExactApprovalClaim {
   schema: typeof CLAIM_SCHEMA;
   approvalCommitment: ExactApprovalCommitment;
+  stageAApprovalDigest: string;
   chainId: string;
   rollupVersion: string;
   deploymentLabel: string;
@@ -41,6 +42,7 @@ export interface ExactApprovalClaimReceipt {
 }
 
 export interface ExactApprovalClaimStore {
+  readonly claimPrefix?: string;
   assertComplianceRetention(): Promise<void>;
   createIfAbsent(args: {
     key: string;
@@ -69,6 +71,7 @@ export function exactApprovalClaim(
   return {
     schema: CLAIM_SCHEMA,
     approvalCommitment,
+    stageAApprovalDigest: approval.stageA.approvalDigest,
     chainId: approval.deployment.chainId,
     rollupVersion: approval.deployment.rollupVersion,
     deploymentLabel: approval.deployment.label,
@@ -87,6 +90,7 @@ export function exactApprovalClaim(
 export function exactApprovalClaimKey(
   approval: ExactOperationApproval,
   approvalCommitment: ExactApprovalCommitment,
+  prefix = 'exact-operation',
 ): string {
   const claim = exactApprovalClaim(approval, approvalCommitment);
   const identity = canonicalJson({
@@ -97,7 +101,7 @@ export function exactApprovalClaimKey(
     rollupVersion: claim.rollupVersion,
   });
   const digest = createHash('sha256').update(CLAIM_DOMAIN).update(identity).digest('hex');
-  return `${approval.witness.prefix}/exact-operation-consumption/${digest}.json`;
+  return `${prefix}/exact-operation-consumption/${digest}.json`;
 }
 
 export async function consumeExactApprovalExternally(
@@ -109,7 +113,7 @@ export async function consumeExactApprovalExternally(
   const body = canonicalJson(exactApprovalClaim(approval, approvalCommitment));
   const checksumSha256 = createHash('sha256').update(body).digest('base64');
   const retainUntil = new Date(approval.witness.retainUntil);
-  const key = exactApprovalClaimKey(approval, approvalCommitment);
+  const key = exactApprovalClaimKey(approval, approvalCommitment, store.claimPrefix);
   const { versionId } = await store.createIfAbsent({ key, body, checksumSha256, retainUntil });
   await store.verify({ key, versionId, checksumSha256, retainUntil });
   return {
@@ -122,6 +126,7 @@ export async function consumeExactApprovalExternally(
 }
 
 export class S3ExactApprovalClaimStore implements ExactApprovalClaimStore {
+  readonly claimPrefix: string;
   private readonly client: S3Client;
 
   constructor(
@@ -129,12 +134,14 @@ export class S3ExactApprovalClaimStore implements ExactApprovalClaimStore {
       bucket: string;
       region: string;
       expectedOwner: string;
+      prefix?: string;
     },
     options: {
       credentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
       client?: S3Client;
     } = {},
   ) {
+    this.claimPrefix = config.prefix ?? 'exact-operation';
     this.client =
       options.client ??
       new S3Client({
@@ -338,6 +345,7 @@ function parseExactApprovalClaim(body: string): ExactApprovalClaim {
   const keys: Array<keyof ExactApprovalClaim> = [
     'schema',
     'approvalCommitment',
+    'stageAApprovalDigest',
     'chainId',
     'rollupVersion',
     'deploymentLabel',

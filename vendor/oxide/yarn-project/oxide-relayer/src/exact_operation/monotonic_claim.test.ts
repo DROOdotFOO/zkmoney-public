@@ -1,7 +1,6 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import { ListObjectVersionsCommand, PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 
-import type { ExactOperationApproval } from './contract.js';
 import {
   ExactApprovalClaimCollisionError,
   type ExactApprovalClaimStore,
@@ -9,66 +8,9 @@ import {
   exactApprovalClaimKey,
   S3ExactApprovalClaimStore,
 } from './monotonic_claim.js';
+import { exactApprovalFixture } from './test_fixture.js';
 
-const approval: ExactOperationApproval = {
-  schema: 'oxide-relayer.exact-operation.v2',
-  approvalNonce: `0x${'aa'.repeat(32)}`,
-  runtime: {
-    host: 'relayer-1',
-    sourceCommit: 'a'.repeat(40),
-    imageDigest: `sha256:${'11'.repeat(32)}`,
-    signerAddress: `0x${'10'.repeat(20)}`,
-    schemaIdentity: 'oxide-relayer.sqlite.portal-v4+exact-v2+generic-v2+lease-v1',
-    stateInventoryDigest: `sha256:${'22'.repeat(32)}`,
-    canonicalStateDigest: `sha256:${'33'.repeat(32)}`,
-  },
-  witness: {
-    bucket: 'oxide-approval-witness',
-    region: 'us-east-1',
-    expectedOwner: '123456789012',
-    prefix: 'oxide-relayer/production',
-    retentionMode: 'COMPLIANCE',
-    retainUntil: '9999-12-31T23:59:59.000Z',
-  },
-  deployment: {
-    label: 'dep-v6',
-    chainId: '1',
-    rollupVersion: '6',
-    portal: `0x${'33'.repeat(20)}`,
-    l2Token: `0x${'44'.repeat(32)}`,
-    broadcaster: `0x${'55'.repeat(32)}`,
-    operationExecutor: `0x${'66'.repeat(20)}`,
-  },
-  operation: {
-    id: `0x${'77'.repeat(32)}`,
-    kind: 'withdrawal_finalization',
-    sourceTxHash: `0x${'88'.repeat(32)}`,
-    sourceBlockNumber: '100',
-    sourceBlockHash: `0x${'99'.repeat(32)}`,
-    sourceFinalized: true,
-    sourceEventCount: 1,
-    target: `0x${'ab'.repeat(20)}`,
-    payoutToken: `0x${'bc'.repeat(20)}`,
-    calldataSha256: `0x${'cd'.repeat(32)}`,
-  },
-  withdrawal: {
-    executor: `0x${'de'.repeat(20)}`,
-    recipientCommitment: `0x${'ef'.repeat(32)}`,
-    amount: '1000',
-    proverTip: '1',
-    relayerTip: '2',
-  },
-  economics: {
-    executorVersion: 'legacy',
-    minimumPayout: '0',
-    maximumGasToCover: '0',
-    tokenWeiPerEth: '0',
-    maximumGas: '100000',
-    maximumFeePerGas: '100',
-    maximumPriorityFeePerGas: '2',
-    maximumTotalFee: '10000000',
-  },
-};
+const approval = exactApprovalFixture();
 const approvalCommitment = `sha256:${'ca'.repeat(32)}` as const;
 
 class MemoryClaimStore implements ExactApprovalClaimStore {

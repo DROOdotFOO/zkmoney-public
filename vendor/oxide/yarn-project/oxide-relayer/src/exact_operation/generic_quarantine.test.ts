@@ -21,6 +21,7 @@ const claim = {
   claim: {
     schema: 'oxide-relayer.exact-operation-consumption.v2' as const,
     approvalCommitment: `sha256:${'11'.repeat(32)}`,
+    stageAApprovalDigest: `sha256:${'12'.repeat(32)}`,
     chainId: '1',
     rollupVersion: '2',
     deploymentLabel: 'reviewed',
@@ -45,8 +46,11 @@ const restoreRuntime = {
   host: 'relayer-safe',
   sourceCommit: '55'.repeat(20),
   imageDigest: `sha256:${'66'.repeat(32)}`,
+  runtimeUid: 65532,
+  runtimeGid: 65532,
   signerAddress: `0x${'10'.repeat(20)}`,
   ...runtime,
+  expectedNonce: 7,
 };
 
 function record(state: ExactOperationRecord['state'] = 'confirmed'): ExactOperationRecord {
@@ -54,6 +58,7 @@ function record(state: ExactOperationRecord['state'] = 'confirmed'): ExactOperat
     state,
     operationId: claim.claim.operationId,
     approvalCommitment: claim.claim.approvalCommitment,
+    stageAApprovalDigest: claim.claim.stageAApprovalDigest,
     signedTxHash: `0x${'99'.repeat(32)}`,
     l1TxHash: `0x${'99'.repeat(32)}`,
     witness: receipt,
@@ -62,7 +67,7 @@ function record(state: ExactOperationRecord['state'] = 'confirmed'): ExactOperat
 
 function marker(records: ExactOperationRecord[]): RestoreMarker {
   return {
-    schema: 'oxide-relayer.generic-restore-marker.v1',
+    schema: 'oxide-relayer.generic-restore-marker.v2',
     restoreEvidenceDigest: `sha256:${'aa'.repeat(32)}`,
     ...genericRestoreDigests([claim], records),
     ...runtime,

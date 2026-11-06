@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { chmod, lstat, open as openFile, readFile, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -26,11 +27,17 @@ export class RuntimeLease {
     readonly path: string,
     readonly kind: RuntimeKind,
     private readonly db: SqliteDatabase,
+    private readonly handoffPath: string,
+    private readonly preserveHandoff: boolean,
   ) {
     this.exactHandoffActivated = kind === 'generic';
   }
 
-  static async acquire(filename: string, kind: RuntimeKind): Promise<RuntimeLease> {
+  static async acquire(
+    filename: string,
+    kind: RuntimeKind,
+    options: { cleanHandoffPath?: string; preserveCleanHandoff?: boolean } = {},
+  ): Promise<RuntimeLease> {
     const resolved = path.resolve(filename);
     await assertSecureLeasePath(resolved);
     try {
@@ -60,15 +67,15 @@ export class RuntimeLease {
       await assertEmptyOrExactLease(db);
       await db.exec(RUNTIME_LEASE_TABLE_SQL.replace('CREATE TABLE ', 'CREATE TABLE IF NOT EXISTS '));
       await db.exec('BEGIN EXCLUSIVE');
-      const handoffPath = cleanHandoffPath(resolved);
+      const handoffPath = path.resolve(options.cleanHandoffPath ?? cleanHandoffPath(resolved));
       if (kind === 'exact-operation') {
-        await assertCleanHandoff(handoffPath);
+        await assertCleanHandoff(handoffPath, options.preserveCleanHandoff === true);
       } else {
         await removeFile(handoffPath);
         await setLeaseKind(db, kind);
       }
       await chmod(resolved, 0o600);
-      return new RuntimeLease(resolved, kind, db);
+      return new RuntimeLease(resolved, kind, db, handoffPath, options.preserveCleanHandoff === true);
     } catch (error) {
       await db.close();
       if (isBusy(error)) {
@@ -82,9 +89,10 @@ export class RuntimeLease {
     if (this.kind !== 'exact-operation' || this.exactHandoffActivated) {
       throw new Error('Exact-operation handoff activation is not available');
     }
-    const handoffPath = cleanHandoffPath(this.path);
-    await assertCleanHandoff(handoffPath);
-    await removeFile(handoffPath);
+    await assertCleanHandoff(this.handoffPath, this.preserveHandoff);
+    if (!this.preserveHandoff) {
+      await removeFile(this.handoffPath);
+    }
     await setLeaseKind(this.db, this.kind);
     this.exactHandoffActivated = true;
   }
@@ -201,8 +209,35 @@ function normalizeSql(sql: string): string {
   return sql.replace(/\s+/g, ' ').trim();
 }
 
-async function assertCleanHandoff(filename: string): Promise<void> {
+export async function assertCanonicalCleanHandoff(filename: string, expectedOwnerUid = 0): Promise<`sha256:${string}`> {
+  const metadata = await lstat(filename);
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1 ||
+    metadata.uid !== expectedOwnerUid ||
+    (metadata.mode & 0o777) !== 0o444
+  ) {
+    throw new Error('clean generic handoff is not one root-owned read-only file');
+  }
+  const contents = await readFile(filename);
+  const handoff = JSON.parse(contents.toString('utf8')) as {
+    schema?: unknown;
+    kind?: unknown;
+    clean?: unknown;
+  };
+  if (handoff.schema !== 1 || handoff.kind !== 'generic' || handoff.clean !== true) {
+    throw new Error('invalid clean generic handoff marker');
+  }
+  return `sha256:${createHash('sha256').update(contents).digest('hex')}`;
+}
+
+async function assertCleanHandoff(filename: string, readOnlyCanonical = false): Promise<void> {
   try {
+    if (readOnlyCanonical) {
+      await assertCanonicalCleanHandoff(filename);
+      return;
+    }
     await assertSecureFile(filename, 'clean generic handoff');
     const handoff = JSON.parse(await readFile(filename, 'utf8')) as {
       schema?: unknown;

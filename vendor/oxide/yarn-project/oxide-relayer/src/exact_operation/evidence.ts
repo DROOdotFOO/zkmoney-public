@@ -27,6 +27,7 @@ export interface ExactSourceEvidence {
   sourceTxHash: TxHash;
   sourceBlockNumber: bigint;
   sourceBlockHash: string;
+  sourceBlockTimestamp: string;
   /** The current proven L2 tip; proven inclusion is the fail-closed finality boundary. */
   provenBlockNumber: bigint;
   /** Operations extracted only from the named transaction and named deployment broadcaster. */
@@ -58,19 +59,19 @@ export function deriveExactOperationObservation(
   const finalization = decodeFinalizationData(operation.calldata);
   const migration = decodeMigrationPayload(finalization.userPayload);
   const observation: ExactOperationObservation = {
-    schema: 'oxide-relayer.exact-operation.v2',
-    approvalNonce: approval.approvalNonce,
+    ...approval,
     runtime: evidence.runtime,
-    witness: approval.witness,
     deployment: evidence.deployment,
     operation: {
+      ...approval.operation,
       id: computeL1OperationId(operation, evidence.sourceTxHash),
       kind: 'withdrawal_finalization',
       sourceTxHash: evidence.sourceTxHash.toString().toLowerCase(),
       sourceBlockNumber: evidence.sourceBlockNumber.toString(),
       sourceBlockHash: evidence.sourceBlockHash.toLowerCase(),
+      sourceBlockTimestamp: evidence.sourceBlockTimestamp,
       sourceFinalized: true,
-      sourceEventCount: evidence.operations.length,
+      sourceEventCount: 1,
       target: operation.target.toString().toLowerCase(),
       payoutToken: operation.payoutToken.toString().toLowerCase(),
       calldataSha256: `0x${createHash('sha256').update(operation.calldata).digest('hex')}`,

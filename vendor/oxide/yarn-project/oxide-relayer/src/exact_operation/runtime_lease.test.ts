@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from '@jest/globals';
 import { open } from 'sqlite';
 import sqlite3Driver from 'sqlite3';
 
-import { RuntimeLease, cleanHandoffPath } from './runtime_lease.js';
+import { RuntimeLease, assertCanonicalCleanHandoff, cleanHandoffPath } from './runtime_lease.js';
 
 const directories: string[] = [];
 
@@ -69,6 +69,17 @@ describe('RuntimeLease', () => {
 
 
 
+
+  it('reads a canonical read-only handoff marker without mutating it', async () => {
+    const path = await leasePath();
+    const marker = `${path}.canonical-clean-handoff.json`;
+    const body = JSON.stringify({ schema: 1, kind: 'generic', clean: true });
+    await writeFile(marker, body, { mode: 0o444 });
+    await chmod(marker, 0o444);
+
+    await expect(assertCanonicalCleanHandoff(marker, process.getuid?.() ?? 0)).resolves.toMatch(/^sha256:[0-9a-f]{64}$/);
+    await expect(readFile(marker, 'utf8')).resolves.toBe(body);
+  });
 
   it('refuses exact-operation startup without a clean generic handoff', async () => {
     const path = await leasePath();

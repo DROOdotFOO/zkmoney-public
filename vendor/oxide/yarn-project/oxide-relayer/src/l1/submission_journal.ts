@@ -290,6 +290,36 @@ export class GenericSubmissionJournal implements DurableSubmissionJournal {
   }
 }
 
+export async function assertNoUnresolvedGenericSubmissions(filename: string): Promise<void> {
+  const resolved = path.resolve(filename);
+  try {
+    const metadata = await lstat(resolved);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+      throw new Error('Canonical generic submission journal must be one regular file');
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  const mode = sqlite3Driver.OPEN_READONLY | sqlite3Driver.OPEN_FULLMUTEX | sqlite3Driver.OPEN_URI;
+  const db = await open({
+    filename: `file:${resolved}?mode=ro&immutable=1&nofollow=1`,
+    driver: sqlite3Driver.Database,
+    mode,
+  });
+  try {
+    await assertEmptyOrExact(db);
+    const unresolved = await db.get<{ operation_identity: string }>(
+      "SELECT operation_identity FROM submissions WHERE state NOT IN ('confirmed', 'reverted', 'dropped_or_replaced') ORDER BY created_at LIMIT 1",
+    );
+    if (unresolved) {
+      throw new Error('A durable L1 submission has an unresolved outcome; signing and submission are blocked');
+    }
+  } finally {
+    await db.close();
+  }
+}
+
 async function assertSecureParent(filename: string): Promise<void> {
   const parent = path.dirname(filename);
   const [metadata, canonical] = await Promise.all([lstat(parent), realpath(parent)]);

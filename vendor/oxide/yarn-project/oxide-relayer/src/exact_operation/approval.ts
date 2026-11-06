@@ -2,7 +2,7 @@ import { type KeyLike, createHash, sign, verify } from 'node:crypto';
 
 import type { ExactOperationApproval } from './contract.js';
 
-const APPROVAL_DOMAIN = 'oxide-relayer/exact-operation-approval/v1\0';
+const APPROVAL_DOMAIN = 'oxide-relayer/exact-operation-approval/v4\0';
 const SIGNATURE_PREFIX = 'ed25519:';
 
 export type ExactApprovalCommitment = `sha256:${string}`;
@@ -32,20 +32,16 @@ export function assertExactApprovalToken(
 
 function parseSignature(received: string): Buffer {
   const token = received.trim();
-  if (!token.startsWith(SIGNATURE_PREFIX)) {
+  if (!/^ed25519:[A-Za-z0-9_-]{86}$/.test(token)) {
     throw new Error('Exact-operation approval signature is malformed');
   }
-  let signature: Buffer;
-  try {
-    signature = Buffer.from(token.slice(SIGNATURE_PREFIX.length), 'base64url');
-  } catch {
-    throw new Error('Exact-operation approval signature is malformed');
-  }
+  const signature = Buffer.from(token.slice(SIGNATURE_PREFIX.length), 'base64url');
   if (signature.length !== 64) {
     throw new Error('Exact-operation approval signature is malformed');
   }
   return signature;
 }
+
 
 function approvalMessage(approval: ExactOperationApproval): Buffer {
   return Buffer.from(`${APPROVAL_DOMAIN}${stableJson(approval)}`, 'utf8');

@@ -53,8 +53,9 @@ Start the relayer before clients broadcast operations and check that its L2 curs
 
 `relay-exact` is a separate one-shot runtime for an already-finalized withdrawal operation. It does not start the
 L1-operation discovery loop, historical supervisors, FPC funding, epoch proofs, fake-send mode, or a retry loop. It
-does not open the generic relayer SQLite files. The exact runtime uses a dedicated schema-versioned journal and a
-shared runtime lease.
+opens canonical generic state only through the fixed read-only `/canonical` mount for preflight and quarantine
+checks. Exact leases, journals, receipts, and control markers exist only under the separate writable `/control`
+mount.
 
 The operation identity is not available before the L2 exit transaction is submitted. Derive it after inclusion from
 the exact Portal deployment, source transaction hash and block, the single Broadcaster call, its calldata, and the
@@ -62,7 +63,7 @@ resulting operation ID. The source block must be at or below the proven L2 tip, 
 transaction effect, and an Outbox witness must exist. Recipient plus amount is not an operation identity.
 
 The approval and Ed25519 approval signature are accepted only through a strict inherited `--bundle-fd`. The
-root-owned authority in the immutable image is not caller-selectable. Approval schema v2 binds an approval nonce,
+root-owned authority in the immutable image is not caller-selectable. Approval schema v4 binds an approval nonce,
 source commit, immutable image digest, singleton host, schema identity, complete state-inventory digest, canonical
 state digest, Portal, exact operation, and an S3 Object Lock witness authority.
 
@@ -77,12 +78,29 @@ collision, read-after-write failure, deletion markers, incomplete listings, loca
 or any witness/journal inconsistency fails closed. The local receipt remains in the mode-0600 exact
 journal.
 
-Runtime identity comes from fixed image/runtime paths. The complete inventory manifest binds every declared bind
-mount, named volume, tmpfs, Compose project identity, canonical SQLite/WAL/SHM file, historical database, approved
-exporter ledger, exact journal, generic ambiguity journal, signer nonce record, and control artifact. Unknown mounts,
-unknown files, symlinks, hard links, missing canonical files, or changed canonical bytes are rejected. The launcher
-must independently enforce one host and one immutable image digest with a read-only root filesystem and no `/app`
-mount. Approval material never enters inventory, environment files, generated Compose, argv, or logs.
+Runtime identity comes from fixed image/runtime paths. The complete inventory manifest binds every canonical
+SQLite/WAL/SHM file, historical database, generic ambiguity journal, exporter ledger, signer nonce record, mount,
+and Compose identity. Unknown mounts, unknown files, symlinks, hard links, missing canonical files, owner or mode
+drift, or changed canonical bytes are rejected. `/canonical`, `/control`, `/run/config/oxide-relayer`,
+`/run/secrets/oxide-relayer`, and `/tmp` must be distinct, canonical mount points; path overlap, symlink aliases,
+bind aliases, and device/inode aliases fail closed. The launcher must independently enforce one host and one
+immutable image digest with a read-only root filesystem and no `/app` mount. Approval material never enters
+inventory, environment files, generated Compose, argv, logs, witness records, or canonical state.
+
+The image starts only as container root with `SETUID` and `SETGID`; every other capability is dropped and
+`no-new-privileges` is mandatory. Before opening credentials, the initializer validates all mount and runtime
+identities. It opens only approved root-owned mode-0400 files beneath root-owned mode-0700 configuration and secret
+directories, retains those file descriptors in process memory, clears supplementary groups, and drops permanently
+to dedicated non-login UID/GID 65532. UID/GID 0 and 1000 are prohibited. The final process verifies that all real,
+effective, saved, filesystem, permitted, inheritable, effective, bounding, and ambient privilege sets are empty and
+that root cannot be regained. The host must reserve UID/GID 65532 exclusively for this runtime.
+
+Canonical state is mounted read-only. The final process cannot create SQLite journals, WAL/SHM files, locks,
+temporary files, migrations, or permission changes beside canonical data. Runtime temporary files use an isolated
+`noexec,nosuid,nodev` tmpfs. Exact writes are restricted to `/control`, which is mode 0700 and owned by the dedicated
+identity. Generic restore requires separate approval, exact terminal evidence, unchanged canonical bytes, no active
+exact lease, and a separately reviewed remount into the generic layout; it never removes exact-operation quarantine
+or performs a migration or permission change.
 
 Every generic L1 send now has the same durable ambiguity contract as exact mode. Before asking the
 account to sign, it fsyncs a `signing` reservation containing operation identity, signer commitment,

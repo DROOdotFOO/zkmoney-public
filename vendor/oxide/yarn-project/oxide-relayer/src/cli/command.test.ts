@@ -22,7 +22,7 @@ describe('createCliProgram', () => {
   });
 
   it('keeps exact-operation approval descriptor-only and starts no generic workers', async () => {
-    const args = ['--bundle-fd', '3'];
+    const args = ['--bundle-fd', '3', '--canonical-state', '/canonical', '--control-dir', '/control'];
     const env = {
       OXIDE_DEPLOYMENT_ENV_MANIFEST_URL: 'https://manifest.example/v6/prod/releases.json',
       OXIDE_PORTAL: '0x0000000000000000000000000000000000000001',
@@ -34,14 +34,15 @@ describe('createCliProgram', () => {
 
     expect(config).not.toHaveProperty('modes');
     expect(config).not.toHaveProperty('disableSubmission');
+    expect(config.canonicalState).toBe('/canonical');
+    expect(config.controlDir).toBe('/control');
     expect(config).not.toHaveProperty('journalPath');
     expect(config).not.toHaveProperty('runtimeLeasePath');
-    expect(config).not.toHaveProperty('approvalTokenFd');
-    expect(config).not.toHaveProperty('runtimeIdentityFd');
     expect(config.bundleFd).toBe(3);
     await expect(parseExactOperationConfig([], env)).rejects.toThrow(/bundle-fd/);
+    await expect(parseExactOperationConfig(['--bundle-fd', '3'], env)).rejects.toThrow(/canonical-state/);
     await expect(
-      parseExactOperationConfig(['--bundle-fd', '3', '--journal', '/tmp/bypass.sqlite3'], env),
+      parseExactOperationConfig([...args, '--journal', '/tmp/bypass.sqlite3'], env),
     ).rejects.toThrow(/unknown option/);
   });
   it('suppresses sensitive exact-operation failure details at the CLI boundary', async () => {
@@ -58,7 +59,12 @@ describe('createCliProgram', () => {
         () => {},
         () => Promise.reject(new Error(sensitive)),
       );
-      const error = await program.parseAsync(['relay-exact', '--bundle-fd', '3'], { from: 'user' }).catch(value => value);
+      const error = await program
+        .parseAsync(
+          ['relay-exact', '--bundle-fd', '3', '--canonical-state', '/canonical', '--control-dir', '/control'],
+          { from: 'user' },
+        )
+        .catch(value => value);
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toBe('relay-exact failed closed; sensitive failure details suppressed');
       expect(String(error)).not.toContain(sensitive);

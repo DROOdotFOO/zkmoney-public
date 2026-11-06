@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.0.2
 
-- Add a fail-closed `relay-exact` runtime for one approved, finalized withdrawal operation.
+- Add a fail-closed fork-only `relay-exact` runtime for one Ed25519-approved v4 withdrawal operation, including signed execution windows and Stage A identity binding.
+- Run the exact process as dedicated UID/GID 65532 after a root-only initializer opens protected inputs, drops privileges and verifies the final no-capability, no-new-privileges state.
+- Split root-owned read-only canonical state and clean handoff evidence from the runtime-owned writable control lease, exact journal and ambiguity evidence.
 - Consume each operation once with a stable operation-scoped conditional S3 claim, compliance Object Lock retention, exact-version verification, and no local-only fallback.
 - Bind source, image, host, expected signer, schema, Portal, operation, complete state inventory, canonical-state digest, approval-signature commitment, and witness authority in approval and monotonic claim evidence without exposing the approval nonce or recipient linkage.
 - Reserve generic signing identity, request digest, signer, chain and nonce durably before signing; persist signed bytes before one raw send; keep public-route and other accepted transactions unresolved until a receipt or proven mined replacement provides a durable terminal outcome.

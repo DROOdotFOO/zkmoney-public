@@ -12,28 +12,25 @@ import { createPublicClient } from 'viem';
 import type { SignerConfig } from '../cli/config.js';
 import { resolveDeploymentEnvManifest } from '../config/deployment_env_manifest.js';
 import { chainFor, getL1PublicClient, l1Transport } from '../l1/client.js';
-import { GenericSubmissionJournal } from '../l1/submission_journal.js';
 import { WithdrawalCompletion } from '../l1_operations/withdrawal_completion.js';
 import { loadSigner } from '../signers/index.js';
 import { assertExactApprovalToken, exactApprovalTokenCommitment } from './approval.js';
-import { assertExactOperationMatches, parseExactOperationApproval } from './contract.js';
+import { assertExactApprovalWindow, assertExactOperationMatches, parseExactOperationApproval } from './contract.js';
 import { ExactL1Execution } from './execution.js';
-import { configuredWitnessAuthority, loadWitnessCredentials } from './generic_quarantine.js';
 import { ExactOperationJournal } from './journal.js';
 import { S3ExactApprovalClaimStore } from './monotonic_claim.js';
 import { ExactOperationObserver } from './observer.js';
-import {
-  EXACT_APPROVAL_AUTHORITY_PATH,
-  EXACT_JOURNAL_PATH,
-  EXACT_RUNTIME_LEASE_PATH,
-  GENERIC_SUBMISSION_JOURNAL_PATH,
-} from './paths.js';
+import { EXACT_APPROVAL_AUTHORITY_PATH } from './paths.js';
 import { loadExactRuntimeIdentity } from './runtime_identity.js';
 import { relayExactOperation } from './runner.js';
-import { RuntimeLease } from './runtime_lease.js';
+import { RuntimeLease, assertCanonicalCleanHandoff } from './runtime_lease.js';
+import { resolveExactStorageRoots } from './storage_roots.js';
+import { loadWitnessConfiguration, loadWitnessCredentials } from './witness_configuration.js';
 
 export interface RunExactOperationConfig {
   bundleFd: number;
+  canonicalState: string;
+  controlDir: string;
   deploymentEnvManifestUrl: string;
   portal: EthAddress;
   readL1RpcUrl: string;
@@ -44,24 +41,30 @@ export interface RunExactOperationConfig {
 }
 
 export async function runExactOperation(config: RunExactOperationConfig): Promise<{ l1TxHash: string }> {
+  const storage = await resolveExactStorageRoots(config.canonicalState, config.controlDir);
   const material = await readApprovalMaterial(config.bundleFd);
   const approval = parseExactOperationApproval(material.approval);
   const approvalToken = material.approvalToken;
   const authority = await readFile(EXACT_APPROVAL_AUTHORITY_PATH, 'utf8');
   assertExactApprovalToken(approval, approvalToken, authority);
+  assertExactApprovalWindow(approval);
   const approvalCommitment = exactApprovalTokenCommitment(approvalToken);
 
-  const lease = await RuntimeLease.acquire(EXACT_RUNTIME_LEASE_PATH, 'exact-operation');
+  const lease = await RuntimeLease.acquire(storage.runtimeLease, 'exact-operation', {
+    cleanHandoffPath: storage.cleanHandoff,
+    preserveCleanHandoff: true,
+  });
   let journal: ExactOperationJournal | undefined;
-  let genericSubmissionJournal: GenericSubmissionJournal | undefined;
   try {
+    const handoffDigest = await assertCanonicalCleanHandoff(storage.cleanHandoff);
+    if (handoffDigest !== approval.stageA.handoffMarkerDigest) {
+      throw new Error('Canonical clean handoff differs from the signed Stage A identity');
+    }
     const runtime = await loadExactRuntimeIdentity();
     assertExactOperationMatches(approval, { ...approval, runtime });
     await lease.activateExactHandoff();
     // Fixed journal schema validation precedes manifest, enclave and signer work.
-    journal = await ExactOperationJournal.open(EXACT_JOURNAL_PATH);
-    genericSubmissionJournal = await GenericSubmissionJournal.open(GENERIC_SUBMISSION_JOURNAL_PATH);
-    await genericSubmissionJournal.assertNoUnresolved();
+    journal = await ExactOperationJournal.open(storage.exactJournal);
     const node = createNodeClient({ url: config.aztecNodeUrl, apiKey: config.aztecNodeApiKey });
     const manifest = await resolveDeploymentEnvManifest({
       deploymentEnvManifestUrl: config.deploymentEnvManifestUrl,
@@ -80,6 +83,8 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
       chainId: chainId.toString(),
       rollupVersion: rollupVersion.toString(),
       portal: publicConfig.portal.toString().toLowerCase(),
+      registry: approval.deployment.registry,
+      manifestDigest: approval.deployment.manifestDigest,
       l2Token: publicConfig.l2Token.toString().toLowerCase(),
       broadcaster: publicConfig.broadcaster.toString().toLowerCase(),
       operationExecutor: publicConfig.operationExecutor.toString().toLowerCase(),
@@ -110,12 +115,11 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
           ),
       ));
     const execution = new ExactL1Execution(observer, loadCompletion, publicClient, loadAccount, Number(chainId), executorVersion);
-    const configuredWitness = configuredWitnessAuthority();
+    const configuredWitness = await loadWitnessConfiguration();
     if (
-      approval.witness.bucket !== configuredWitness.bucket ||
-      approval.witness.region !== configuredWitness.region ||
-      approval.witness.expectedOwner !== configuredWitness.expectedOwner ||
-      approval.witness.prefix !== configuredWitness.prefix
+      approval.witness.configurationDigest !== configuredWitness.configurationDigest ||
+      approval.witness.authorityCommitment !== configuredWitness.authorityCommitment ||
+      config.aztecNodeUrl !== new URL(configuredWitness.aztecNodeUrl).toString()
     ) {
       throw new Error('Approved witness authority does not match reviewed runtime configuration');
     }
@@ -125,7 +129,6 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
     return await relayExactOperation({ approval, approvalCommitment, journal, execution, claimStore });
   } finally {
     await journal?.close();
-    await genericSubmissionJournal?.close();
     await lease.close();
   }
 }

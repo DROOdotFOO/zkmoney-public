@@ -1,7 +1,6 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { lstat, open as openFile, readFile, rename, unlink } from 'node:fs/promises';
 
-import { hostname } from 'node:os';
 import { z } from 'zod';
 
 import { EXACT_DATABASE_SCHEMA_IDENTITY } from './contract.js';
@@ -11,42 +10,36 @@ import {
   type ExactApprovalClaim,
   type ExactApprovalClaimReceipt,
 } from './monotonic_claim.js';
-import {
-  EXACT_APPROVAL_AUTHORITY_PATH,
-  EXACT_DATA_DIRECTORY,
-  EXACT_JOURNAL_PATH,
-  EXACT_RUNTIME_IDENTITY_PATH,
-  EXACT_SOURCE_COMMIT_PATH,
-  EXACT_STATE_INVENTORY_PATH,
-  EXACT_WITNESS_ACCESS_KEY_ID_PATH,
-  EXACT_WITNESS_SECRET_ACCESS_KEY_PATH,
-} from './paths.js';
-import { verifyStateInventory } from './state_inventory.js';
+import { EXACT_APPROVAL_AUTHORITY_PATH, EXACT_CONTROL_DIRECTORY, EXACT_JOURNAL_PATH } from './paths.js';
+import { loadExactRuntimeIdentity } from './runtime_identity.js';
+import { loadWitnessConfiguration, loadWitnessCredentials } from './witness_configuration.js';
 
-const RESTORE_MARKER_PATH = `${EXACT_DATA_DIRECTORY}/generic-restore.json`;
+const RESTORE_MARKER_PATH = `${EXACT_CONTROL_DIRECTORY}/generic-restore.json`;
 const RESTORE_MARKER_TEMP_PATH = `${RESTORE_MARKER_PATH}.tmp`;
-const RESTORE_DOMAIN = 'oxide-relayer/generic-restore-approval/v1\0';
+const RESTORE_DOMAIN = 'oxide-relayer/generic-restore-approval/v2\0';
+const sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 export const restoreRuntimeIdentitySchema = z.strictObject({
   host: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
   sourceCommit: z.string().regex(/^[0-9a-f]{40}$/),
-  imageDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  imageDigest: sha256,
+  runtimeUid: z.number().int().positive().refine(value => value !== 1000, 'runtime must not use legacy uid/gid'),
+  runtimeGid: z.number().int().positive().refine(value => value !== 1000, 'runtime must not use legacy uid/gid'),
   signerAddress: z.string().regex(/^0x[0-9a-f]{40}$/),
   schemaIdentity: z.literal(EXACT_DATABASE_SCHEMA_IDENTITY),
-  stateInventoryDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  canonicalStateDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  stateInventoryDigest: sha256,
+  canonicalStateDigest: sha256,
+  expectedNonce: z.number().int().nonnegative(),
 });
 const restoreApprovalSchema = z.strictObject({
-  schema: z.literal('oxide-relayer.generic-restore.v1'),
+  schema: z.literal('oxide-relayer.generic-restore.v2'),
   approvalNonce: z.string().regex(/^0x[0-9a-f]{64}$/),
   runtime: restoreRuntimeIdentitySchema,
   witness: z.strictObject({
-    bucket: z.string().min(3),
-    region: z.string().min(1),
-    expectedOwner: z.string().regex(/^[0-9]{12}$/),
-    prefix: z.string().regex(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/),
+    configurationDigest: sha256,
+    authorityCommitment: sha256,
   }),
-  claimSetDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  terminalEvidenceDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  claimSetDigest: sha256,
+  terminalEvidenceDigest: sha256,
 });
 type RestoreApproval = z.infer<typeof restoreApprovalSchema>;
 
@@ -56,7 +49,7 @@ export interface WitnessClaim {
 }
 
 export interface RestoreMarker {
-  schema: 'oxide-relayer.generic-restore-marker.v1';
+  schema: 'oxide-relayer.generic-restore-marker.v2';
   restoreEvidenceDigest: string;
   claimSetDigest: string;
   terminalEvidenceDigest: string;
@@ -66,8 +59,8 @@ export interface RestoreMarker {
 }
 
 export async function genericSubmissionQuarantine(): Promise<ReadonlySet<string>> {
-  const runtime = await fixedRuntimeIdentity();
-  const witness = configuredWitnessAuthority();
+  const runtime = await loadExactRuntimeIdentity();
+  const witness = await loadWitnessConfiguration();
   const store = new S3ExactApprovalClaimStore(witness, { credentials: await loadWitnessCredentials() });
   const [claims, records, marker] = await Promise.all([
     store.readClaims(witness.prefix),
@@ -82,12 +75,15 @@ export async function authorizeGenericRestore(bundleFd: number): Promise<void> {
   const approval = restoreApprovalSchema.parse(bundle.approval);
   const authority = await readFile(EXACT_APPROVAL_AUTHORITY_PATH, 'utf8');
   const restoreApprovalCommitment = assertRestoreSignature(approval, bundle.approvalToken, authority);
-  const runtime = await fixedRuntimeIdentity();
+  const runtime = await loadExactRuntimeIdentity();
   if (canonicalJson(approval.runtime) !== canonicalJson(runtime)) {
     throw new Error('Generic restore approval runtime identity does not match current immutable state');
   }
-  const configuredWitness = configuredWitnessAuthority();
-  if (canonicalJson(approval.witness) !== canonicalJson(configuredWitness)) {
+  const configuredWitness = await loadWitnessConfiguration();
+  if (
+    approval.witness.configurationDigest !== configuredWitness.configurationDigest ||
+    approval.witness.authorityCommitment !== configuredWitness.authorityCommitment
+  ) {
     throw new Error('Generic restore approval witness authority does not match reviewed configuration');
   }
   const store = new S3ExactApprovalClaimStore(configuredWitness, {
@@ -107,7 +103,7 @@ export async function authorizeGenericRestore(bundleFd: number): Promise<void> {
     throw new Error('Generic restore approval does not bind current exact terminal evidence');
   }
   const marker: RestoreMarker = {
-    schema: 'oxide-relayer.generic-restore-marker.v1',
+    schema: 'oxide-relayer.generic-restore-marker.v2',
     restoreEvidenceDigest: restoreApprovalCommitment,
     claimSetDigest,
     terminalEvidenceDigest,
@@ -139,7 +135,7 @@ export function evaluateGenericQuarantine(args: {
     canonicalStateDigest: args.runtime.canonicalStateDigest,
   };
   if (
-    args.marker.schema !== 'oxide-relayer.generic-restore-marker.v1' ||
+    args.marker.schema !== 'oxide-relayer.generic-restore-marker.v2' ||
     !/^sha256:[0-9a-f]{64}$/.test(args.marker.restoreEvidenceDigest) ||
     Object.entries(expected).some(([key, value]) => args.marker?.[key as keyof RestoreMarker] !== value)
   ) {
@@ -158,6 +154,7 @@ function assertWitnessJournalConsistency(claims: WitnessClaim[], records: ExactO
     if (
       !record ||
       record.approvalCommitment !== claim.approvalCommitment ||
+      record.stageAApprovalDigest !== claim.stageAApprovalDigest ||
       canonicalJson(record.witness) !== canonicalJson(receipt)
     ) {
       throw new Error('Exact-operation witness and local journal are missing or inconsistent');
@@ -192,6 +189,7 @@ function digestTerminalEvidence(records: ExactOperationRecord[]): `sha256:${stri
   const evidence = records
     .map(record => ({
       approvalCommitment: record.approvalCommitment,
+      stageAApprovalDigest: record.stageAApprovalDigest,
       operationId: record.operationId,
       state: record.state,
       signedTxHash: record.signedTxHash,
@@ -201,37 +199,6 @@ function digestTerminalEvidence(records: ExactOperationRecord[]): `sha256:${stri
   return digest('oxide-relayer/exact-terminal-evidence/v1\0', canonicalJson(evidence));
 }
 
-async function fixedRuntimeIdentity() {
-  const [input, sourceCommit, state] = await Promise.all([
-    readFile(EXACT_RUNTIME_IDENTITY_PATH, 'utf8'),
-    readFile(EXACT_SOURCE_COMMIT_PATH, 'utf8'),
-    verifyStateInventory(EXACT_STATE_INVENTORY_PATH, EXACT_DATA_DIRECTORY),
-  ]);
-  const identity = restoreApprovalSchema.shape.runtime.parse(JSON.parse(input));
-  const derived = { ...identity, host: hostname(), sourceCommit: sourceCommit.trim(), ...state };
-  if (canonicalJson(identity) !== canonicalJson(derived)) {
-    throw new Error('Generic restore runtime identity does not match current source and state');
-  }
-  return identity;
-}
-
-export function configuredWitnessAuthority(): RestoreApproval['witness'] {
-  return restoreApprovalSchema.shape.witness.parse({
-    bucket: requiredEnvironment('OXIDE_EXACT_WITNESS_BUCKET'),
-    region: requiredEnvironment('OXIDE_EXACT_WITNESS_REGION'),
-    expectedOwner: requiredEnvironment('OXIDE_EXACT_WITNESS_EXPECTED_OWNER'),
-    prefix: requiredEnvironment('OXIDE_EXACT_WITNESS_PREFIX'),
-  });
-}
-
-export async function loadWitnessCredentials(): Promise<{ accessKeyId: string; secretAccessKey: string }> {
-  const [accessKeyId, secretAccessKey] = await Promise.all([
-    readFile(EXACT_WITNESS_ACCESS_KEY_ID_PATH, 'utf8'),
-    readFile(EXACT_WITNESS_SECRET_ACCESS_KEY_PATH, 'utf8'),
-  ]);
-  if (!accessKeyId.trim() || !secretAccessKey.trim()) throw new Error('Witness credentials are empty');
-  return { accessKeyId: accessKeyId.trim(), secretAccessKey: secretAccessKey.trim() };
-}
 
 async function readRestoreMarker(filename = RESTORE_MARKER_PATH): Promise<RestoreMarker | undefined> {
   try {
@@ -268,7 +235,7 @@ async function writeRestoreMarker(marker: RestoreMarker): Promise<void> {
     await handle.close();
   }
   await rename(temporary, RESTORE_MARKER_PATH);
-  const directory = await openFile(EXACT_DATA_DIRECTORY, 'r');
+  const directory = await openFile(EXACT_CONTROL_DIRECTORY, 'r');
   try {
     await directory.sync();
   } finally {
@@ -298,7 +265,7 @@ async function recoverRestoreMarkerWrite(): Promise<void> {
     if (`${canonicalJson(value)}\n` !== input) throw new Error('not canonical');
   } catch {
     await unlink(RESTORE_MARKER_TEMP_PATH);
-    const directory = await openFile(EXACT_DATA_DIRECTORY, 'r');
+    const directory = await openFile(EXACT_CONTROL_DIRECTORY, 'r');
     try {
       await directory.sync();
     } finally {
@@ -307,7 +274,7 @@ async function recoverRestoreMarkerWrite(): Promise<void> {
     return;
   }
   await rename(RESTORE_MARKER_TEMP_PATH, RESTORE_MARKER_PATH);
-  const directory = await openFile(EXACT_DATA_DIRECTORY, 'r');
+  const directory = await openFile(EXACT_CONTROL_DIRECTORY, 'r');
   try {
     await directory.sync();
   } finally {
@@ -340,11 +307,6 @@ function assertRestoreSignature(
   return digest('oxide-relayer/generic-restore-signature-commitment/v1\0', signature.toString('base64url'));
 }
 
-function requiredEnvironment(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`Generic quarantine configuration is missing ${name}`);
-  return value;
-}
 
 function digest(domain: string, value: string): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(domain).update(value).digest('hex')}`;

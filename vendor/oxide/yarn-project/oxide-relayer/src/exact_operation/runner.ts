@@ -2,6 +2,7 @@ import type { ExactApprovalCommitment } from './approval.js';
 import {
   type ExactOperationApproval,
   type ExactOperationObservation,
+  assertExactApprovalWindow,
   assertExactOperationMatches,
 } from './contract.js';
 import type { ExactOperationJournal } from './journal.js';
@@ -44,6 +45,7 @@ export async function relayExactOperation({
   execution,
   claimStore,
 }: RelayExactOperationOptions): Promise<{ l1TxHash: string }> {
+  assertExactApprovalWindow(approval);
   const observation = await execution.observe(approval);
   assertExactOperationMatches(approval, observation);
 
@@ -54,8 +56,9 @@ export async function relayExactOperation({
     throw new Error(`Exact operation ${approval.operation.id} approval was already consumed`);
   }
   const witness = await consumeExactApprovalExternally(approval, approvalCommitment, claimStore);
-  await journal.consumeApproval(approvalCommitment, approval.operation.id, witness);
+  await journal.consumeApproval(approvalCommitment, approval.operation.id, approval.stageA.approvalDigest, witness);
   await journal.beginSigning(approval.operation.id);
+  assertExactApprovalWindow(approval);
 
   let signed: SignedExactOperation;
   try {
