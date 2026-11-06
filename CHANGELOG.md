@@ -6,6 +6,7 @@
 - Verify Portal rollup identity, complete withdrawal economics and malformed public-call handling before operation consumption.
 - Bound and wipe privileged runtime inputs, reject raw node and cloud credentials from the environment, and keep signer buffers unopened until all public configuration parses.
 - Restore release-build type checking for the exact Outbox witness shape.
+- Smoke the real image entrypoint against UID-1000 mode-0700 canonical state, root-only configuration, inherited stdin, and isolated control storage before candidate publication and after immutable-digest verification.
 
 ## 1.0.3
 
