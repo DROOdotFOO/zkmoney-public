@@ -77,9 +77,6 @@ jobs:
 
       - name: Set up exact pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
-        with:
-          version: 9.14.4
-          run_install: false
 
       - name: Install exact lockfile
         run: pnpm install --frozen-lockfile
