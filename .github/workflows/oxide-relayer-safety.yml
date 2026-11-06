@@ -15,10 +15,12 @@ on:
       - ".github/workflows/oxide-relayer-safety.yml"
       - ".github/workflows/publish-oxide-relayer.yml"
       - "CHANGELOG.md"
+      - "scripts/verify-immutable-release-attestation.sh"
+      - "scripts/test-verify-immutable-release-attestation.sh"
   push:
     branches:
       - security/exact-operation-relay
-      - release/oxide-relayer-exact-v1.0.8
+      - release/oxide-relayer-exact-v1.0.9
     paths:
       - "Dockerfile.oxide-relayer"
       - ".dockerignore"
@@ -32,6 +34,8 @@ on:
       - ".github/workflows/oxide-relayer-safety.yml"
       - ".github/workflows/publish-oxide-relayer.yml"
       - "CHANGELOG.md"
+      - "scripts/verify-immutable-release-attestation.sh"
+      - "scripts/test-verify-immutable-release-attestation.sh"
 
 env:
   APPROVAL_AUTHORITY_PEM_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQXVmMTNWdlAxUWZoU2dSM1d2d2dvMmJXbkMyNkhCSEZVMmtwTkoxQkRmQTg9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=
@@ -64,6 +68,9 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+
+      - name: Exercise immutable release attestation readiness
+        run: scripts/test-verify-immutable-release-attestation.sh
 
       - name: Set up exact Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
