@@ -7,11 +7,9 @@ import {
   EXACT_CANONICAL_DIRECTORY,
   EXACT_CONTROL_DIRECTORY,
   EXACT_RUNTIME_CONFIG_DIRECTORY,
-  EXACT_RUNTIME_IDENTITY_PATH,
   EXACT_SECRET_DIRECTORY,
   EXACT_SIGNER_KEYSTORE_PATH,
   EXACT_SIGNER_PASSWORD_PATH,
-  EXACT_STATE_INVENTORY_PATH,
   EXACT_WITNESS_ACCESS_KEY_ID_PATH,
   EXACT_WITNESS_CONFIG_PATH,
   EXACT_WITNESS_SECRET_ACCESS_KEY_PATH,
@@ -67,8 +65,6 @@ const FILE_ENVIRONMENT = new Map<string, string>([
   [EXACT_WITNESS_SECRET_ACCESS_KEY_PATH, 'OXIDE_EXACT_WITNESS_SECRET_ACCESS_KEY_FILE'],
   [EXACT_WITNESS_CONFIG_PATH, 'OXIDE_EXACT_WITNESS_CONFIG_FILE'],
   [EXACT_AZTEC_NODE_URL_PATH, 'AZTEC_NODE_URL_FILE'],
-  [EXACT_RUNTIME_IDENTITY_PATH, 'OXIDE_EXACT_RUNTIME_IDENTITY_FILE'],
-  [EXACT_STATE_INVENTORY_PATH, 'OXIDE_EXACT_STATE_INVENTORY_FILE'],
 ]);
 
 const retainedDescriptors: number[] = [];
@@ -86,7 +82,7 @@ export async function initializeRuntimeSandbox(
   await validateMountContract(profile, readFileSync('/proc/self/mountinfo', 'utf8'), runtimeUid, runtimeGid);
   await preparePrivilegedRuntimeIdentity(profile, runtimeUid, runtimeGid);
 
-  const files = [EXACT_RUNTIME_IDENTITY_PATH, EXACT_STATE_INVENTORY_PATH, ...PROFILE_FILES[profile]];
+  const files = [...PROFILE_FILES[profile]];
   const descriptors = files.map(openRootOnlyFile);
   for (let index = 0; index < files.length; index += 1) {
     const name = FILE_ENVIRONMENT.get(files[index]!);
