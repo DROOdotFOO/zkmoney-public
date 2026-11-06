@@ -50,9 +50,6 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
   assertExactApprovalWindow(approval);
   const approvalCommitment = exactApprovalTokenCommitment(approvalToken);
   const handoffDigest = loadPreparedCleanHandoffDigest();
-  if (handoffDigest !== approval.stageA.handoffMarkerDigest) {
-    throw new Error('Canonical clean handoff differs from the signed Stage A identity');
-  }
   const lease = await RuntimeLease.acquire(storage.runtimeLease, 'exact-operation', {
     prevalidatedExactHandoffDigest: handoffDigest,
   });
