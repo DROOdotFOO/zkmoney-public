@@ -21,6 +21,7 @@ import {
   type RelayerMode,
   type RunConfig,
   type SignerBackend,
+  type SignerConfig,
 } from './config.js';
 import { RUN_OPTIONS, addOptions } from './options.js';
 import { parseCsv, parseEthAddresses } from './parse.js';
@@ -50,7 +51,11 @@ export function createCliProgram(
     .addCommand(
       createRunCommand().action(async (options: CommanderRunOptions) => {
         const config = runOptionsToConfig(options);
-        await run(config);
+        try {
+          await run(config);
+        } finally {
+          wipeSignerBuffers(config.signer);
+        }
       }),
     );
   if (runExact) {
@@ -62,10 +67,14 @@ export function createCliProgram(
         .requiredOption('--control-dir <path>', 'owner-only exact-operation control root')
         .allowExcessArguments(false)
         .action(async options => {
+          let config: RunExactOperationConfig | undefined;
           try {
-            await runExact(await exactConfigFromEnvironment(options));
+            config = await exactConfigFromEnvironment(options);
+            await runExact(config);
           } catch {
             throw new Error('relay-exact failed closed; sensitive failure details suppressed');
+          } finally {
+            if (config) wipeSignerBuffers(config.signer);
           }
         }),
     );
@@ -278,6 +287,11 @@ async function exactConfigFromEnvironment(options: {
         : undefined,
     },
   };
+}
+
+function wipeSignerBuffers(signer: SignerConfig): void {
+  signer.keystoreJson?.fill(0);
+  signer.keystorePasswordBytes?.fill(0);
 }
 
 function integerFd(value: string): number {
