@@ -72,7 +72,7 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
       },
     });
     if (!manifestDigest) throw new Error('Exact-operation deployment manifest bytes were not observed');
-    const { publicClient: identityClient, chainId } = await getL1PublicClient(config.readL1RpcUrl, node);
+    const { publicClient: identityClient, chainId, rollupVersion } = await getL1PublicClient(config.readL1RpcUrl, node);
     const publicClient = config.submissionL1RpcUrl
       ? createPublicClient({
           chain: chainFor(chainId),
@@ -82,8 +82,8 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
     const { publicConfig } = manifest.current;
     const portal = new OxidePortalContract(publicClient, publicConfig.portal);
     const portalDomain = await portal.getPortalDomain();
-    if (portalDomain.l1ChainId !== chainId) {
-      throw new Error('Observed portal domain chain differs from the verified L1 chain');
+    if (portalDomain.l1ChainId !== chainId || portalDomain.rollupVersion !== rollupVersion) {
+      throw new Error('Observed portal domain chain or rollup differs from the verified L1/L2 identity');
     }
     const deployment = {
       label: manifest.current.label,
