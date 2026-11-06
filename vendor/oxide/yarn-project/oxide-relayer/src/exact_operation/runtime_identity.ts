@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { lstat, readFile } from 'node:fs/promises';
 
@@ -5,6 +6,7 @@ import { assertNoUnresolvedGenericSubmissions } from '../l1/submission_journal.j
 import { parseExactOperationRuntimeIdentity, type ExactOperationRuntimeIdentity } from './contract.js';
 import {
   EXACT_CANONICAL_DIRECTORY,
+  EXACT_CLEAN_HANDOFF_PATH,
   EXACT_GENERIC_SUBMISSION_JOURNAL_PATH,
   EXACT_RUNTIME_IDENTITY_PATH,
   EXACT_SOURCE_COMMIT_PATH,
@@ -15,7 +17,7 @@ import type { RuntimeProfile } from './runtime_sandbox.js';
 import { verifyStateInventory } from './state_inventory.js';
 
 let preparedIdentity: ExactOperationRuntimeIdentity | undefined;
-let preparedCanonicalDirectory: string | undefined;
+let preparedCleanHandoffDigest: `sha256:${string}` | undefined;
 
 export async function preparePrivilegedRuntimeIdentity(
   profile: RuntimeProfile,
@@ -31,8 +33,10 @@ export async function preparePrivilegedRuntimeIdentity(
     readFile(EXACT_SOURCE_COMMIT_PATH, 'utf8'),
     verifyStateInventory(EXACT_STATE_INVENTORY_PATH, canonicalDirectory),
   ]);
+  let cleanHandoffDigest: `sha256:${string}` | undefined;
   if (profile !== 'generic-restore') {
     await assertNoUnresolvedGenericSubmissions(EXACT_GENERIC_SUBMISSION_JOURNAL_PATH);
+    cleanHandoffDigest = await readCleanHandoffDigest(EXACT_CLEAN_HANDOFF_PATH);
   }
   let supplied: unknown;
   try {
@@ -53,7 +57,7 @@ export async function preparePrivilegedRuntimeIdentity(
     throw new Error('Fixed exact-operation runtime identity does not match the running host, source, identity and state bytes');
   }
   preparedIdentity = Object.freeze(identity);
-  preparedCanonicalDirectory = canonicalDirectory;
+  preparedCleanHandoffDigest = cleanHandoffDigest;
 }
 
 export async function loadExactRuntimeIdentity(): Promise<ExactOperationRuntimeIdentity> {
@@ -61,17 +65,45 @@ export async function loadExactRuntimeIdentity(): Promise<ExactOperationRuntimeI
   return preparedIdentity;
 }
 
-export async function assertCanonicalStateStillMatches(): Promise<void> {
-  if (!preparedIdentity || !preparedCanonicalDirectory) {
-    throw new Error('Privileged runtime identity preflight did not run');
+export function loadPreparedCleanHandoffDigest(): `sha256:${string}` {
+  if (!preparedCleanHandoffDigest) {
+    throw new Error('Privileged canonical-state preflight did not prepare clean handoff evidence');
   }
-  const state = await verifyStateInventory(EXACT_STATE_INVENTORY_PATH, preparedCanonicalDirectory);
+  return preparedCleanHandoffDigest;
+}
+
+export function assertCanonicalHandoffArtifact(metadata: {
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+  nlink: number;
+}): void {
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+    throw new Error('Canonical clean handoff must be one regular file');
+  }
+}
+
+async function readCleanHandoffDigest(filename: string): Promise<`sha256:${string}`> {
+  const metadata = await lstat(filename);
+  assertCanonicalHandoffArtifact(metadata);
+  const contents = await readFile(filename);
+  let handoff: unknown;
+  try {
+    handoff = JSON.parse(contents.toString('utf8'));
+  } catch (cause) {
+    throw new Error('Canonical clean handoff is malformed JSON', { cause });
+  }
   if (
-    state.stateInventoryDigest !== preparedIdentity.stateInventoryDigest ||
-    state.canonicalStateDigest !== preparedIdentity.canonicalStateDigest
+    typeof handoff !== 'object' ||
+    handoff === null ||
+    Array.isArray(handoff) ||
+    Object.keys(handoff).sort().join(',') !== 'clean,kind,schema' ||
+    (handoff as Record<string, unknown>).schema !== 1 ||
+    (handoff as Record<string, unknown>).kind !== 'generic' ||
+    (handoff as Record<string, unknown>).clean !== true
   ) {
-    throw new Error('Canonical state changed after privileged runtime preflight');
+    throw new Error('Canonical clean handoff marker is invalid');
   }
+  return `sha256:${createHash('sha256').update(contents).digest('hex')}`;
 }
 
 async function assertFixedIdentityFile(filename: string): Promise<void> {

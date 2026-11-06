@@ -151,16 +151,6 @@ export async function validateMountContract(
   });
   assertDistinctRuntimeMounts(identities);
 
-  if (profile !== 'generic-restore') {
-    const canonicalMetadata = statSync(canonical);
-    if (
-      canonicalMetadata.uid !== 0 ||
-      canonicalMetadata.gid !== 0 ||
-      (canonicalMetadata.mode & 0o777) !== 0o555
-    ) {
-      throw new Error('Canonical state must be a root-owned mode 0555 directory');
-    }
-  }
 
   const control = statSync(EXACT_CONTROL_DIRECTORY);
   if (control.uid !== runtimeUid || control.gid !== runtimeGid || (control.mode & 0o777) !== 0o700) {
@@ -289,9 +279,19 @@ export function parseDedicatedIdentity(value: string | undefined, label: string)
   return identity;
 }
 
+export function assertCanonicalRootObject(metadata: {
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}): void {
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error('Runtime mount paths must be canonical directories without symlinks');
+  }
+}
+
 async function assertCanonicalDirectory(filename: string): Promise<void> {
   const [metadata, canonical] = await Promise.all([lstat(filename), realpath(filename)]);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink() || canonical !== filename) {
+  assertCanonicalRootObject(metadata);
+  if (canonical !== filename) {
     throw new Error('Runtime mount paths must be canonical directories without symlinks');
   }
 }

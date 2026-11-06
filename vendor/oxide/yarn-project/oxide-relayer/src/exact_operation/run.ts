@@ -21,9 +21,9 @@ import { ExactOperationJournal } from './journal.js';
 import { S3ExactApprovalClaimStore } from './monotonic_claim.js';
 import { ExactOperationObserver } from './observer.js';
 import { EXACT_APPROVAL_AUTHORITY_PATH } from './paths.js';
-import { loadExactRuntimeIdentity } from './runtime_identity.js';
+import { loadExactRuntimeIdentity, loadPreparedCleanHandoffDigest } from './runtime_identity.js';
 import { relayExactOperation } from './runner.js';
-import { RuntimeLease, assertCanonicalCleanHandoff } from './runtime_lease.js';
+import { RuntimeLease } from './runtime_lease.js';
 import { resolveExactStorageRoots } from './storage_roots.js';
 import { loadWitnessConfiguration, loadWitnessCredentials } from './witness_configuration.js';
 
@@ -49,17 +49,15 @@ export async function runExactOperation(config: RunExactOperationConfig): Promis
   assertExactApprovalToken(approval, approvalToken, authority);
   assertExactApprovalWindow(approval);
   const approvalCommitment = exactApprovalTokenCommitment(approvalToken);
-
+  const handoffDigest = loadPreparedCleanHandoffDigest();
+  if (handoffDigest !== approval.stageA.handoffMarkerDigest) {
+    throw new Error('Canonical clean handoff differs from the signed Stage A identity');
+  }
   const lease = await RuntimeLease.acquire(storage.runtimeLease, 'exact-operation', {
-    cleanHandoffPath: storage.cleanHandoff,
-    preserveCleanHandoff: true,
+    prevalidatedExactHandoffDigest: handoffDigest,
   });
   let journal: ExactOperationJournal | undefined;
   try {
-    const handoffDigest = await assertCanonicalCleanHandoff(storage.cleanHandoff);
-    if (handoffDigest !== approval.stageA.handoffMarkerDigest) {
-      throw new Error('Canonical clean handoff differs from the signed Stage A identity');
-    }
     const runtime = await loadExactRuntimeIdentity();
     assertExactOperationMatches(approval, { ...approval, runtime });
     await lease.activateExactHandoff();

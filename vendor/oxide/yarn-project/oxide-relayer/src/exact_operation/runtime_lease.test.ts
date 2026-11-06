@@ -6,9 +6,16 @@ import { afterEach, describe, expect, it } from '@jest/globals';
 import { open } from 'sqlite';
 import sqlite3Driver from 'sqlite3';
 
-import { RuntimeLease, assertCanonicalCleanHandoff, cleanHandoffPath } from './runtime_lease.js';
+import { RuntimeLease, cleanHandoffPath } from './runtime_lease.js';
 
 const directories: string[] = [];
+const PREVALIDATED_HANDOFF_DIGEST = `sha256:${'11'.repeat(32)}` as const;
+
+const acquireExact = (filename: string) =>
+  RuntimeLease.acquire(filename, 'exact-operation', {
+    prevalidatedExactHandoffDigest: PREVALIDATED_HANDOFF_DIGEST,
+  });
+
 
 async function leasePath(): Promise<string> {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'oxide-runtime-lease-')));
@@ -24,21 +31,24 @@ describe('RuntimeLease', () => {
   it('prevents generic and exact runtimes from running concurrently', async () => {
     const path = await leasePath();
     const generic = await RuntimeLease.acquire(path, 'generic');
-    await expect(RuntimeLease.acquire(path, 'exact-operation')).rejects.toThrow(/already held/);
+    await expect(acquireExact(path)).rejects.toThrow(/already held/);
     await generic.close({ cleanHandoff: true });
 
-    const exact = await RuntimeLease.acquire(path, 'exact-operation');
+    const exact = await acquireExact(path);
     await exact.activateExactHandoff();
     await exact.close();
+    await expect(readFile(cleanHandoffPath(path), 'utf8')).resolves.toBe(
+      JSON.stringify({ schema: 1, kind: 'generic', clean: true }),
+    );
   });
   it('preserves clean handoff until exact runtime identity passes', async () => {
     const path = await leasePath();
     const generic = await RuntimeLease.acquire(path, 'generic');
     await generic.close({ cleanHandoff: true });
 
-    const rejectedIdentity = await RuntimeLease.acquire(path, 'exact-operation');
+    const rejectedIdentity = await acquireExact(path);
     await rejectedIdentity.close();
-    const correctedIdentity = await RuntimeLease.acquire(path, 'exact-operation');
+    const correctedIdentity = await acquireExact(path);
     await correctedIdentity.activateExactHandoff();
     await correctedIdentity.close();
   });
@@ -52,7 +62,7 @@ describe('RuntimeLease', () => {
     );
     await generic.close({ cleanHandoff: true });
 
-    const exact = await RuntimeLease.acquire(path, 'exact-operation');
+    const exact = await acquireExact(path);
     await exact.activateExactHandoff();
     await exact.close();
   });
@@ -62,7 +72,7 @@ describe('RuntimeLease', () => {
     await writeFile(`${cleanHandoffPath(path)}.tmp`, '', { mode: 0o600 });
     await generic.close({ cleanHandoff: true });
 
-    const exact = await RuntimeLease.acquire(path, 'exact-operation');
+    const exact = await acquireExact(path);
     await exact.activateExactHandoff();
     await exact.close();
   });
@@ -70,23 +80,10 @@ describe('RuntimeLease', () => {
 
 
 
-  it('reads a canonical read-only handoff marker without mutating it', async () => {
+
+  it('refuses exact-operation startup without privileged prevalidated handoff evidence', async () => {
     const path = await leasePath();
-    const marker = `${path}.canonical-clean-handoff.json`;
-    const body = JSON.stringify({ schema: 1, kind: 'generic', clean: true });
-    await writeFile(marker, body, { mode: 0o444 });
-    await chmod(marker, 0o444);
-
-    await expect(assertCanonicalCleanHandoff(marker, process.getuid?.() ?? 0)).resolves.toMatch(/^sha256:[0-9a-f]{64}$/);
-    await expect(readFile(marker, 'utf8')).resolves.toBe(body);
-  });
-
-  it('refuses exact-operation startup without a clean generic handoff', async () => {
-    const path = await leasePath();
-    const generic = await RuntimeLease.acquire(path, 'generic');
-    await generic.close();
-
-    await expect(RuntimeLease.acquire(path, 'exact-operation')).rejects.toThrow(/clean generic handoff/);
+    await expect(RuntimeLease.acquire(path, 'exact-operation')).rejects.toThrow(/privileged prevalidated/);
   });
 
   it('rejects an unknown existing lease schema before runtime startup', async () => {

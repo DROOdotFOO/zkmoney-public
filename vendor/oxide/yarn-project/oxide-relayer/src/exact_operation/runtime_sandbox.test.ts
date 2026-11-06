@@ -1,6 +1,8 @@
 import { describe, expect, it } from '@jest/globals';
 
+import { assertCanonicalHandoffArtifact } from './runtime_identity.js';
 import {
+  assertCanonicalRootObject,
   assertDistinctRuntimeMounts,
   assertFinalPrivilegeState,
   parseDedicatedIdentity,
@@ -66,6 +68,29 @@ describe('runtime sandbox', () => {
     expect(() => assertFinalPrivilegeState(status({ NoNewPrivs: '0' }), DEDICATED_IDENTITY, DEDICATED_IDENTITY)).toThrow(
       'Final runtime process is missing no-new-privileges',
     );
+  });
+
+  it('accepts a distinct read-only canonical bind backed by legacy UID/GID 1000 mode 0700 state', () => {
+    const legacyCanonical = {
+      uid: 1000,
+      gid: 1000,
+      mode: 0o40700,
+      isDirectory: () => true,
+      isSymbolicLink: () => false,
+    };
+    expect(() => assertCanonicalRootObject(legacyCanonical)).not.toThrow();
+  });
+
+  it('accepts a legacy UID/GID 1000 mode 0600 handoff during privileged preflight', () => {
+    const marker = {
+      uid: 1000,
+      gid: 1000,
+      mode: 0o100600,
+      nlink: 1,
+      isFile: () => true,
+      isSymbolicLink: () => false,
+    };
+    expect(() => assertCanonicalHandoffArtifact(marker)).not.toThrow();
   });
 
   it('refuses path, bind, and inode aliases across runtime storage classes', () => {

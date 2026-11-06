@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { chmod, lstat, open as openFile, readFile, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -27,8 +26,6 @@ export class RuntimeLease {
     readonly path: string,
     readonly kind: RuntimeKind,
     private readonly db: SqliteDatabase,
-    private readonly handoffPath: string,
-    private readonly preserveHandoff: boolean,
   ) {
     this.exactHandoffActivated = kind === 'generic';
   }
@@ -36,7 +33,7 @@ export class RuntimeLease {
   static async acquire(
     filename: string,
     kind: RuntimeKind,
-    options: { cleanHandoffPath?: string; preserveCleanHandoff?: boolean } = {},
+    options: { cleanHandoffPath?: string; prevalidatedExactHandoffDigest?: `sha256:${string}` } = {},
   ): Promise<RuntimeLease> {
     const resolved = path.resolve(filename);
     await assertSecureLeasePath(resolved);
@@ -69,13 +66,15 @@ export class RuntimeLease {
       await db.exec('BEGIN EXCLUSIVE');
       const handoffPath = path.resolve(options.cleanHandoffPath ?? cleanHandoffPath(resolved));
       if (kind === 'exact-operation') {
-        await assertCleanHandoff(handoffPath, options.preserveCleanHandoff === true);
+        if (!/^sha256:[0-9a-f]{64}$/.test(options.prevalidatedExactHandoffDigest ?? '')) {
+          throw new Error('Exact-operation runtime requires privileged prevalidated clean handoff evidence');
+        }
       } else {
         await removeFile(handoffPath);
         await setLeaseKind(db, kind);
       }
       await chmod(resolved, 0o600);
-      return new RuntimeLease(resolved, kind, db, handoffPath, options.preserveCleanHandoff === true);
+      return new RuntimeLease(resolved, kind, db);
     } catch (error) {
       await db.close();
       if (isBusy(error)) {
@@ -88,10 +87,6 @@ export class RuntimeLease {
   async activateExactHandoff(): Promise<void> {
     if (this.kind !== 'exact-operation' || this.exactHandoffActivated) {
       throw new Error('Exact-operation handoff activation is not available');
-    }
-    await assertCleanHandoff(this.handoffPath, this.preserveHandoff);
-    if (!this.preserveHandoff) {
-      await removeFile(this.handoffPath);
     }
     await setLeaseKind(this.db, this.kind);
     this.exactHandoffActivated = true;
@@ -207,49 +202,6 @@ async function assertEmptyOrExactLease(db: SqliteDatabase): Promise<void> {
 
 function normalizeSql(sql: string): string {
   return sql.replace(/\s+/g, ' ').trim();
-}
-
-export async function assertCanonicalCleanHandoff(filename: string, expectedOwnerUid = 0): Promise<`sha256:${string}`> {
-  const metadata = await lstat(filename);
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1 ||
-    metadata.uid !== expectedOwnerUid ||
-    (metadata.mode & 0o777) !== 0o444
-  ) {
-    throw new Error('clean generic handoff is not one root-owned read-only file');
-  }
-  const contents = await readFile(filename);
-  const handoff = JSON.parse(contents.toString('utf8')) as {
-    schema?: unknown;
-    kind?: unknown;
-    clean?: unknown;
-  };
-  if (handoff.schema !== 1 || handoff.kind !== 'generic' || handoff.clean !== true) {
-    throw new Error('invalid clean generic handoff marker');
-  }
-  return `sha256:${createHash('sha256').update(contents).digest('hex')}`;
-}
-
-async function assertCleanHandoff(filename: string, readOnlyCanonical = false): Promise<void> {
-  try {
-    if (readOnlyCanonical) {
-      await assertCanonicalCleanHandoff(filename);
-      return;
-    }
-    await assertSecureFile(filename, 'clean generic handoff');
-    const handoff = JSON.parse(await readFile(filename, 'utf8')) as {
-      schema?: unknown;
-      kind?: unknown;
-      clean?: unknown;
-    };
-    if (handoff.schema !== 1 || handoff.kind !== 'generic' || handoff.clean !== true) {
-      throw new Error('invalid clean generic handoff marker');
-    }
-  } catch (cause) {
-    throw new Error('Exact-operation runtime requires a clean generic handoff', { cause });
-  }
 }
 
 async function setLeaseKind(db: SqliteDatabase, kind: RuntimeKind): Promise<void> {
