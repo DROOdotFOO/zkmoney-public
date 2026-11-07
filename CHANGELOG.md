@@ -3,9 +3,11 @@
 ## 1.0.9
 
 - Check out and verify the exact admitted signed-tag source before the sole immutable release-creation boundary.
-- Bound every post-publication GitHub read and asset verification with one monotonic 300-second deadline, a real per-command 15-second process timeout, and process-group termination.
-- Bind the verified GitHub release attestation to the immutable release ID, repository, tag object, tag target and complete asset inventory, with identity checks before and after asset verification.
-- Exercise publish-job ordering, strict command arguments, retry classification, identity drift and measured timeout behavior before release qualification.
+- Bound every post-publication GitHub read and asset verification with one monotonic 300-second hard deadline and a real per-command 15-second process timeout.
+- Reserve the final 120 seconds for post-attestation identity and asset verification. The observed 29 sequential subprocesses took 76.9 seconds, leaving about 43 seconds of operational margin; the reserve is not a completion guarantee, severe network delay still fails closed at the unextended 300-second deadline.
+- Accept GitHub's documented Git-object response shape while requiring exact typed tag-object and target-commit identities, then bind the verified attestation to the immutable release ID and complete asset inventory.
+- Register each dedicated process group atomically with the alarm handler, terminate all group members on every completion path even when the leader exited first, and reap the leader before clearing the registered group.
+- Exercise publish-job ordering, strict command arguments, retry classification, identity drift, loaded timing bounds and leader-exited-first cleanup before release qualification.
 - Preserve the v1.0.8 tag, immutable release, image and evidence as frozen historical records; v1.0.9 uses distinct branch, tag, artifact and certificate identities.
 
 ## 1.0.8

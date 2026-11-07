@@ -6,6 +6,7 @@ import json
 import math
 import os
 import signal
+import selectors
 import stat
 import subprocess
 import sys
@@ -99,11 +100,19 @@ class Deadline:
         return remaining
 
 
+@dataclass(frozen=True)
+class ActiveProcessGroup:
+    process: subprocess.Popen[bytes]
+    process_group_id: int
+
+
 class CommandRunner:
+    _MANAGED_SIGNALS = {signal.SIGALRM, signal.SIGCHLD}
+
     def __init__(self, deadline: Deadline, request_timeout: float):
         self.deadline = deadline
         self.request_timeout = request_timeout
-        self.active_process: subprocess.Popen[bytes] | None = None
+        self.active_group: ActiveProcessGroup | None = None
 
     def _spawn_process(self, argv: Sequence[str]) -> subprocess.Popen[bytes]:
         return subprocess.Popen(
@@ -115,35 +124,108 @@ class CommandRunner:
         )
 
     @staticmethod
-    def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
-        if process.poll() is not None:
-            return
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            return
+    def _send_process_group_signal(process_group_id: int) -> None:
+        os.killpg(process_group_id, signal.SIGKILL)
 
     @classmethod
-    def _kill_and_reap(cls, process: subprocess.Popen[bytes]) -> None:
-        cls._kill_process_group(process)
+    def _signal_process_group(cls, process_group_id: int) -> None:
         try:
-            process.communicate(timeout=1)
-        except subprocess.TimeoutExpired:
-            cls._kill_process_group(process)
-            process.wait()
+            cls._send_process_group_signal(process_group_id)
+        except ProcessLookupError:
+            return
+        except OSError as error:
+            raise VerificationFailure(
+                f"failed to terminate GitHub command process group "
+                f"{process_group_id}: {error}"
+            ) from error
+
+    @staticmethod
+    def _close_process_pipes(process: subprocess.Popen[bytes]) -> None:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
+
+    @classmethod
+    def _reap_process_group_leader(cls, active_group: ActiveProcessGroup) -> None:
+        try:
+            active_group.process.wait(timeout=1)
+        except subprocess.TimeoutExpired as error:
+            raise VerificationFailure(
+                "failed to reap GitHub command process-group leader after termination"
+            ) from error
 
     def kill_active_group(self) -> None:
-        process = self.active_process
-        if process is not None:
-            self._kill_process_group(process)
+        active_group = self.active_group
+        if active_group is not None:
+            self._signal_process_group(active_group.process_group_id)
 
-    def _clear_active_process(self, process: subprocess.Popen[bytes] | None) -> None:
-        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+    def _finalize_process_group(
+        self,
+        active_group: ActiveProcessGroup,
+        previous_sigchld_handler: signal.Handlers,
+        original_signal_mask: set[signal.Signals],
+    ) -> None:
+        signal.pthread_sigmask(signal.SIG_BLOCK, self._MANAGED_SIGNALS)
+        cleanup_error: VerificationFailure | None = None
+        retry_signal_after_reap = False
         try:
-            if self.active_process is process:
-                self.active_process = None
+            try:
+                self._signal_process_group(active_group.process_group_id)
+            except VerificationFailure as error:
+                cleanup_error = error
+                retry_signal_after_reap = isinstance(error.__cause__, PermissionError)
+            self._close_process_pipes(active_group.process)
+            try:
+                self._reap_process_group_leader(active_group)
+            except VerificationFailure as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+            if retry_signal_after_reap and active_group.process.returncode is not None:
+                try:
+                    self._signal_process_group(active_group.process_group_id)
+                except VerificationFailure as error:
+                    cleanup_error = error
+                else:
+                    cleanup_error = None
         finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            if self.active_group is active_group:
+                self.active_group = None
+            signal.signal(signal.SIGCHLD, previous_sigchld_handler)
+            signal.pthread_sigmask(signal.SIG_SETMASK, original_signal_mask)
+        if cleanup_error is not None:
+            raise cleanup_error
+
+    @staticmethod
+    def _collect_output(
+        active_group: ActiveProcessGroup,
+        timeout: float,
+        child_exited: Callable[[], bool],
+    ) -> tuple[bytes, bytes]:
+        process = active_group.process
+        if process.stdout is None or process.stderr is None:
+            fail("GitHub command output pipes are unavailable")
+        stdout_fd = process.stdout.fileno()
+        stderr_fd = process.stderr.fileno()
+        output = {stdout_fd: bytearray(), stderr_fd: bytearray()}
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        selector.register(process.stderr, selectors.EVENT_READ)
+        expires_at = time.monotonic() + timeout
+        try:
+            while selector.get_map() or not child_exited():
+                remaining = expires_at - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(process.args, timeout)
+                for key, _events in selector.select(min(remaining, 0.05)):
+                    chunk = os.read(key.fd, 64 * 1024)
+                    if chunk:
+                        output[key.fd].extend(chunk)
+                        continue
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+        finally:
+            selector.close()
+        return bytes(output[stdout_fd]), bytes(output[stderr_fd])
 
     def run(
         self,
@@ -164,45 +246,61 @@ class CommandRunner:
             finalization_reserve_seconds > 0 and remaining <= self.request_timeout
         )
 
-        process: subprocess.Popen[bytes] | None = None
-        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+        child_exited = False
+
+        def record_child_exit(_signum: int, _frame: object) -> None:
+            nonlocal child_exited
+            child_exited = True
+
+        previous_sigchld_handler = signal.getsignal(signal.SIGCHLD)
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, self._MANAGED_SIGNALS)
+        active_group: ActiveProcessGroup | None = None
+        timeout_error: subprocess.TimeoutExpired | None = None
         try:
             try:
+                signal.signal(signal.SIGCHLD, record_child_exit)
                 process = self._spawn_process(argv)
-                self.active_process = process
+                active_group = ActiveProcessGroup(process, process.pid)
+                self.active_group = active_group
             finally:
-                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                if active_group is None:
+                    signal.signal(signal.SIGCHLD, previous_sigchld_handler)
+                    command_mask = previous_mask
+                else:
+                    command_mask = previous_mask - {signal.SIGCHLD}
+                signal.pthread_sigmask(signal.SIG_SETMASK, command_mask)
 
             try:
-                stdout, stderr = process.communicate(timeout=timeout)
-            except subprocess.TimeoutExpired as error:
-                self._kill_and_reap(process)
-                if cutoff_limits_command:
-                    raise AttestationCutoffExceeded(
-                        f"attestation cutoff reached during {phase}; "
-                        f"{finalization_reserve_seconds:g}-second "
-                        "finalization reserve is required"
-                    ) from error
-                raise VerificationFailure(
-                    f"{phase} timed out after {timeout:.3f} seconds"
-                ) from error
-            if finalization_reserve_seconds:
-                self.deadline.remaining_before_reserve(
-                    finalization_reserve_seconds, phase
+                stdout, stderr = self._collect_output(
+                    active_group, timeout, lambda: child_exited
                 )
-            else:
-                self.deadline.remaining(phase)
-            return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
-        except GlobalDeadlineExceeded:
-            if process is not None:
-                self._kill_and_reap(process)
-            raise
-        except BaseException:
-            if process is not None and process.poll() is None:
-                self._kill_and_reap(process)
-            raise
+            except subprocess.TimeoutExpired as error:
+                timeout_error = error
+                stdout = b""
+                stderr = b""
         finally:
-            self._clear_active_process(process)
+            if active_group is not None:
+                self._finalize_process_group(
+                    active_group, previous_sigchld_handler, previous_mask
+                )
+
+        if timeout_error is not None:
+            if cutoff_limits_command:
+                raise AttestationCutoffExceeded(
+                    f"attestation cutoff reached during {phase}; "
+                    f"{finalization_reserve_seconds:g}-second "
+                    "finalization reserve is required"
+                ) from timeout_error
+            raise VerificationFailure(
+                f"{phase} timed out after {timeout:.3f} seconds"
+            ) from timeout_error
+        if finalization_reserve_seconds:
+            self.deadline.remaining_before_reserve(finalization_reserve_seconds, phase)
+        else:
+            self.deadline.remaining(phase)
+        return subprocess.CompletedProcess(
+            argv, active_group.process.returncode, stdout, stderr
+        )
 
 
 @dataclass(frozen=True, order=True)
