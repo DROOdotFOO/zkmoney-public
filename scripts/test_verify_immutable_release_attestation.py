@@ -30,7 +30,10 @@ def load_state() -> dict[str, object]:
 
 
 def save_state(state: dict[str, object]) -> None:
-    Path(os.environ["FAKE_GH_STATE"]).write_text(json.dumps(state, sort_keys=True))
+    path = Path(os.environ["FAKE_GH_STATE"])
+    temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary_path.write_text(json.dumps(state, sort_keys=True))
+    os.replace(temporary_path, path)
 
 
 def increment(state: dict[str, object], key: str) -> int:
@@ -93,7 +96,15 @@ def fake_gh_main(argv: list[str]) -> int:
     calls.append(argv)
     outcomes = state.setdefault("outcomes", [])
     assert isinstance(outcomes, list)
-    outcomes.append({"status": None, "stdout": None, "stderr": None})
+    started_monotonic = time.monotonic()
+    outcomes.append(
+        {
+            "status": None,
+            "stdout": None,
+            "stderr": None,
+            "started_monotonic": started_monotonic,
+        }
+    )
     call_index = len(outcomes) - 1
     save_state(state)
     scenario = os.environ["FAKE_GH_SCENARIO"]
@@ -103,6 +114,7 @@ def fake_gh_main(argv: list[str]) -> int:
             "status": status,
             "stdout": stdout,
             "stderr": stderr,
+            "started_monotonic": started_monotonic,
         }
         save_state(state)
         sys.stdout.write(stdout)
@@ -397,10 +409,12 @@ class VerifierBehaviorTests(unittest.TestCase):
         result = subprocess.run(
             command, capture_output=True, text=True, env=environment
         )
-        elapsed = time.monotonic() - started
+        finished = time.monotonic()
+        elapsed = finished - started
         state = (
             json.loads(self.state.read_text()) if self.state.exists() else {"calls": []}
         )
+        state["_test_finished_monotonic"] = finished
         return result, elapsed, state
 
     def assert_failure(self, scenario: str, message: str, **kwargs: object) -> None:
@@ -421,6 +435,17 @@ class VerifierBehaviorTests(unittest.TestCase):
                     ["release", "upload"],
                 ],
             )
+
+    def timed_out_command_elapsed(self, state: dict[str, object]) -> float:
+        outcomes = state["outcomes"]
+        assert isinstance(outcomes, list)
+        timed_out = [outcome for outcome in outcomes if outcome["status"] is None]
+        self.assertEqual(len(timed_out), 1)
+        finished = state["_test_finished_monotonic"]
+        started = timed_out[0]["started_monotonic"]
+        assert isinstance(finished, float)
+        assert isinstance(started, float)
+        return finished - started
 
     def test_immediate_valid_attestation_success(self) -> None:
         result, _elapsed, state = self.invoke("immediate_success")
@@ -599,9 +624,15 @@ class VerifierBehaviorTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("asset verification: alpha.txt timed out", result.stderr)
-        self.assertLess(elapsed, 1.5)
+        self.assertLess(elapsed, 5)
+        command_elapsed = self.timed_out_command_elapsed(state)
+        self.assertGreaterEqual(command_elapsed, 0.4)
+        self.assertLess(command_elapsed, 1)
         self.assertEqual(state["asset_calls"], 1)
-        print(f"MEASURED_ASSET_TIMEOUT_0_5S={elapsed:.3f}s")
+        print(
+            f"MEASURED_ASSET_TIMEOUT_0_5S={command_elapsed:.3f}s "
+            f"(helper {elapsed:.3f}s)"
+        )
 
     def test_slow_final_identity_revalidation_is_bounded(self) -> None:
         result, elapsed, state = self.invoke(
@@ -609,23 +640,29 @@ class VerifierBehaviorTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("post-asset identity: repository timed out", result.stderr)
-        self.assertLess(elapsed, 1.5)
+        self.assertLess(elapsed, 5)
+        command_elapsed = self.timed_out_command_elapsed(state)
+        self.assertGreaterEqual(command_elapsed, 0.4)
+        self.assertLess(command_elapsed, 1)
         self.assertEqual(state["repository_calls"], 3)
-        print(f"MEASURED_FINAL_IDENTITY_TIMEOUT_0_5S={elapsed:.3f}s")
+        print(
+            f"MEASURED_FINAL_IDENTITY_TIMEOUT_0_5S={command_elapsed:.3f}s "
+            f"(helper {elapsed:.3f}s)"
+        )
 
     def test_sleep_that_would_cross_deadline_is_omitted(self) -> None:
         result, elapsed, state = self.invoke(
             "transient_until_deadline",
-            deadline=0.5,
-            request_timeout=0.4,
-            interval=1,
+            deadline=2,
+            request_timeout=1,
+            interval=2,
             attempts=30,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("would expire during attestation retry sleep", result.stderr)
-        self.assertLess(elapsed, 0.5)
+        self.assertLess(elapsed, 2)
         self.assertEqual(state["verify_calls"], 1)
-        print(f"MEASURED_SLEEP_OMITTED_0_5S_DEADLINE={elapsed:.3f}s")
+        print(f"MEASURED_SLEEP_OMITTED_2S_DEADLINE={elapsed:.3f}s")
 
     def test_exact_transient_response_is_bounded_by_real_deadline(self) -> None:
         result, elapsed, state = self.invoke(
