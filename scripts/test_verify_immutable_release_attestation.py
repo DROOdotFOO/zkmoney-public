@@ -719,6 +719,7 @@ class VerifierBehaviorTests(unittest.TestCase):
         assets = self.reset_evidence()
         environment = {
             **os.environ,
+            "PYTHONDONTWRITEBYTECODE": "1",
             "FAKE_GH_SCENARIO": "immediate_success",
             "FAKE_GH_STATE": str(self.state),
             "FAKE_BASELINE_ASSETS": json.dumps(assets),
