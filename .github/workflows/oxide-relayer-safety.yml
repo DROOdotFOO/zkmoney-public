@@ -80,7 +80,11 @@ jobs:
           python3 -B scripts/test_verify_immutable_release_attestation.py
           python3 -B scripts/test_verify_publish_source.py
           ruby scripts/test_publish_release_contract.rb
-          test -z "$(git status --porcelain)"
+          status="$(git status --porcelain)"
+          if [[ -n "$status" ]]; then
+            printf '%s\n' "$status" >&2
+            exit 1
+          fi
 
       - name: Set up exact Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
