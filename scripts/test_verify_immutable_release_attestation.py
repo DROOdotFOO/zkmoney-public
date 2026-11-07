@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,44 @@ RELEASE_ID = 123456
 TAG_OBJECT = "1" * 40
 TARGET_COMMIT = "2" * 40
 HOSTED_REPOSITORY = f"github.com/{REPOSITORY}"
+TAG_REF_OBJECT_URL = f"https://api.github.com/repos/{REPOSITORY}/git/tags/{TAG_OBJECT}"
+TARGET_OBJECT_URL = (
+    f"https://api.github.com/repos/{REPOSITORY}/git/commits/{TARGET_COMMIT}"
+)
+
+
+def captured_tag_reference(object_value: object) -> dict[str, object]:
+    return {
+        "ref": f"refs/tags/{TAG}",
+        "node_id": "REF_kwDOVjnTirNyZWZzL3RhZ3MvdjEuMC45",
+        "url": (f"https://api.github.com/repos/{REPOSITORY}/git/refs/tags/{TAG}"),
+        "object": object_value,
+    }
+
+
+def captured_annotated_tag(target: object) -> dict[str, object]:
+    return {
+        "node_id": "TA_kwDOVjnTirNyZWZzL3RhZ3MvdjEuMC45",
+        "tag": TAG,
+        "sha": TAG_OBJECT,
+        "url": TAG_REF_OBJECT_URL,
+        "message": "oxide relayer exact v1.0.9",
+        "tagger": {
+            "name": "Release signer",
+            "email": "release-signer@example.invalid",
+            "date": "2026-11-07T00:00:00Z",
+        },
+        "object": target,
+        "verification": {
+            "verified": True,
+            "reason": "valid",
+            "signature": "captured-minimal-signature",
+            "payload": "captured-minimal-payload",
+            "verified_at": "2026-11-07T00:00:01Z",
+        },
+    }
+
+
 VERIFIER = Path(__file__).with_name("verify_immutable_release_attestation.py")
 
 
@@ -115,6 +154,7 @@ def fake_gh_main(argv: list[str]) -> int:
             "stdout": stdout,
             "stderr": stderr,
             "started_monotonic": started_monotonic,
+            "finished_monotonic": time.monotonic(),
         }
         save_state(state)
         sys.stdout.write(stdout)
@@ -125,6 +165,7 @@ def fake_gh_main(argv: list[str]) -> int:
         should_delay = (
             scenario == "all_commands_slow"
             or (scenario == "request_timeout" and kind == "repository" and count == 1)
+            or (scenario == "attestation_timeout" and kind == "attestation")
             or (scenario == "asset_timeout" and kind == "asset")
             or (
                 scenario == "final_identity_timeout"
@@ -132,6 +173,8 @@ def fake_gh_main(argv: list[str]) -> int:
                 and count == 3
             )
         )
+        if scenario == "attestation_near_cutoff" and kind == "attestation":
+            time.sleep(1.25)
         if scenario == "child_process_timeout" and kind == "repository" and count == 1:
             sentinel = os.environ["FAKE_CHILD_SENTINEL"]
             child = subprocess.Popen(
@@ -143,6 +186,23 @@ def fake_gh_main(argv: list[str]) -> int:
                 ]
             )
             Path(os.environ["FAKE_CHILD_PID"]).write_text(str(child.pid))
+            time.sleep(10)
+        if (
+            scenario == "spawn_registration_alarm"
+            and kind == "repository"
+            and count == 1
+        ):
+            descendant = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import pathlib,time,sys; time.sleep(1); pathlib.Path(sys.argv[1]).write_text('survived')",
+                    os.environ["FAKE_DELAYED_SENTINEL"],
+                ]
+            )
+            Path(os.environ["FAKE_DIRECT_PID"]).write_text(str(os.getpid()))
+            Path(os.environ["FAKE_DESCENDANT_PID"]).write_text(str(descendant.pid))
+            Path(os.environ["FAKE_SPAWN_READY"]).write_text("ready")
             time.sleep(10)
         if should_delay:
             time.sleep(3)
@@ -218,23 +278,56 @@ def fake_gh_main(argv: list[str]) -> int:
             )
         if endpoint == f"repos/{REPOSITORY}/git/ref/tags/{TAG}":
             increment(state, "tag_ref_calls")
-            tag_object = "f" * 40 if scenario == "wrong_tag_object" else TAG_OBJECT
-            return finish(
-                0, encoded_json({"object": {"type": "tag", "sha": tag_object}})
-            )
+            tag_object: object = {
+                "type": "tag",
+                "sha": TAG_OBJECT,
+                "url": TAG_REF_OBJECT_URL,
+            }
+            if scenario == "tag_ref_wrong_type":
+                tag_object["type"] = "commit"
+            elif scenario in {"wrong_tag_object", "tag_ref_wrong_sha"}:
+                tag_object["sha"] = "f" * 40
+            elif scenario == "tag_ref_missing_object":
+                response = captured_tag_reference(tag_object)
+                del response["object"]
+                return finish(0, encoded_json(response))
+            elif scenario == "tag_ref_nonobject":
+                tag_object = ["tag", TAG_OBJECT, TAG_REF_OBJECT_URL]
+            elif scenario == "tag_ref_metadata_cannot_override":
+                tag_object = {
+                    "type": "commit",
+                    "sha": "f" * 40,
+                    "url": TAG_REF_OBJECT_URL,
+                    "expected_type": "tag",
+                    "expected_sha": TAG_OBJECT,
+                }
+            return finish(0, encoded_json(captured_tag_reference(tag_object)))
         if endpoint == f"repos/{REPOSITORY}/git/tags/{TAG_OBJECT}":
             increment(state, "tag_object_calls")
-            target = "f" * 40 if scenario == "wrong_tag_target" else TARGET_COMMIT
-            return finish(
-                0,
-                encoded_json(
-                    {
-                        "tag": TAG,
-                        "object": {"type": "commit", "sha": target},
-                        "verification": {"verified": True},
-                    }
-                ),
-            )
+            target: object = {
+                "type": "commit",
+                "sha": TARGET_COMMIT,
+                "url": TARGET_OBJECT_URL,
+            }
+            if scenario == "tag_target_wrong_type":
+                target["type"] = "tree"
+            elif scenario in {"wrong_tag_target", "tag_target_wrong_sha"}:
+                target["sha"] = "f" * 40
+            elif scenario == "tag_target_missing_object":
+                response = captured_annotated_tag(target)
+                del response["object"]
+                return finish(0, encoded_json(response))
+            elif scenario == "tag_target_nonobject":
+                target = f"commit:{TARGET_COMMIT}"
+            elif scenario == "tag_target_metadata_cannot_override":
+                target = {
+                    "type": "tree",
+                    "sha": "f" * 40,
+                    "url": TARGET_OBJECT_URL,
+                    "expected_type": "commit",
+                    "expected_sha": TARGET_COMMIT,
+                }
+            return finish(0, encoded_json(captured_annotated_tag(target)))
         return finish(64, stderr=f"unexpected API endpoint: {endpoint}\n")
 
     expected_verify = [
@@ -248,6 +341,8 @@ def fake_gh_main(argv: list[str]) -> int:
     ]
     if argv == expected_verify:
         count = increment(state, "verify_calls")
+        save_state(state)
+        delay("attestation", count)
         if scenario in {
             "exact_transient_then_success",
             "transient_until_deadline",
@@ -345,6 +440,10 @@ class VerifierBehaviorTests(unittest.TestCase):
         self.state = self.root / "state.json"
         self.output = self.root / "verified.json"
         self.child_pid = self.root / "child.pid"
+        self.direct_pid = self.root / "direct.pid"
+        self.descendant_pid = self.root / "descendant.pid"
+        self.spawn_ready = self.root / "spawn-ready"
+        self.delayed_sentinel = self.root / "delayed-survived"
         self.child_sentinel = self.root / "child-survived"
 
     def tearDown(self) -> None:
@@ -375,12 +474,18 @@ class VerifierBehaviorTests(unittest.TestCase):
         request_timeout: float = 1,
         interval: float = 0.01,
         attempts: int = 4,
+        reserve: float = 0.25,
+        verifier: Path = VERIFIER,
     ) -> tuple[subprocess.CompletedProcess[str], float, dict[str, object]]:
         assets = self.reset_evidence()
         self.state.unlink(missing_ok=True)
         self.output.unlink(missing_ok=True)
         self.child_pid.unlink(missing_ok=True)
         self.child_sentinel.unlink(missing_ok=True)
+        self.direct_pid.unlink(missing_ok=True)
+        self.descendant_pid.unlink(missing_ok=True)
+        self.spawn_ready.unlink(missing_ok=True)
+        self.delayed_sentinel.unlink(missing_ok=True)
         environment = {
             **os.environ,
             "PATH": f"{self.bin}:{os.environ['PATH']}",
@@ -391,14 +496,19 @@ class VerifierBehaviorTests(unittest.TestCase):
             "FAKE_EVIDENCE": str(self.evidence),
             "FAKE_CHILD_PID": str(self.child_pid),
             "FAKE_CHILD_SENTINEL": str(self.child_sentinel),
+            "FAKE_DIRECT_PID": str(self.direct_pid),
+            "FAKE_DESCENDANT_PID": str(self.descendant_pid),
+            "FAKE_SPAWN_READY": str(self.spawn_ready),
+            "FAKE_DELAYED_SENTINEL": str(self.delayed_sentinel),
             "RELEASE_VERIFY_DEADLINE_SECONDS": str(deadline),
             "RELEASE_VERIFY_REQUEST_TIMEOUT_SECONDS": str(request_timeout),
             "RELEASE_VERIFY_INTERVAL_SECONDS": str(interval),
             "RELEASE_VERIFY_MAX_ATTEMPTS": str(attempts),
+            "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS": str(reserve),
         }
         command = [
             sys.executable,
-            str(VERIFIER),
+            str(verifier),
             REPOSITORY,
             TAG,
             TAG_OBJECT,
@@ -415,6 +525,7 @@ class VerifierBehaviorTests(unittest.TestCase):
         state = (
             json.loads(self.state.read_text()) if self.state.exists() else {"calls": []}
         )
+        state["_test_started_monotonic"] = started
         state["_test_finished_monotonic"] = finished
         return result, elapsed, state
 
@@ -521,6 +632,29 @@ class VerifierBehaviorTests(unittest.TestCase):
             ["verified\n", "verified\n"],
         )
 
+    def test_real_shaped_git_objects_with_url_succeed(self) -> None:
+        result, _elapsed, state = self.invoke("immediate_success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(state["tag_ref_calls"], 3)
+        self.assertEqual(state["tag_object_calls"], 3)
+
+    def test_git_object_type_sha_and_shape_fail_closed(self) -> None:
+        cases = {
+            "tag_ref_wrong_type": "tag reference drifted",
+            "tag_ref_wrong_sha": "tag reference drifted",
+            "tag_ref_missing_object": "tag reference drifted",
+            "tag_ref_nonobject": "tag reference drifted",
+            "tag_ref_metadata_cannot_override": "tag reference drifted",
+            "tag_target_wrong_type": "signed tag object or target drifted",
+            "tag_target_wrong_sha": "signed tag object or target drifted",
+            "tag_target_missing_object": "signed tag object or target drifted",
+            "tag_target_nonobject": "signed tag object or target drifted",
+            "tag_target_metadata_cannot_override": "signed tag object or target drifted",
+        }
+        for scenario, message in cases.items():
+            with self.subTest(scenario=scenario):
+                self.assert_failure(scenario, message)
+
     def test_exact_transient_then_success(self) -> None:
         result, _elapsed, state = self.invoke("exact_transient_then_success")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -597,12 +731,15 @@ class VerifierBehaviorTests(unittest.TestCase):
 
     def test_global_deadline_is_measured_wall_clock(self) -> None:
         result, elapsed, state = self.invoke(
-            "all_commands_slow", deadline=2, request_timeout=10
+            "all_commands_slow",
+            deadline=2,
+            request_timeout=10,
+            reserve=0.05,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(
-            "global wall-clock deadline expired" in result.stderr
-            or "timed out after" in result.stderr
+            "attestation cutoff reached" in result.stderr
+            or "global wall-clock deadline expired" in result.stderr
         )
         self.assertGreaterEqual(elapsed, 1.7)
         self.assertLess(elapsed, 2.75)
@@ -649,37 +786,89 @@ class VerifierBehaviorTests(unittest.TestCase):
             f"(helper {elapsed:.3f}s)"
         )
 
-    def test_sleep_that_would_cross_deadline_is_omitted(self) -> None:
+    def test_sleep_that_would_cross_attestation_cutoff_is_omitted(self) -> None:
         result, elapsed, state = self.invoke(
             "transient_until_deadline",
             deadline=2,
             request_timeout=1,
-            interval=2,
+            interval=1,
             attempts=30,
+            reserve=1,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("would expire during attestation retry sleep", result.stderr)
-        self.assertLess(elapsed, 2)
+        self.assertIn("retry sleep would enter", result.stderr)
+        self.assertLess(elapsed, 1)
         self.assertEqual(state["verify_calls"], 1)
-        print(f"MEASURED_SLEEP_OMITTED_2S_DEADLINE={elapsed:.3f}s")
+        print(f"MEASURED_SLEEP_OMITTED_1S_CUTOFF={elapsed:.3f}s")
 
-    def test_exact_transient_response_is_bounded_by_real_deadline(self) -> None:
+    def test_exact_transient_response_stops_at_attestation_cutoff(self) -> None:
         result, elapsed, state = self.invoke(
             "transient_until_deadline",
-            deadline=1,
+            deadline=2,
             request_timeout=1,
             interval=0,
             attempts=100,
+            reserve=1,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertTrue(
-            "global wall-clock deadline expired" in result.stderr
-            or "timed out after" in result.stderr
-        )
+        self.assertIn("attestation cutoff reached", result.stderr)
         self.assertGreaterEqual(elapsed, 0.8)
-        self.assertLess(elapsed, 1.75)
+        self.assertLess(elapsed, 1.5)
         self.assertGreaterEqual(state["verify_calls"], 1)
-        print(f"MEASURED_TRANSIENT_GLOBAL_DEADLINE_1S={elapsed:.3f}s")
+        print(f"MEASURED_ATTESTATION_CUTOFF_1S={elapsed:.3f}s")
+
+    def test_attestation_before_cutoff_retains_finalization_reserve(self) -> None:
+        deadline = 5
+        reserve = 2
+        result, elapsed, state = self.invoke(
+            "attestation_near_cutoff",
+            deadline=deadline,
+            request_timeout=2,
+            reserve=reserve,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected_verify = [
+            "release",
+            "verify",
+            TAG,
+            "--repo",
+            HOSTED_REPOSITORY,
+            "--format",
+            "json",
+        ]
+        verify_index = state["calls"].index(expected_verify)
+        accepted_at = state["outcomes"][verify_index]["finished_monotonic"]
+        started_at = state["_test_started_monotonic"]
+        self.assertGreaterEqual(
+            started_at + deadline - accepted_at,
+            reserve - 0.1,
+        )
+        self.assertLess(elapsed, deadline)
+
+    def test_invalid_reserve_fails_before_github_command(self) -> None:
+        for reserve in (0, 2, 3):
+            with self.subTest(reserve=reserve):
+                result, _elapsed, state = self.invoke(
+                    "immediate_success",
+                    deadline=2,
+                    reserve=reserve,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS", result.stderr
+                )
+                self.assertEqual(state["calls"], [])
+
+    def test_attestation_request_timeout_is_not_retried(self) -> None:
+        result, _elapsed, state = self.invoke(
+            "attestation_timeout",
+            deadline=5,
+            request_timeout=0.5,
+            reserve=1,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("release attestation timed out", result.stderr)
+        self.assertEqual(state["verify_calls"], 1)
 
     def test_maximum_attempt_bound_remains_secondary(self) -> None:
         result, elapsed, state = self.invoke(
@@ -706,6 +895,97 @@ class VerifierBehaviorTests(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(child_pid, 0)
         print(f"MEASURED_CHILD_GROUP_TIMEOUT_0_25S={elapsed:.3f}s")
+
+    def test_alarm_at_spawn_registration_boundary_kills_descendants(self) -> None:
+        assets = self.reset_evidence()
+        harness = self.root / "spawn_boundary_harness.py"
+        verifier_directory = str(VERIFIER.parent)
+        arguments = [
+            REPOSITORY,
+            TAG,
+            TAG_OBJECT,
+            TARGET_COMMIT,
+            str(self.evidence),
+            str(self.output),
+        ]
+        harness.write_text(
+            "\n".join(
+                [
+                    "import os",
+                    "import signal",
+                    "import sys",
+                    "import time",
+                    "from pathlib import Path",
+                    f"sys.path.insert(0, {verifier_directory!r})",
+                    "import verify_immutable_release_attestation as verifier",
+                    "original_spawn = verifier.CommandRunner._spawn_process",
+                    "def spawn_with_pending_alarm(self, argv):",
+                    "    process = original_spawn(self, argv)",
+                    f"    ready = Path({str(self.spawn_ready)!r})",
+                    "    wait_deadline = time.monotonic() + 2",
+                    "    while not ready.exists():",
+                    "        if time.monotonic() >= wait_deadline:",
+                    "            raise RuntimeError('fake child did not become ready')",
+                    "        time.sleep(0.005)",
+                    "    os.kill(os.getpid(), signal.SIGALRM)",
+                    "    return process",
+                    "verifier.CommandRunner._spawn_process = spawn_with_pending_alarm",
+                    "try:",
+                    f"    status = verifier.main({arguments!r})",
+                    "except verifier.VerificationFailure as error:",
+                    "    print(f'immutable release verification failed: {error}', file=sys.stderr)",
+                    "    status = 1",
+                    "raise SystemExit(status)",
+                    "",
+                ]
+            )
+        )
+        environment = {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "FAKE_GH_SCENARIO": "spawn_registration_alarm",
+            "FAKE_GH_STATE": str(self.state),
+            "FAKE_BASELINE_ASSETS": json.dumps(assets),
+            "FAKE_EVIDENCE": str(self.evidence),
+            "FAKE_CHILD_PID": str(self.child_pid),
+            "FAKE_CHILD_SENTINEL": str(self.child_sentinel),
+            "FAKE_DIRECT_PID": str(self.direct_pid),
+            "FAKE_DESCENDANT_PID": str(self.descendant_pid),
+            "FAKE_SPAWN_READY": str(self.spawn_ready),
+            "FAKE_DELAYED_SENTINEL": str(self.delayed_sentinel),
+            "RELEASE_VERIFY_DEADLINE_SECONDS": "5",
+            "RELEASE_VERIFY_REQUEST_TIMEOUT_SECONDS": "2",
+            "RELEASE_VERIFY_INTERVAL_SECONDS": "0",
+            "RELEASE_VERIFY_MAX_ATTEMPTS": "2",
+            "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS": "1",
+        }
+        result = subprocess.run(
+            [sys.executable, str(harness)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=5,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("global wall-clock deadline expired", result.stderr)
+        direct_pid = int(self.direct_pid.read_text())
+        descendant_pid = int(self.descendant_pid.read_text())
+
+        def kill_survivor(pid: int) -> None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        self.addCleanup(kill_survivor, direct_pid)
+        self.addCleanup(kill_survivor, descendant_pid)
+        time.sleep(1.1)
+        self.assertFalse(self.delayed_sentinel.exists())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(direct_pid, 0)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(descendant_pid, 0)
 
     def test_monotonic_clock_rollback_and_malformed_values_fail_closed(self) -> None:
         values = iter([10.0, 9.0])

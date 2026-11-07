@@ -29,6 +29,10 @@ class GlobalDeadlineExceeded(VerificationFailure):
     pass
 
 
+class AttestationCutoffExceeded(VerificationFailure):
+    pass
+
+
 def fail(message: str) -> NoReturn:
     raise VerificationFailure(message)
 
@@ -85,6 +89,15 @@ class Deadline:
             raise GlobalDeadlineExceeded(f"global deadline expired during {phase}")
         return remaining
 
+    def remaining_before_reserve(self, reserve_seconds: float, phase: str) -> float:
+        remaining = self.remaining(phase) - reserve_seconds
+        if remaining <= 0:
+            raise AttestationCutoffExceeded(
+                f"attestation cutoff reached during {phase}; "
+                f"{reserve_seconds:g}-second finalization reserve is required"
+            )
+        return remaining
+
 
 class CommandRunner:
     def __init__(self, deadline: Deadline, request_timeout: float):
@@ -92,49 +105,104 @@ class CommandRunner:
         self.request_timeout = request_timeout
         self.active_process: subprocess.Popen[bytes] | None = None
 
-    def kill_active_group(self) -> None:
-        process = self.active_process
-        if process is None or process.poll() is not None:
-            return
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            return
-
-    def run(
-        self, argv: Sequence[str], phase: str
-    ) -> subprocess.CompletedProcess[bytes]:
-        remaining = self.deadline.remaining(phase)
-        timeout = min(self.request_timeout, remaining)
-        if timeout <= 0:
-            raise GlobalDeadlineExceeded(f"global deadline expired before {phase}")
-        process = subprocess.Popen(
+    def _spawn_process(self, argv: Sequence[str]) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
             list(argv),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
             env={**os.environ, "GH_HOST": "github.com"},
         )
-        self.active_process = process
+
+    @staticmethod
+    def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+        if process.poll() is not None:
+            return
         try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            return
+
+    @classmethod
+    def _kill_and_reap(cls, process: subprocess.Popen[bytes]) -> None:
+        cls._kill_process_group(process)
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            cls._kill_process_group(process)
+            process.wait()
+
+    def kill_active_group(self) -> None:
+        process = self.active_process
+        if process is not None:
+            self._kill_process_group(process)
+
+    def _clear_active_process(self, process: subprocess.Popen[bytes] | None) -> None:
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+        try:
+            if self.active_process is process:
+                self.active_process = None
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+    def run(
+        self,
+        argv: Sequence[str],
+        phase: str,
+        finalization_reserve_seconds: float = 0,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if finalization_reserve_seconds:
+            remaining = self.deadline.remaining_before_reserve(
+                finalization_reserve_seconds, phase
+            )
+        else:
+            remaining = self.deadline.remaining(phase)
+        timeout = min(self.request_timeout, remaining)
+        if timeout <= 0:
+            raise GlobalDeadlineExceeded(f"global deadline expired before {phase}")
+        cutoff_limits_command = (
+            finalization_reserve_seconds > 0 and remaining <= self.request_timeout
+        )
+
+        process: subprocess.Popen[bytes] | None = None
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+        try:
+            try:
+                process = self._spawn_process(argv)
+                self.active_process = process
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
             try:
                 stdout, stderr = process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired as error:
-                self.kill_active_group()
-                try:
-                    process.wait(timeout=0.1)
-                except subprocess.TimeoutExpired:
-                    pass
+                self._kill_and_reap(process)
+                if cutoff_limits_command:
+                    raise AttestationCutoffExceeded(
+                        f"attestation cutoff reached during {phase}; "
+                        f"{finalization_reserve_seconds:g}-second "
+                        "finalization reserve is required"
+                    ) from error
                 raise VerificationFailure(
                     f"{phase} timed out after {timeout:.3f} seconds"
                 ) from error
-            self.deadline.remaining(phase)
+            if finalization_reserve_seconds:
+                self.deadline.remaining_before_reserve(
+                    finalization_reserve_seconds, phase
+                )
+            else:
+                self.deadline.remaining(phase)
             return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
         except GlobalDeadlineExceeded:
-            self.kill_active_group()
+            if process is not None:
+                self._kill_and_reap(process)
+            raise
+        except BaseException:
+            if process is not None and process.poll() is None:
+                self._kill_and_reap(process)
             raise
         finally:
-            self.active_process = None
+            self._clear_active_process(process)
 
 
 @dataclass(frozen=True, order=True)
@@ -172,12 +240,14 @@ class Verifier:
         deadline: Deadline,
         max_attempts: int,
         interval_seconds: float,
+        finalization_reserve_seconds: float,
     ):
         self.identity = identity
         self.runner = runner
         self.deadline = deadline
         self.max_attempts = max_attempts
         self.interval_seconds = interval_seconds
+        self.finalization_reserve_seconds = finalization_reserve_seconds
         self.release_id: int | None = None
         self.baseline_assets = self.local_assets("baseline local asset inventory")
 
@@ -189,16 +259,30 @@ class Verifier:
             fail(f"{phase} returned malformed JSON")
         return value
 
-    def require_success_json(self, command: Sequence[str], phase: str) -> object:
-        result = self.runner.run(command, phase)
+    def require_success_json(
+        self,
+        command: Sequence[str],
+        phase: str,
+        finalization_reserve_seconds: float = 0,
+    ) -> object:
+        result = self.runner.run(command, phase, finalization_reserve_seconds)
         if result.returncode != 0:
             fail(f"{phase} failed with exit status {result.returncode}")
         if result.stderr:
             fail(f"{phase} wrote unexpected stderr")
         return self.parse_json(result.stdout, phase)
 
-    def local_assets(self, phase: str) -> tuple[Asset, ...]:
-        self.deadline.remaining(phase)
+    def remaining(self, phase: str, finalization_reserve_seconds: float = 0) -> float:
+        if finalization_reserve_seconds:
+            return self.deadline.remaining_before_reserve(
+                finalization_reserve_seconds, phase
+            )
+        return self.deadline.remaining(phase)
+
+    def local_assets(
+        self, phase: str, finalization_reserve_seconds: float = 0
+    ) -> tuple[Asset, ...]:
+        self.remaining(phase, finalization_reserve_seconds)
         try:
             entries = list(self.identity.evidence_directory.iterdir())
         except OSError as error:
@@ -207,7 +291,7 @@ class Verifier:
             fail("release evidence directory contains no assets")
         assets: list[Asset] = []
         for path in entries:
-            self.deadline.remaining(phase)
+            self.remaining(phase, finalization_reserve_seconds)
             if "\n" in path.name or "\r" in path.name:
                 fail("release asset name contains a line break")
             try:
@@ -222,7 +306,7 @@ class Verifier:
             try:
                 with path.open("rb") as asset_file:
                     while chunk := asset_file.read(1024 * 1024):
-                        self.deadline.remaining(phase)
+                        self.remaining(phase, finalization_reserve_seconds)
                         digest.update(chunk)
             except OSError as error:
                 fail(f"cannot read local release asset {path.name}: {error.strerror}")
@@ -230,17 +314,46 @@ class Verifier:
         names = [asset.name for asset in assets]
         if len(names) != len(set(names)):
             fail("local release asset names are not unique")
-        self.deadline.remaining(phase)
+        self.remaining(phase, finalization_reserve_seconds)
         return tuple(sorted(assets))
 
-    def api(self, endpoint: str, phase: str) -> object:
+    def api(
+        self, endpoint: str, phase: str, finalization_reserve_seconds: float = 0
+    ) -> object:
         return self.require_success_json(
-            ["gh", "api", "--hostname", "github.com", endpoint], phase
+            ["gh", "api", "--hostname", "github.com", endpoint],
+            phase,
+            finalization_reserve_seconds,
         )
 
-    def verify_identity(self, phase: str) -> None:
+    @staticmethod
+    def require_git_object(
+        value: object,
+        expected_type: str,
+        expected_sha: str,
+        failure_message: str,
+    ) -> None:
+        if not isinstance(value, dict):
+            fail(failure_message)
+        object_type = value.get("type")
+        object_sha = value.get("sha")
+        if (
+            not isinstance(object_type, str)
+            or not isinstance(object_sha, str)
+            or object_type != expected_type
+            or object_sha != expected_sha
+        ):
+            fail(failure_message)
+
+    def verify_identity(
+        self, phase: str, finalization_reserve_seconds: float = 0
+    ) -> None:
         identity = self.identity
-        repository = self.api(f"repos/{identity.repository}", f"{phase}: repository")
+        repository = self.api(
+            f"repos/{identity.repository}",
+            f"{phase}: repository",
+            finalization_reserve_seconds,
+        )
         if (
             not isinstance(repository, dict)
             or repository.get("full_name") != identity.repository
@@ -250,6 +363,7 @@ class Verifier:
         release = self.api(
             f"repos/{identity.repository}/releases/tags/{identity.tag}",
             f"{phase}: release",
+            finalization_reserve_seconds,
         )
         if not isinstance(release, dict):
             fail(f"{phase}: release response has the wrong type")
@@ -291,16 +405,21 @@ class Verifier:
         tag_ref = self.api(
             f"repos/{identity.repository}/git/ref/tags/{identity.tag}",
             f"{phase}: tag reference",
+            finalization_reserve_seconds,
         )
-        if not isinstance(tag_ref, dict) or tag_ref.get("object") != {
-            "type": "tag",
-            "sha": identity.tag_object,
-        }:
+        if not isinstance(tag_ref, dict):
             fail(f"{phase}: tag reference drifted")
+        self.require_git_object(
+            tag_ref.get("object"),
+            "tag",
+            identity.tag_object,
+            f"{phase}: tag reference drifted",
+        )
 
         tag_object = self.api(
             f"repos/{identity.repository}/git/tags/{identity.tag_object}",
             f"{phase}: tag object",
+            finalization_reserve_seconds,
         )
         if not isinstance(tag_object, dict):
             fail(f"{phase}: tag object response has the wrong type")
@@ -308,13 +427,20 @@ class Verifier:
         verification = tag_object.get("verification")
         if (
             tag_object.get("tag") != identity.tag
-            or target != {"type": "commit", "sha": identity.target_commit}
             or not isinstance(verification, dict)
             or verification.get("verified") is not True
         ):
             fail(f"{phase}: signed tag object or target drifted")
+        self.require_git_object(
+            target,
+            "commit",
+            identity.target_commit,
+            f"{phase}: signed tag object or target drifted",
+        )
 
-        current_assets = self.local_assets(f"{phase}: local asset inventory")
+        current_assets = self.local_assets(
+            f"{phase}: local asset inventory", finalization_reserve_seconds
+        )
         if current_assets != self.baseline_assets:
             fail(f"{phase}: local release asset inventory drifted")
         expected_assets = sorted(asset.api_identity() for asset in self.baseline_assets)
@@ -438,8 +564,19 @@ class Verifier:
             f"no attestations for tag {identity.tag} (sha1:{identity.tag_object})\n"
         ).encode()
         for attempt in range(1, self.max_attempts + 1):
-            self.verify_identity(f"attempt {attempt} pre-attestation")
-            result = self.runner.run(command, f"attempt {attempt}: release attestation")
+            reserve = self.finalization_reserve_seconds
+            self.deadline.remaining_before_reserve(
+                reserve, f"attempt {attempt} admission"
+            )
+            self.verify_identity(
+                f"attempt {attempt} pre-attestation",
+                reserve,
+            )
+            result = self.runner.run(
+                command,
+                f"attempt {attempt}: release attestation",
+                reserve,
+            )
             if result.returncode == 0:
                 if result.stderr:
                     fail("release attestation verification wrote unexpected stderr")
@@ -453,17 +590,20 @@ class Verifier:
                 fail("release attestation verification returned a non-retryable result")
             if attempt == self.max_attempts:
                 fail("release attestation remained unavailable at the attempt limit")
-            remaining = self.deadline.remaining("attestation retry sleep")
+            remaining = self.deadline.remaining_before_reserve(
+                reserve, "attestation retry sleep"
+            )
             if self.interval_seconds >= remaining:
-                raise GlobalDeadlineExceeded(
-                    "global deadline would expire during attestation retry sleep"
+                raise AttestationCutoffExceeded(
+                    "attestation retry sleep would enter the "
+                    f"{reserve:g}-second finalization reserve"
                 )
             print(
                 f"immutable release attestation pending; retrying attempt {attempt + 1} of {self.max_attempts}",
                 file=sys.stderr,
             )
             time.sleep(self.interval_seconds)
-            self.deadline.remaining("attestation retry sleep")
+            self.deadline.remaining_before_reserve(reserve, "attestation retry sleep")
         fail("release attestation verification did not complete")
 
     def verify_assets(self) -> None:
@@ -559,6 +699,14 @@ def main(argv: Sequence[str]) -> int:
     )
     interval_seconds = parse_nonnegative_float("RELEASE_VERIFY_INTERVAL_SECONDS", "10")
     max_attempts = parse_positive_int("RELEASE_VERIFY_MAX_ATTEMPTS", "30")
+    finalization_reserve_seconds = parse_positive_float(
+        "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS", "120"
+    )
+    if finalization_reserve_seconds >= deadline_seconds:
+        fail(
+            "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS must be positive and "
+            "strictly less than RELEASE_VERIFY_DEADLINE_SECONDS"
+        )
     identity = parse_identity(argv)
     deadline = Deadline(deadline_seconds)
     runner = CommandRunner(deadline, request_timeout)
@@ -570,7 +718,14 @@ def main(argv: Sequence[str]) -> int:
     previous_handler = signal.signal(signal.SIGALRM, deadline_alarm)
     signal.setitimer(signal.ITIMER_REAL, deadline_seconds)
     try:
-        Verifier(identity, runner, deadline, max_attempts, interval_seconds).run()
+        Verifier(
+            identity,
+            runner,
+            deadline,
+            max_attempts,
+            interval_seconds,
+            finalization_reserve_seconds,
+        ).run()
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_handler)
