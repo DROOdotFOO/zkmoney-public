@@ -10,11 +10,11 @@ import selectors
 import stat
 import subprocess
 import sys
-import threading
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, NoReturn, Sequence
+from typing import BinaryIO, Callable, NoReturn, Sequence
 
 EXPECTED_STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
 EXPECTED_PREDICATE_TYPE = "https://in-toto.io/attestation/release/v0.2"
@@ -69,6 +69,8 @@ def parse_positive_int(name: str, default: str) -> int:
 
 
 class Deadline:
+    _MAX_WAIT_SLICE_SECONDS = 0.05
+
     def __init__(self, seconds: float, clock: Callable[[], float] = time.monotonic):
         self._clock = clock
         started = clock()
@@ -78,20 +80,49 @@ class Deadline:
         self._end = started + seconds
         if not math.isfinite(self._end):
             fail("monotonic deadline is malformed")
-        self._expired = threading.Event()
+        self._expired = False
 
     def expire(self) -> None:
-        self._expired.set()
+        self._expired = True
 
     def raise_if_expired(self) -> None:
-        if self._expired.is_set():
+        if self._expired:
             raise GlobalDeadlineExceeded("global wall-clock deadline expired")
 
-    def wait(self, seconds: float, phase: str) -> None:
-        if self._expired.wait(seconds):
-            self.raise_if_expired()
-        self.remaining(phase)
+    def _sleep_slice(self, seconds: float) -> None:
+        time.sleep(seconds)
 
+    def wait(
+        self,
+        seconds: float,
+        phase: str,
+        reserve_seconds: float = 0,
+    ) -> None:
+        if reserve_seconds:
+            self.remaining_before_reserve(reserve_seconds, phase)
+        else:
+            self.remaining(phase)
+        target = self._last + seconds
+        if not math.isfinite(target):
+            fail("monotonic retry target is malformed")
+
+        while True:
+            self.raise_if_expired()
+            if reserve_seconds:
+                budget = self.remaining_before_reserve(reserve_seconds, phase)
+            else:
+                budget = self.remaining(phase)
+            remaining_interval = target - self._last
+            if remaining_interval <= 0:
+                return
+            sleep_seconds = min(
+                self._MAX_WAIT_SLICE_SECONDS,
+                remaining_interval,
+                budget,
+            )
+            self.raise_if_expired()
+            self._sleep_slice(sleep_seconds)
+            self.raise_if_expired()
 
     def remaining(self, phase: str) -> float:
         self.raise_if_expired()
@@ -114,6 +145,9 @@ class Deadline:
                 f"{reserve_seconds:g}-second finalization reserve is required"
             )
         return remaining
+
+    def confirm_output_publication(self) -> None:
+        self.remaining("publishing verified attestation")
 
 
 @dataclass(frozen=True)
@@ -792,7 +826,11 @@ class Verifier:
                 f"immutable release attestation pending; retrying attempt {attempt + 1} of {self.max_attempts}",
                 file=sys.stderr,
             )
-            self.deadline.wait(self.interval_seconds, "attestation retry sleep")
+            self.deadline.wait(
+                self.interval_seconds,
+                "attestation retry sleep",
+                reserve,
+            )
             self.deadline.remaining_before_reserve(reserve, "attestation retry sleep")
         fail("release attestation verification did not complete")
 
@@ -822,23 +860,50 @@ class Verifier:
         if verified != len(self.baseline_assets):
             fail("not every release asset was verified")
 
-    def run(self) -> None:
+    def _write_temporary_output_bytes(
+        self,
+        output_file: BinaryIO,
+        attestation: bytes,
+    ) -> None:
+        output_file.write(attestation)
+
+    def write_temporary_output(self, attestation: bytes) -> Path:
+        output = self.identity.output
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            dir=output.parent,
+        )
+        temporary_output = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb", closefd=True) as output_file:
+                self._write_temporary_output_bytes(output_file, attestation)
+                output_file.flush()
+                os.fsync(output_file.fileno())
+            self.deadline.remaining("temporary verified attestation completion")
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            temporary_output.unlink(missing_ok=True)
+            raise
+        return temporary_output
+
+    def run(self) -> Path:
         attestation = self.verify_attestation()
         self.verify_identity("post-attestation identity")
         self.verify_assets()
         self.verify_identity("post-asset identity")
         self.deadline.remaining("writing verified attestation")
-        descriptor = os.open(
-            self.identity.output,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-            0o600,
-        )
-        with os.fdopen(descriptor, "wb", closefd=True) as output_file:
-            output_file.write(attestation)
-            output_file.flush()
-            os.fsync(output_file.fileno())
-        os.chmod(self.identity.output, 0o600)
-        self.deadline.remaining("verified attestation completion")
+        temporary_output = self.write_temporary_output(attestation)
+        try:
+            self.deadline.remaining("verified attestation completion")
+        except BaseException:
+            temporary_output.unlink(missing_ok=True)
+            raise
+        return temporary_output
 
 
 def parse_identity(argv: Sequence[str]) -> ExpectedIdentity:
@@ -905,23 +970,32 @@ def main(argv: Sequence[str]) -> int:
         deadline.expire()
         runner.interrupt_active_group()
 
-    previous_handler = signal.signal(signal.SIGALRM, deadline_alarm)
-    signal.setitimer(signal.ITIMER_REAL, deadline_seconds)
+    temporary_output: Path | None = None
     try:
-        Verifier(
-            identity,
-            runner,
-            deadline,
-            max_attempts,
-            interval_seconds,
-            finalization_reserve_seconds,
-        ).run()
+        previous_handler = signal.signal(signal.SIGALRM, deadline_alarm)
+        signal.setitimer(signal.ITIMER_REAL, deadline_seconds)
+        try:
+            temporary_output = Verifier(
+                identity,
+                runner,
+                deadline,
+                max_attempts,
+                interval_seconds,
+                finalization_reserve_seconds,
+            ).run()
+            deadline.confirm_output_publication()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
         deadline.raise_if_expired()
+        if temporary_output is None:
+            fail("verified attestation temporary output is missing")
+        os.replace(temporary_output, identity.output)
+        temporary_output = None
+        return 0
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_handler)
-    deadline.raise_if_expired()
-    return 0
+        if temporary_output is not None:
+            temporary_output.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

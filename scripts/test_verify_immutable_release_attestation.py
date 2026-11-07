@@ -37,6 +37,8 @@ LOADED_GLOBAL_DEADLINE_UPPER_SECONDS = 5
 LOADED_COMMAND_TIMEOUT_UPPER_SECONDS = 2
 LOADED_HELPER_TIMEOUT_UPPER_SECONDS = 4
 SLEEP_REFUSAL_UPPER_SECONDS = 3
+ALARM_RETURN_UPPER_SECONDS = 0.75
+ALARM_WATCHDOG_SECONDS = 6
 TAG_REF_OBJECT_URL = f"https://api.github.com/repos/{REPOSITORY}/git/tags/{TAG_OBJECT}"
 TARGET_OBJECT_URL = (
     f"https://api.github.com/repos/{REPOSITORY}/git/commits/{TARGET_COMMIT}"
@@ -102,7 +104,11 @@ def baseline_assets() -> list[dict[str, object]]:
     return json.loads(os.environ["FAKE_BASELINE_ASSETS"])
 
 
-def valid_attestation() -> dict[str, object]:
+def valid_attestation(
+    assets: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    if assets is None:
+        assets = baseline_assets()
     subjects: list[dict[str, object]] = [
         {
             "uri": f"pkg:github/{REPOSITORY}@{TAG}",
@@ -111,7 +117,7 @@ def valid_attestation() -> dict[str, object]:
     ]
     subjects.extend(
         {"name": asset["name"], "digest": {"sha256": asset["sha256"]}}
-        for asset in baseline_assets()
+        for asset in assets
     )
     return {
         "attestation": {"bundle": {}},
@@ -232,6 +238,16 @@ def fake_gh_main(argv: list[str]) -> int:
                 os.environ["FAKE_DESCENDANT_PID"],
                 os.environ["FAKE_DELAYED_SENTINEL"],
                 scenario != "leader_exits_before_timeout",
+            )
+        if (
+            scenario == "transient_with_descendant"
+            and kind == "attestation"
+            and count == 1
+        ):
+            spawn_escape_descendant(
+                os.environ["FAKE_DESCENDANT_PID"],
+                os.environ["FAKE_DELAYED_SENTINEL"],
+                True,
             )
         if (
             scenario == "spawn_registration_alarm"
@@ -396,6 +412,7 @@ def fake_gh_main(argv: list[str]) -> int:
         if scenario in {
             "exact_transient_then_success",
             "transient_until_deadline",
+            "transient_with_descendant",
             "transient_wrong_sha",
             "transient_wrong_tag",
             "transient_prefix",
@@ -404,7 +421,10 @@ def fake_gh_main(argv: list[str]) -> int:
             "transient_stdout",
             "transient_wrong_status",
         }:
-            if scenario == "transient_until_deadline" or count == 1:
+            if (
+                scenario in {"transient_until_deadline", "transient_with_descendant"}
+                or count == 1
+            ):
                 message = f"no attestations for tag {TAG} (sha1:{TAG_OBJECT})"
                 if scenario == "transient_wrong_sha":
                     message = f"no attestations for tag {TAG} (sha1:{'f' * 40})"
@@ -530,6 +550,8 @@ class VerifierBehaviorTests(unittest.TestCase):
         assets = self.reset_evidence()
         self.state.unlink(missing_ok=True)
         self.output.unlink(missing_ok=True)
+        for temporary_output in self.root.glob(f".{self.output.name}.*.tmp"):
+            temporary_output.unlink()
         self.child_pid.unlink(missing_ok=True)
         self.child_sentinel.unlink(missing_ok=True)
         self.direct_pid.unlink(missing_ok=True)
@@ -585,6 +607,11 @@ class VerifierBehaviorTests(unittest.TestCase):
         self.assertIn(message, result.stderr, scenario)
         self.assertFalse(self.output.exists(), scenario)
         self.assert_no_mutation_calls(state)
+        self.assertEqual(
+            list(self.root.glob(f".{self.output.name}.*.tmp")),
+            [],
+            scenario,
+        )
 
     def assert_no_mutation_calls(self, state: dict[str, object]) -> None:
         for call in state.get("calls", []):
@@ -632,6 +659,8 @@ class VerifierBehaviorTests(unittest.TestCase):
         assets = self.reset_evidence()
         self.state.unlink(missing_ok=True)
         self.output.unlink(missing_ok=True)
+        for temporary_output in self.root.glob(f".{self.output.name}.*.tmp"):
+            temporary_output.unlink()
         self.direct_pid.unlink(missing_ok=True)
         self.descendant_pid.unlink(missing_ok=True)
         self.spawn_ready.unlink(missing_ok=True)
@@ -654,7 +683,6 @@ class VerifierBehaviorTests(unittest.TestCase):
                     "import os",
                     "import signal",
                     "import sys",
-                    "import threading",
                     "import time",
                     "from pathlib import Path",
                     f"sys.path.insert(0, {verifier_directory!r})",
@@ -663,39 +691,49 @@ class VerifierBehaviorTests(unittest.TestCase):
                     f"ARGUMENTS = {arguments!r}",
                     f"ALARM_STATE = Path({str(alarm_state)!r})",
                     f"SPAWN_READY = Path({str(self.spawn_ready)!r})",
+                    "FAKE_STATE = Path(os.environ['FAKE_GH_STATE'])",
+                    "OUTPUT = Path(ARGUMENTS[-1])",
                     "OriginalRunner = verifier.CommandRunner",
                     "OriginalDeadline = verifier.Deadline",
                     "OriginalVerifierRun = verifier.Verifier.run",
-                    "class ObservedEvent:",
-                    "    def __init__(self, delegate, entered):",
-                    "        self.delegate = delegate",
-                    "        self.entered = entered",
-                    "    def set(self):",
-                    "        self.delegate.set()",
-                    "    def is_set(self):",
-                    "        return self.delegate.is_set()",
-                    "    def wait(self, timeout):",
-                    "        self.entered.set()",
-                    "        return self.delegate.wait(timeout)",
+                    "OriginalWriteTemporary = verifier.Verifier.write_temporary_output",
+                    "OriginalWriteBytes = verifier.Verifier._write_temporary_output_bytes",
+                    "alarm_monotonic = None",
+                    "alarm_call_count = None",
+                    "def call_count():",
+                    "    if not FAKE_STATE.exists():",
+                    "        return 0",
+                    "    return len(json.loads(FAKE_STATE.read_text()).get('calls', []))",
+                    "def record_alarm():",
+                    "    global alarm_monotonic, alarm_call_count",
+                    "    if alarm_monotonic is None:",
+                    "        alarm_monotonic = time.monotonic()",
+                    "        alarm_call_count = call_count()",
+                    "def trigger_alarm():",
+                    "    record_alarm()",
+                    "    os.kill(os.getpid(), signal.SIGALRM)",
                     "class BoundaryDeadline(OriginalDeadline):",
-                    "    def wait(self, seconds, phase):",
-                    "        if BOUNDARY == 'pre-sleep':",
-                    "            os.kill(os.getpid(), signal.SIGALRM)",
-                    "            return super().wait(seconds, phase)",
-                    "        if BOUNDARY != 'during-sleep':",
-                    "            return super().wait(seconds, phase)",
-                    "        entered = threading.Event()",
-                    "        self._expired = ObservedEvent(self._expired, entered)",
-                    "        def trigger():",
-                    "            if not entered.wait(1):",
-                    "                return",
-                    "            os.kill(os.getpid(), signal.SIGALRM)",
-                    "        trigger_thread = threading.Thread(target=trigger)",
-                    "        trigger_thread.start()",
-                    "        try:",
-                    "            return super().wait(seconds, phase)",
-                    "        finally:",
-                    "            trigger_thread.join(timeout=1)",
+                    "    def expire(self):",
+                    "        record_alarm()",
+                    "        super().expire()",
+                    "    def _sleep_slice(self, seconds):",
+                    "        if BOUNDARY == 'during-slice':",
+                    "            signal.setitimer(signal.ITIMER_REAL, min(seconds / 2, 0.01))",
+                    "        result = super()._sleep_slice(seconds)",
+                    "        if BOUNDARY == 'post-slice':",
+                    "            trigger_alarm()",
+                    "        return result",
+                    "    def wait(self, seconds, phase, reserve_seconds=0):",
+                    "        if BOUNDARY == 'pre-wait':",
+                    "            trigger_alarm()",
+                    "        result = super().wait(seconds, phase, reserve_seconds)",
+                    "        if BOUNDARY == 'interval-boundary':",
+                    "            trigger_alarm()",
+                    "        return result",
+                    "    def confirm_output_publication(self):",
+                    "        if BOUNDARY == 'pre-replace':",
+                    "            trigger_alarm()",
+                    "        return super().confirm_output_publication()",
                     "class BoundaryRunner(OriginalRunner):",
                     "    instance = None",
                     "    last_process = None",
@@ -703,6 +741,10 @@ class VerifierBehaviorTests(unittest.TestCase):
                     "    def __init__(self, deadline, request_timeout):",
                     "        super().__init__(deadline, request_timeout)",
                     "        type(self).instance = self",
+                    "    def run(self, argv, phase, finalization_reserve_seconds=0):",
+                    "        if BOUNDARY == 'pre-next-call' and call_count() == 5:",
+                    "            trigger_alarm()",
+                    "        return super().run(argv, phase, finalization_reserve_seconds)",
                     "    def _spawn_process(self, argv):",
                     "        process = super()._spawn_process(argv)",
                     "        type(self).last_process = process",
@@ -712,7 +754,7 @@ class VerifierBehaviorTests(unittest.TestCase):
                     "                if time.monotonic() >= limit:",
                     "                    raise RuntimeError('fake child did not become ready')",
                     "                time.sleep(0.005)",
-                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "            trigger_alarm()",
                     "        return process",
                     "    def _collect_output(self, active_group, timeout, child_exited):",
                     "        if BOUNDARY == 'running-command':",
@@ -721,28 +763,45 @@ class VerifierBehaviorTests(unittest.TestCase):
                     "                if time.monotonic() >= limit:",
                     "                    raise RuntimeError('fake child did not become ready')",
                     "                time.sleep(0.005)",
-                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "            trigger_alarm()",
                     "        result = super()._collect_output(active_group, timeout, child_exited)",
                     "        if BOUNDARY == 'pre-cleanup':",
-                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "            trigger_alarm()",
                     "        return result",
                     "    @staticmethod",
                     "    def _send_process_group_signal(process_group_id):",
                     "        if BOUNDARY == 'during-cleanup' and not BoundaryRunner.cleanup_alarm_sent:",
                     "            BoundaryRunner.cleanup_alarm_sent = True",
-                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "            trigger_alarm()",
                     "        OriginalRunner._send_process_group_signal(process_group_id)",
                     "    def _finalize_process_group(self, active_group, previous_handler, original_mask):",
                     "        super()._finalize_process_group(active_group, previous_handler, original_mask)",
                     "        if BOUNDARY == 'post-cleanup':",
-                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "            trigger_alarm()",
+                    "def write_temporary_bytes(self, output_file, attestation):",
+                    "    if BOUNDARY != 'temp-write':",
+                    "        return OriginalWriteBytes(self, output_file, attestation)",
+                    "    midpoint = len(attestation) // 2",
+                    "    output_file.write(attestation[:midpoint])",
+                    "    trigger_alarm()",
+                    "    output_file.write(attestation[midpoint:])",
+                    "def write_temporary(self, attestation):",
+                    "    result = OriginalWriteTemporary(self, attestation)",
+                    "    if BOUNDARY == 'post-temp':",
+                    "        trigger_alarm()",
+                    "    return result",
                     "def verifier_run(self):",
                     "    if BOUNDARY == 'no-active-command':",
-                    "        os.kill(os.getpid(), signal.SIGALRM)",
-                    "        return None",
-                    "    return OriginalVerifierRun(self)",
+                    "        trigger_alarm()",
+                    "        self.deadline.raise_if_expired()",
+                    "    result = OriginalVerifierRun(self)",
+                    "    if BOUNDARY == 'post-run':",
+                    "        trigger_alarm()",
+                    "    return result",
                     "verifier.CommandRunner = BoundaryRunner",
                     "verifier.Deadline = BoundaryDeadline",
+                    "verifier.Verifier._write_temporary_output_bytes = write_temporary_bytes",
+                    "verifier.Verifier.write_temporary_output = write_temporary",
                     "verifier.Verifier.run = verifier_run",
                     "before_alarm = signal.getsignal(signal.SIGALRM)",
                     "before_child = signal.getsignal(signal.SIGCHLD)",
@@ -754,6 +813,8 @@ class VerifierBehaviorTests(unittest.TestCase):
                     "except verifier.VerificationFailure as caught:",
                     "    status = 1",
                     "    error = str(caught)",
+                    "returned_monotonic = time.monotonic()",
+                    "exit_call_count = call_count()",
                     "runner = BoundaryRunner.instance",
                     "process = BoundaryRunner.last_process",
                     "group_absent = None",
@@ -770,10 +831,16 @@ class VerifierBehaviorTests(unittest.TestCase):
                     "ALARM_STATE.write_text(json.dumps({",
                     "    'status': status,",
                     "    'error': error,",
+                    "    'alarm_monotonic': alarm_monotonic,",
+                    "    'returned_monotonic': returned_monotonic,",
+                    "    'alarm_call_count': alarm_call_count,",
+                    "    'exit_call_count': exit_call_count,",
                     "    'active_group_cleared': runner is not None and runner.active_group is None,",
                     "    'leader_reaped': process is None or process.returncode is not None,",
                     "    'group_absent': group_absent,",
                     "    'process_group_id': None if process is None else process.pid,",
+                    "    'output_exists': OUTPUT.exists(),",
+                    "    'temporary_outputs': [str(path) for path in OUTPUT.parent.glob(f'.{OUTPUT.name}.*.tmp')],",
                     "    'sigalrm_restored': signal.getsignal(signal.SIGALRM) == before_alarm,",
                     "    'sigchld_restored': signal.getsignal(signal.SIGCHLD) == before_child,",
                     "    'mask_restored': after_mask == before_mask,",
@@ -805,31 +872,63 @@ class VerifierBehaviorTests(unittest.TestCase):
             "RELEASE_VERIFY_MAX_ATTEMPTS": "3",
             "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS": "1",
         }
-        result = subprocess.run(
-            [sys.executable, str(harness)],
-            capture_output=True,
-            text=True,
-            env=environment,
-            timeout=10,
-        )
+        try:
+            result = subprocess.run(
+                [sys.executable, str(harness)],
+                capture_output=True,
+                text=True,
+                env=environment,
+                timeout=ALARM_WATCHDOG_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            self.fail(f"alarm watchdog fired at {boundary}: {error}")
         self.assertTrue(
             alarm_state.exists(),
             f"alarm harness did not record state: rc={result.returncode}, stderr={result.stderr!r}",
         )
-        return result, json.loads(alarm_state.read_text())
+        recorded_state = json.loads(alarm_state.read_text())
+        recorded_state["watchdog_fired"] = False
+        recorded_state["fake_state"] = (
+            json.loads(self.state.read_text()) if self.state.exists() else {"calls": []}
+        )
+        return result, recorded_state
 
     def assert_alarm_boundary_state(
         self, result: subprocess.CompletedProcess[str], state: dict[str, object]
     ) -> None:
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("global wall-clock deadline expired", result.stderr)
+        self.assertEqual(result.stdout, "")
         self.assertEqual(state["status"], 1)
         self.assertIn("global wall-clock deadline expired", str(state["error"]))
+        self.assertFalse(state["watchdog_fired"])
         self.assertTrue(state["active_group_cleared"])
         self.assertTrue(state["leader_reaped"])
+        self.assertFalse(state["output_exists"])
+        self.assertEqual(state["temporary_outputs"], [])
         self.assertTrue(state["sigalrm_restored"])
         self.assertTrue(state["sigchld_restored"])
         self.assertTrue(state["mask_restored"])
+        self.assertIsInstance(state["alarm_monotonic"], float)
+        self.assertIsInstance(state["returned_monotonic"], float)
+        self.assertEqual(state["alarm_call_count"], state["exit_call_count"])
+
+    def assert_retry_alarm_boundary(
+        self, result: subprocess.CompletedProcess[str], state: dict[str, object]
+    ) -> None:
+        self.assert_alarm_boundary_state(result, state)
+        elapsed = float(state["returned_monotonic"]) - float(
+            state["alarm_monotonic"]
+        )
+        self.assertGreaterEqual(elapsed, 0)
+        self.assertLess(elapsed, ALARM_RETURN_UPPER_SECONDS)
+        fake_state = state["fake_state"]
+        assert isinstance(fake_state, dict)
+        self.assertEqual(state["exit_call_count"], len(fake_state["calls"]))
+        self.assertEqual(fake_state["verify_calls"], 1)
+        self.assertEqual(fake_state["repository_calls"], 1)
+        self.assertEqual(len(fake_state["calls"]), 5)
+        self.assert_alarm_processes_removed(state)
 
     def assert_alarm_group_absent(self, state: dict[str, object]) -> None:
         process_group_id = state["process_group_id"]
@@ -855,6 +954,11 @@ class VerifierBehaviorTests(unittest.TestCase):
         result, _elapsed, state = self.invoke("immediate_success")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.output.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(
+            self.output.read_bytes(),
+            encoded_json(valid_attestation(self.reset_evidence())).encode(),
+        )
+        self.assertEqual(list(self.root.glob(f".{self.output.name}.*.tmp")), [])
         self.assertEqual(state["verify_calls"], 1)
         self.assertEqual(state["asset_calls"], 2)
         self.assertEqual(state["repository_calls"], 3)
@@ -1091,9 +1195,15 @@ class VerifierBehaviorTests(unittest.TestCase):
             reserve=4,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("retry sleep would enter", result.stderr)
+        self.assertIn(
+            "attestation retry sleep would enter the "
+            "4-second finalization reserve",
+            result.stderr,
+        )
         self.assertLess(elapsed, SLEEP_REFUSAL_UPPER_SECONDS)
         self.assertEqual(state["verify_calls"], 1)
+        self.assertEqual(state["repository_calls"], 1)
+        self.assertEqual(len(state["calls"]), 5)
         print(f"MEASURED_SLEEP_OMITTED_4S_CUTOFF={elapsed:.3f}s")
 
     def test_exact_transient_response_stops_at_attestation_cutoff(self) -> None:
@@ -1265,15 +1375,51 @@ class VerifierBehaviorTests(unittest.TestCase):
 
     def test_alarm_immediately_before_retry_sleep_prevents_wait(self) -> None:
         result, state = self.invoke_alarm_boundary(
-            "pre-sleep", "transient_until_deadline"
+            "pre-wait", "transient_with_descendant"
         )
+        self.assert_retry_alarm_boundary(result, state)
+
+    def test_alarm_during_retry_wait_slice_interrupts_wait(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "during-slice", "transient_with_descendant"
+        )
+        self.assert_retry_alarm_boundary(result, state)
+
+    def test_alarm_immediately_after_retry_slice_interrupts_wait(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "post-slice", "transient_with_descendant"
+        )
+        self.assert_retry_alarm_boundary(result, state)
+
+    def test_alarm_at_retry_interval_boundary_prevents_next_call(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "interval-boundary", "transient_with_descendant"
+        )
+        self.assert_retry_alarm_boundary(result, state)
+
+    def test_alarm_immediately_before_next_github_call_prevents_call(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "pre-next-call", "transient_with_descendant"
+        )
+        self.assert_retry_alarm_boundary(result, state)
+
+    def test_alarm_during_temporary_output_write_removes_output(self) -> None:
+        result, state = self.invoke_alarm_boundary("temp-write", "immediate_success")
         self.assert_alarm_boundary_state(result, state)
         self.assert_alarm_group_absent(state)
 
-    def test_alarm_during_retry_wait_interrupts_wait(self) -> None:
-        result, state = self.invoke_alarm_boundary(
-            "during-sleep", "transient_until_deadline"
-        )
+    def test_alarm_after_temporary_output_removes_output(self) -> None:
+        result, state = self.invoke_alarm_boundary("post-temp", "immediate_success")
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_group_absent(state)
+
+    def test_alarm_at_previous_final_output_boundary_removes_output(self) -> None:
+        result, state = self.invoke_alarm_boundary("post-run", "immediate_success")
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_group_absent(state)
+
+    def test_alarm_before_atomic_output_replacement_removes_output(self) -> None:
+        result, state = self.invoke_alarm_boundary("pre-replace", "immediate_success")
         self.assert_alarm_boundary_state(result, state)
         self.assert_alarm_group_absent(state)
 

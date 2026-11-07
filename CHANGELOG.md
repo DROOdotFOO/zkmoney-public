@@ -6,8 +6,9 @@
 - Bound every post-publication GitHub read and asset verification with one monotonic 300-second hard deadline and a real per-command 15-second process timeout.
 - Reserve the final 120 seconds for post-attestation identity and asset verification. The observed 29 sequential subprocesses took 76.9 seconds, leaving about 43 seconds of operational margin. The reserve is not a completion guarantee; severe network delay can still exhaust the unextended 300-second deadline and fail closed after publication.
 - Accept GitHub's documented Git-object response shape while requiring exact typed tag-object and target-commit identities, then bind the verified attestation to the immutable release ID and complete asset inventory.
-- Register each dedicated process group atomically with the alarm handler. Defer alarm failure until structured cleanup has terminated all group members, closed pipes, reaped the leader, cleared active state, and restored signal state, including when the leader exited first.
-- Exercise publish-job ordering, strict command arguments, retry classification, identity drift, discriminating loaded timing bounds, alarm boundaries, and leader-exited-first cleanup before release qualification.
+- Register each dedicated process group atomically with the alarm handler. Record deadline expiration in a plain lock-free flag, poll retry waits in bounded monotonic slices, and defer failure until structured cleanup has terminated the direct child and descendants that remain in its managed process group, closed pipes, reaped the leader, cleared active state, and restored signal state.
+- Publish verified local attestation evidence atomically from a mode-0600 temporary file only after final identity and deadline checks succeed; remove temporary evidence on every failure.
+- Exercise publish-job ordering, strict command arguments and counts, retry classification, identity drift, discriminating loaded timing bounds, lock-free alarm boundaries, atomic output publication, and leader-exited-first cleanup before release qualification.
 - Preserve the v1.0.8 tag, immutable release, image and evidence as frozen historical records; v1.0.9 uses distinct branch, tag, artifact and certificate identities.
 
 ## 1.0.8
