@@ -10,6 +10,7 @@ import selectors
 import stat
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,8 +78,23 @@ class Deadline:
         self._end = started + seconds
         if not math.isfinite(self._end):
             fail("monotonic deadline is malformed")
+        self._expired = threading.Event()
+
+    def expire(self) -> None:
+        self._expired.set()
+
+    def raise_if_expired(self) -> None:
+        if self._expired.is_set():
+            raise GlobalDeadlineExceeded("global wall-clock deadline expired")
+
+    def wait(self, seconds: float, phase: str) -> None:
+        if self._expired.wait(seconds):
+            self.raise_if_expired()
+        self.remaining(phase)
+
 
     def remaining(self, phase: str) -> float:
+        self.raise_if_expired()
         now = self._clock()
         if not math.isfinite(now):
             fail("monotonic clock returned a malformed value")
@@ -113,6 +129,8 @@ class CommandRunner:
         self.deadline = deadline
         self.request_timeout = request_timeout
         self.active_group: ActiveProcessGroup | None = None
+        self._deferred_signal_error: OSError | None = None
+        self._deadline_signal_sent = False
 
     def _spawn_process(self, argv: Sequence[str]) -> subprocess.Popen[bytes]:
         return subprocess.Popen(
@@ -128,16 +146,40 @@ class CommandRunner:
         os.killpg(process_group_id, signal.SIGKILL)
 
     @classmethod
-    def _signal_process_group(cls, process_group_id: int) -> None:
+    def _signal_process_group(cls, process_group_id: int) -> bool:
         try:
             cls._send_process_group_signal(process_group_id)
         except ProcessLookupError:
-            return
+            return False
         except OSError as error:
             raise VerificationFailure(
                 f"failed to terminate GitHub command process group "
                 f"{process_group_id}: {error}"
             ) from error
+        return True
+
+
+    @staticmethod
+    def _confirm_process_group_absent(process_group_id: int) -> None:
+        expires_at = time.monotonic() + 1
+        while True:
+            try:
+                os.killpg(process_group_id, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                pass
+            except OSError as error:
+                raise VerificationFailure(
+                    f"failed to confirm GitHub command process group "
+                    f"{process_group_id} termination: {error}"
+                ) from error
+            if time.monotonic() >= expires_at:
+                raise VerificationFailure(
+                    f"GitHub command process group {process_group_id} "
+                    "still exists after termination"
+                )
+            time.sleep(0.01)
 
     @staticmethod
     def _close_process_pipes(process: subprocess.Popen[bytes]) -> None:
@@ -154,10 +196,27 @@ class CommandRunner:
                 "failed to reap GitHub command process-group leader after termination"
             ) from error
 
-    def kill_active_group(self) -> None:
+    def interrupt_active_group(self) -> None:
         active_group = self.active_group
-        if active_group is not None:
-            self._signal_process_group(active_group.process_group_id)
+        if active_group is None:
+            return
+        try:
+            self._send_process_group_signal(active_group.process_group_id)
+        except ProcessLookupError:
+            return
+        except OSError as error:
+            self._deferred_signal_error = error
+        else:
+            self._deadline_signal_sent = True
+
+    def raise_if_deferred_signal_failed(self) -> None:
+        if self._deferred_signal_error is None:
+            return
+        error = self._deferred_signal_error
+        raise VerificationFailure(
+            "failed to terminate GitHub command process group from deadline alarm: "
+            f"{error}"
+        ) from error
 
     def _finalize_process_group(
         self,
@@ -167,13 +226,22 @@ class CommandRunner:
     ) -> None:
         signal.pthread_sigmask(signal.SIG_BLOCK, self._MANAGED_SIGNALS)
         cleanup_error: VerificationFailure | None = None
-        retry_signal_after_reap = False
+        retry_signal_after_reap = isinstance(
+            self._deferred_signal_error, PermissionError
+        )
         try:
             try:
-                self._signal_process_group(active_group.process_group_id)
+                signal_sent = self._signal_process_group(
+                    active_group.process_group_id
+                )
+                self._deadline_signal_sent = (
+                    self._deadline_signal_sent or signal_sent
+                )
             except VerificationFailure as error:
                 cleanup_error = error
-                retry_signal_after_reap = isinstance(error.__cause__, PermissionError)
+                retry_signal_after_reap = retry_signal_after_reap or isinstance(
+                    error.__cause__, PermissionError
+                )
             self._close_process_pipes(active_group.process)
             try:
                 self._reap_process_group_leader(active_group)
@@ -182,11 +250,31 @@ class CommandRunner:
                     cleanup_error = error
             if retry_signal_after_reap and active_group.process.returncode is not None:
                 try:
-                    self._signal_process_group(active_group.process_group_id)
+                    signal_sent = self._signal_process_group(
+                        active_group.process_group_id
+                    )
                 except VerificationFailure as error:
-                    cleanup_error = error
+                    if (
+                        isinstance(error.__cause__, PermissionError)
+                        and self._deadline_signal_sent
+                    ):
+                        try:
+                            self._confirm_process_group_absent(
+                                active_group.process_group_id
+                            )
+                        except VerificationFailure as confirmation_error:
+                            cleanup_error = confirmation_error
+                        else:
+                            cleanup_error = None
+                            self._deferred_signal_error = None
+                    else:
+                        cleanup_error = error
                 else:
+                    self._deadline_signal_sent = (
+                        self._deadline_signal_sent or signal_sent
+                    )
                     cleanup_error = None
+                    self._deferred_signal_error = None
         finally:
             if self.active_group is active_group:
                 self.active_group = None
@@ -254,6 +342,7 @@ class CommandRunner:
 
         previous_sigchld_handler = signal.getsignal(signal.SIGCHLD)
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, self._MANAGED_SIGNALS)
+        self._deadline_signal_sent = False
         active_group: ActiveProcessGroup | None = None
         timeout_error: subprocess.TimeoutExpired | None = None
         try:
@@ -283,6 +372,9 @@ class CommandRunner:
                 self._finalize_process_group(
                     active_group, previous_sigchld_handler, previous_mask
                 )
+
+        self.raise_if_deferred_signal_failed()
+        self.deadline.raise_if_expired()
 
         if timeout_error is not None:
             if cutoff_limits_command:
@@ -700,7 +792,7 @@ class Verifier:
                 f"immutable release attestation pending; retrying attempt {attempt + 1} of {self.max_attempts}",
                 file=sys.stderr,
             )
-            time.sleep(self.interval_seconds)
+            self.deadline.wait(self.interval_seconds, "attestation retry sleep")
             self.deadline.remaining_before_reserve(reserve, "attestation retry sleep")
         fail("release attestation verification did not complete")
 
@@ -809,9 +901,9 @@ def main(argv: Sequence[str]) -> int:
     deadline = Deadline(deadline_seconds)
     runner = CommandRunner(deadline, request_timeout)
 
-    def deadline_alarm(_signum: int, _frame: object) -> NoReturn:
-        runner.kill_active_group()
-        raise GlobalDeadlineExceeded("global wall-clock deadline expired")
+    def deadline_alarm(_signum: int, _frame: object) -> None:
+        deadline.expire()
+        runner.interrupt_active_group()
 
     previous_handler = signal.signal(signal.SIGALRM, deadline_alarm)
     signal.setitimer(signal.ITIMER_REAL, deadline_seconds)
@@ -824,9 +916,11 @@ def main(argv: Sequence[str]) -> int:
             interval_seconds,
             finalization_reserve_seconds,
         ).run()
+        deadline.raise_if_expired()
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_handler)
+    deadline.raise_if_expired()
     return 0
 
 

@@ -25,11 +25,18 @@ TAG_OBJECT = "1" * 40
 TARGET_COMMIT = "2" * 40
 HOSTED_REPOSITORY = f"github.com/{REPOSITORY}"
 
-# Loaded runners can delay parent scheduling after a kernel timeout. These bounds
-# allow bounded cleanup margin while still rejecting the reproduced 13-second hang.
-LOADED_GLOBAL_DEADLINE_UPPER_SECONDS = 7
-LOADED_COMMAND_TIMEOUT_UPPER_SECONDS = 4
-LOADED_HELPER_TIMEOUT_UPPER_SECONDS = 7
+# Loaded runners can delay parent scheduling after a kernel timeout. The upper
+# bounds retain scheduler and kill/reap margin while rejecting the reproduced
+# 13-second hang, a forbidden 5-second retry sleep, and three-second command
+# overruns. Load cannot make a configured deadline legitimately fire early.
+GLOBAL_DEADLINE_LOWER_SECONDS = 1.7
+ATTESTATION_CUTOFF_LOWER_SECONDS = 0.8
+REQUEST_TIMEOUT_LOWER_SECONDS = 0.4
+PROCESS_GROUP_TIMEOUT_LOWER_SECONDS = 0.2
+LOADED_GLOBAL_DEADLINE_UPPER_SECONDS = 5
+LOADED_COMMAND_TIMEOUT_UPPER_SECONDS = 2
+LOADED_HELPER_TIMEOUT_UPPER_SECONDS = 4
+SLEEP_REFUSAL_UPPER_SECONDS = 3
 TAG_REF_OBJECT_URL = f"https://api.github.com/repos/{REPOSITORY}/git/tags/{TAG_OBJECT}"
 TARGET_OBJECT_URL = (
     f"https://api.github.com/repos/{REPOSITORY}/git/commits/{TARGET_COMMIT}"
@@ -619,6 +626,231 @@ class VerifierBehaviorTests(unittest.TestCase):
         time.sleep(1.1)
         self.assertFalse(self.delayed_sentinel.exists())
 
+    def invoke_alarm_boundary(
+        self, boundary: str, scenario: str
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+        assets = self.reset_evidence()
+        self.state.unlink(missing_ok=True)
+        self.output.unlink(missing_ok=True)
+        self.direct_pid.unlink(missing_ok=True)
+        self.descendant_pid.unlink(missing_ok=True)
+        self.spawn_ready.unlink(missing_ok=True)
+        self.delayed_sentinel.unlink(missing_ok=True)
+        alarm_state = self.root / f"alarm-{boundary}.json"
+        harness = self.root / f"alarm-{boundary}.py"
+        verifier_directory = str(VERIFIER.parent)
+        arguments = [
+            REPOSITORY,
+            TAG,
+            TAG_OBJECT,
+            TARGET_COMMIT,
+            str(self.evidence),
+            str(self.output),
+        ]
+        harness.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import os",
+                    "import signal",
+                    "import sys",
+                    "import threading",
+                    "import time",
+                    "from pathlib import Path",
+                    f"sys.path.insert(0, {verifier_directory!r})",
+                    "import verify_immutable_release_attestation as verifier",
+                    f"BOUNDARY = {boundary!r}",
+                    f"ARGUMENTS = {arguments!r}",
+                    f"ALARM_STATE = Path({str(alarm_state)!r})",
+                    f"SPAWN_READY = Path({str(self.spawn_ready)!r})",
+                    "OriginalRunner = verifier.CommandRunner",
+                    "OriginalDeadline = verifier.Deadline",
+                    "OriginalVerifierRun = verifier.Verifier.run",
+                    "class ObservedEvent:",
+                    "    def __init__(self, delegate, entered):",
+                    "        self.delegate = delegate",
+                    "        self.entered = entered",
+                    "    def set(self):",
+                    "        self.delegate.set()",
+                    "    def is_set(self):",
+                    "        return self.delegate.is_set()",
+                    "    def wait(self, timeout):",
+                    "        self.entered.set()",
+                    "        return self.delegate.wait(timeout)",
+                    "class BoundaryDeadline(OriginalDeadline):",
+                    "    def wait(self, seconds, phase):",
+                    "        if BOUNDARY == 'pre-sleep':",
+                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "            return super().wait(seconds, phase)",
+                    "        if BOUNDARY != 'during-sleep':",
+                    "            return super().wait(seconds, phase)",
+                    "        entered = threading.Event()",
+                    "        self._expired = ObservedEvent(self._expired, entered)",
+                    "        def trigger():",
+                    "            if not entered.wait(1):",
+                    "                return",
+                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "        trigger_thread = threading.Thread(target=trigger)",
+                    "        trigger_thread.start()",
+                    "        try:",
+                    "            return super().wait(seconds, phase)",
+                    "        finally:",
+                    "            trigger_thread.join(timeout=1)",
+                    "class BoundaryRunner(OriginalRunner):",
+                    "    instance = None",
+                    "    last_process = None",
+                    "    cleanup_alarm_sent = False",
+                    "    def __init__(self, deadline, request_timeout):",
+                    "        super().__init__(deadline, request_timeout)",
+                    "        type(self).instance = self",
+                    "    def _spawn_process(self, argv):",
+                    "        process = super()._spawn_process(argv)",
+                    "        type(self).last_process = process",
+                    "        if BOUNDARY == 'spawn-registration':",
+                    "            limit = time.monotonic() + 2",
+                    "            while not SPAWN_READY.exists():",
+                    "                if time.monotonic() >= limit:",
+                    "                    raise RuntimeError('fake child did not become ready')",
+                    "                time.sleep(0.005)",
+                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "        return process",
+                    "    def _collect_output(self, active_group, timeout, child_exited):",
+                    "        if BOUNDARY == 'running-command':",
+                    "            limit = time.monotonic() + 2",
+                    "            while not SPAWN_READY.exists():",
+                    "                if time.monotonic() >= limit:",
+                    "                    raise RuntimeError('fake child did not become ready')",
+                    "                time.sleep(0.005)",
+                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "        result = super()._collect_output(active_group, timeout, child_exited)",
+                    "        if BOUNDARY == 'pre-cleanup':",
+                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "        return result",
+                    "    @staticmethod",
+                    "    def _send_process_group_signal(process_group_id):",
+                    "        if BOUNDARY == 'during-cleanup' and not BoundaryRunner.cleanup_alarm_sent:",
+                    "            BoundaryRunner.cleanup_alarm_sent = True",
+                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "        OriginalRunner._send_process_group_signal(process_group_id)",
+                    "    def _finalize_process_group(self, active_group, previous_handler, original_mask):",
+                    "        super()._finalize_process_group(active_group, previous_handler, original_mask)",
+                    "        if BOUNDARY == 'post-cleanup':",
+                    "            os.kill(os.getpid(), signal.SIGALRM)",
+                    "def verifier_run(self):",
+                    "    if BOUNDARY == 'no-active-command':",
+                    "        os.kill(os.getpid(), signal.SIGALRM)",
+                    "        return None",
+                    "    return OriginalVerifierRun(self)",
+                    "verifier.CommandRunner = BoundaryRunner",
+                    "verifier.Deadline = BoundaryDeadline",
+                    "verifier.Verifier.run = verifier_run",
+                    "before_alarm = signal.getsignal(signal.SIGALRM)",
+                    "before_child = signal.getsignal(signal.SIGCHLD)",
+                    "before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())",
+                    "status = 0",
+                    "error = ''",
+                    "try:",
+                    "    status = verifier.main(ARGUMENTS)",
+                    "except verifier.VerificationFailure as caught:",
+                    "    status = 1",
+                    "    error = str(caught)",
+                    "runner = BoundaryRunner.instance",
+                    "process = BoundaryRunner.last_process",
+                    "group_absent = None",
+                    "if process is not None:",
+                    "    try:",
+                    "        os.killpg(process.pid, 0)",
+                    "    except ProcessLookupError:",
+                    "        group_absent = True",
+                    "    except PermissionError:",
+                    "        group_absent = False",
+                    "    else:",
+                    "        group_absent = False",
+                    "after_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())",
+                    "ALARM_STATE.write_text(json.dumps({",
+                    "    'status': status,",
+                    "    'error': error,",
+                    "    'active_group_cleared': runner is not None and runner.active_group is None,",
+                    "    'leader_reaped': process is None or process.returncode is not None,",
+                    "    'group_absent': group_absent,",
+                    "    'process_group_id': None if process is None else process.pid,",
+                    "    'sigalrm_restored': signal.getsignal(signal.SIGALRM) == before_alarm,",
+                    "    'sigchld_restored': signal.getsignal(signal.SIGCHLD) == before_child,",
+                    "    'mask_restored': after_mask == before_mask,",
+                    "}, sort_keys=True))",
+                    "if error:",
+                    "    print(error, file=sys.stderr)",
+                    "raise SystemExit(status)",
+                    "",
+                ]
+            )
+        )
+        environment = {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "FAKE_GH_SCENARIO": scenario,
+            "FAKE_GH_STATE": str(self.state),
+            "FAKE_BASELINE_ASSETS": json.dumps(assets),
+            "FAKE_EVIDENCE": str(self.evidence),
+            "FAKE_CHILD_PID": str(self.child_pid),
+            "FAKE_CHILD_SENTINEL": str(self.child_sentinel),
+            "FAKE_DIRECT_PID": str(self.direct_pid),
+            "FAKE_DESCENDANT_PID": str(self.descendant_pid),
+            "FAKE_SPAWN_READY": str(self.spawn_ready),
+            "FAKE_DELAYED_SENTINEL": str(self.delayed_sentinel),
+            "RELEASE_VERIFY_DEADLINE_SECONDS": "5",
+            "RELEASE_VERIFY_REQUEST_TIMEOUT_SECONDS": "2",
+            "RELEASE_VERIFY_INTERVAL_SECONDS": "2",
+            "RELEASE_VERIFY_MAX_ATTEMPTS": "3",
+            "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS": "1",
+        }
+        result = subprocess.run(
+            [sys.executable, str(harness)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=10,
+        )
+        self.assertTrue(
+            alarm_state.exists(),
+            f"alarm harness did not record state: rc={result.returncode}, stderr={result.stderr!r}",
+        )
+        return result, json.loads(alarm_state.read_text())
+
+    def assert_alarm_boundary_state(
+        self, result: subprocess.CompletedProcess[str], state: dict[str, object]
+    ) -> None:
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("global wall-clock deadline expired", result.stderr)
+        self.assertEqual(state["status"], 1)
+        self.assertIn("global wall-clock deadline expired", str(state["error"]))
+        self.assertTrue(state["active_group_cleared"])
+        self.assertTrue(state["leader_reaped"])
+        self.assertTrue(state["sigalrm_restored"])
+        self.assertTrue(state["sigchld_restored"])
+        self.assertTrue(state["mask_restored"])
+
+    def assert_alarm_group_absent(self, state: dict[str, object]) -> None:
+        process_group_id = state["process_group_id"]
+        self.assertIsInstance(process_group_id, int)
+        expires_at = time.monotonic() + 1
+        while True:
+            try:
+                os.killpg(process_group_id, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                pass
+            if time.monotonic() >= expires_at:
+                self.fail(f"process group {process_group_id} still exists")
+            time.sleep(0.01)
+
+    def assert_alarm_processes_removed(self, state: dict[str, object]) -> None:
+        self.assert_process_absent(int(self.direct_pid.read_text()))
+        self.assert_escape_descendant_removed()
+        self.assert_alarm_group_absent(state)
+
     def test_immediate_valid_attestation_success(self) -> None:
         result, _elapsed, state = self.invoke("immediate_success")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -801,6 +1033,7 @@ class VerifierBehaviorTests(unittest.TestCase):
             "attestation cutoff reached" in result.stderr
             or "global wall-clock deadline expired" in result.stderr
         )
+        self.assertGreaterEqual(elapsed, GLOBAL_DEADLINE_LOWER_SECONDS)
         self.assertLess(elapsed, LOADED_GLOBAL_DEADLINE_UPPER_SECONDS)
         self.assertEqual(len(state["calls"]), 1)
         print(f"MEASURED_GLOBAL_DEADLINE_2S={elapsed:.3f}s")
@@ -811,6 +1044,7 @@ class VerifierBehaviorTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("timed out after 0.500 seconds", result.stderr)
+        self.assertGreaterEqual(elapsed, REQUEST_TIMEOUT_LOWER_SECONDS)
         self.assertLess(elapsed, LOADED_COMMAND_TIMEOUT_UPPER_SECONDS)
         self.assertEqual(len(state["calls"]), 1)
         print(f"MEASURED_REQUEST_TIMEOUT_0_5S={elapsed:.3f}s")
@@ -823,6 +1057,7 @@ class VerifierBehaviorTests(unittest.TestCase):
         self.assertIn("asset verification: alpha.txt timed out", result.stderr)
         self.assertLess(elapsed, LOADED_HELPER_TIMEOUT_UPPER_SECONDS)
         command_elapsed = self.timed_out_command_elapsed(state)
+        self.assertGreaterEqual(command_elapsed, REQUEST_TIMEOUT_LOWER_SECONDS)
         self.assertLess(command_elapsed, LOADED_COMMAND_TIMEOUT_UPPER_SECONDS)
         self.assertEqual(state["asset_calls"], 1)
         print(
@@ -838,6 +1073,7 @@ class VerifierBehaviorTests(unittest.TestCase):
         self.assertIn("post-asset identity: repository timed out", result.stderr)
         self.assertLess(elapsed, LOADED_HELPER_TIMEOUT_UPPER_SECONDS)
         command_elapsed = self.timed_out_command_elapsed(state)
+        self.assertGreaterEqual(command_elapsed, REQUEST_TIMEOUT_LOWER_SECONDS)
         self.assertLess(command_elapsed, LOADED_COMMAND_TIMEOUT_UPPER_SECONDS)
         self.assertEqual(state["repository_calls"], 3)
         print(
@@ -856,14 +1092,14 @@ class VerifierBehaviorTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("retry sleep would enter", result.stderr)
-        self.assertLess(elapsed, LOADED_HELPER_TIMEOUT_UPPER_SECONDS)
+        self.assertLess(elapsed, SLEEP_REFUSAL_UPPER_SECONDS)
         self.assertEqual(state["verify_calls"], 1)
         print(f"MEASURED_SLEEP_OMITTED_4S_CUTOFF={elapsed:.3f}s")
 
     def test_exact_transient_response_stops_at_attestation_cutoff(self) -> None:
         result, elapsed, state = self.invoke(
             "transient_until_deadline",
-            deadline=4,
+            deadline=3,
             request_timeout=1,
             interval=0,
             attempts=100,
@@ -871,10 +1107,11 @@ class VerifierBehaviorTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("attestation cutoff reached", result.stderr)
+        self.assertGreaterEqual(elapsed, ATTESTATION_CUTOFF_LOWER_SECONDS)
         self.assertLess(elapsed, LOADED_GLOBAL_DEADLINE_UPPER_SECONDS)
         self.assertGreaterEqual(state["verify_calls"], 1)
         self.assertEqual(state["asset_calls"] if "asset_calls" in state else 0, 0)
-        print(f"MEASURED_ATTESTATION_CUTOFF_2S={elapsed:.3f}s")
+        print(f"MEASURED_ATTESTATION_CUTOFF_1S={elapsed:.3f}s")
 
     def test_attestation_before_cutoff_retains_finalization_reserve(self) -> None:
         deadline = 5
@@ -947,6 +1184,7 @@ class VerifierBehaviorTests(unittest.TestCase):
             "child_process_timeout", deadline=8, request_timeout=0.25
         )
         self.assertNotEqual(result.returncode, 0)
+        self.assertGreaterEqual(elapsed, PROCESS_GROUP_TIMEOUT_LOWER_SECONDS)
         self.assertLess(elapsed, LOADED_COMMAND_TIMEOUT_UPPER_SECONDS)
         direct_pid = int(self.direct_pid.read_text())
         descendant_pid = int(self.child_pid.read_text())
@@ -982,6 +1220,62 @@ class VerifierBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("malformed JSON", result.stderr)
         self.assert_escape_descendant_removed()
+
+    def test_alarm_during_child_registration_uses_structured_cleanup(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "spawn-registration", "spawn_registration_alarm"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_processes_removed(state)
+
+    def test_alarm_while_command_runs_uses_structured_cleanup(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "running-command", "spawn_registration_alarm"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_processes_removed(state)
+
+    def test_alarm_after_leader_exit_before_cleanup_is_deferred(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "pre-cleanup", "success_descendant_escape"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_processes_removed(state)
+
+    def test_alarm_during_cleanup_is_deferred(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "during-cleanup", "success_descendant_escape"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_processes_removed(state)
+
+    def test_alarm_after_cleanup_before_return_cannot_escape(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "post-cleanup", "success_descendant_escape"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_processes_removed(state)
+
+    def test_alarm_without_active_command_fails_at_safe_boundary(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "no-active-command", "immediate_success"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assertIsNone(state["group_absent"])
+
+    def test_alarm_immediately_before_retry_sleep_prevents_wait(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "pre-sleep", "transient_until_deadline"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_group_absent(state)
+
+    def test_alarm_during_retry_wait_interrupts_wait(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "during-sleep", "transient_until_deadline"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_group_absent(state)
 
     def test_alarm_at_spawn_registration_boundary_kills_descendants(self) -> None:
         assets = self.reset_evidence()
