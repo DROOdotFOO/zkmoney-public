@@ -15,8 +15,11 @@ on:
       - ".github/workflows/oxide-relayer-safety.yml"
       - ".github/workflows/publish-oxide-relayer.yml"
       - "CHANGELOG.md"
-      - "scripts/verify-immutable-release-attestation.sh"
-      - "scripts/test-verify-immutable-release-attestation.sh"
+      - "scripts/verify_immutable_release_attestation.py"
+      - "scripts/test_verify_immutable_release_attestation.py"
+      - "scripts/verify_publish_source.py"
+      - "scripts/test_verify_publish_source.py"
+      - "scripts/test_publish_release_contract.rb"
   push:
     branches:
       - security/exact-operation-relay
@@ -34,8 +37,11 @@ on:
       - ".github/workflows/oxide-relayer-safety.yml"
       - ".github/workflows/publish-oxide-relayer.yml"
       - "CHANGELOG.md"
-      - "scripts/verify-immutable-release-attestation.sh"
-      - "scripts/test-verify-immutable-release-attestation.sh"
+      - "scripts/verify_immutable_release_attestation.py"
+      - "scripts/test_verify_immutable_release_attestation.py"
+      - "scripts/verify_publish_source.py"
+      - "scripts/test_verify_publish_source.py"
+      - "scripts/test_publish_release_contract.rb"
 
 env:
   APPROVAL_AUTHORITY_PEM_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQXVmMTNWdlAxUWZoU2dSM1d2d2dvMmJXbkMyNkhCSEZVMmtwTkoxQkRmQTg9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=
@@ -69,8 +75,11 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Exercise immutable release attestation readiness
-        run: scripts/test-verify-immutable-release-attestation.sh
+      - name: Exercise release publication safety contracts
+        run: |
+          python3 scripts/test_verify_immutable_release_attestation.py
+          python3 scripts/test_verify_publish_source.py
+          ruby scripts/test_publish_release_contract.rb
 
       - name: Set up exact Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020

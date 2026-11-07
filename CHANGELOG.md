@@ -2,9 +2,10 @@
 
 ## 1.0.9
 
-- Treat GitHub's immutable-release attestation as an asynchronous publication result: retry only the exact not-yet-available response within one bounded wait after the sole release creation.
-- Revalidate repository, release ID, immutable state, signed tag target and complete asset identities before every retry, then verify each asset exactly once after attestation success.
-- Exercise immediate, delayed, permanently missing, identity-drift, permission, network and asset-verification outcomes before release qualification so the v1.0.8 immediate-verification failure cannot recur unnoticed.
+- Check out and verify the exact admitted signed-tag source before the sole immutable release-creation boundary.
+- Bound every post-publication GitHub read and asset verification with one monotonic 300-second deadline, a real per-command 15-second process timeout, and process-group termination.
+- Bind the verified GitHub release attestation to the immutable release ID, repository, tag object, tag target and complete asset inventory, with identity checks before and after asset verification.
+- Exercise publish-job ordering, strict command arguments, retry classification, identity drift and measured timeout behavior before release qualification.
 - Preserve the v1.0.8 tag, immutable release, image and evidence as frozen historical records; v1.0.9 uses distinct branch, tag, artifact and certificate identities.
 
 ## 1.0.8

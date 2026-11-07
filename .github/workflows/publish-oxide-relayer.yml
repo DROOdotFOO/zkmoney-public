@@ -50,6 +50,7 @@ jobs:
     outputs:
       qualification-run-id: ${{ steps.admit.outputs.qualification-run-id }}
       tag-object: ${{ steps.admit.outputs.tag-object }}
+      source-commit: ${{ steps.admit.outputs.source-commit }}
     steps:
       - name: Admit exact pre-tag qualification or tag publication
         id: admit
@@ -121,6 +122,7 @@ jobs:
              and .verification.verified == true' \
             "$tag"
           printf 'tag-object=%s\n' "$tag_object" >> "$GITHUB_OUTPUT"
+          printf 'source-commit=%s\n' "$SOURCE_COMMIT" >> "$GITHUB_OUTPUT"
 
           qualification="$RUNNER_TEMP/pretag-qualification.json"
           gh api \
@@ -211,8 +213,11 @@ jobs:
           test -z "$(git tag --list "$SOURCE_TAG")"
           test -z "$(git status --porcelain)"
 
-      - name: Exercise immutable release attestation readiness
-        run: scripts/test-verify-immutable-release-attestation.sh
+      - name: Exercise release publication safety contracts
+        run: |
+          python3 scripts/test_verify_immutable_release_attestation.py
+          python3 scripts/test_verify_publish_source.py
+          ruby scripts/test_publish_release_contract.rb
 
       - name: Set up exact Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -1594,6 +1599,30 @@ jobs:
           test "$RUNNER_KIND" = github-hosted
           test "$GITHUB_RUN_ATTEMPT" = 1
 
+      - name: Check out the admitted source commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.admission.outputs.source-commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checked-out source and signed tag
+        id: verify-source
+        env:
+          ADMITTED_SOURCE_COMMIT: ${{ needs.admission.outputs.source-commit }}
+          ADMITTED_TAG_OBJECT: ${{ needs.admission.outputs.tag-object }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$SOURCE_COMMIT" = "$ADMITTED_SOURCE_COMMIT"
+          git fetch --force --no-tags --depth=1 \
+            origin "refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
+          python3 scripts/verify_publish_source.py \
+            "$ADMITTED_SOURCE_COMMIT" \
+            "$SOURCE_TAG" \
+            "$ADMITTED_TAG_OBJECT" \
+            scripts/verify_immutable_release_attestation.py
+
       - name: Download authoritative signed release evidence
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -1601,11 +1630,13 @@ jobs:
           path: release-evidence
 
       - name: Publish one immutable release
+        id: publish-release
         env:
           GH_TOKEN: ${{ github.token }}
           IMMUTABLE_RELEASES_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_ADMIN_TOKEN }}
           IMAGE_DIGEST: ${{ needs.publish-candidate.outputs.image-digest }}
           ADMITTED_TAG_OBJECT: ${{ needs.admission.outputs.tag-object }}
+          ADMITTED_SOURCE_COMMIT: ${{ needs.admission.outputs.source-commit }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1660,20 +1691,10 @@ jobs:
             --notes-file "$RUNNER_TEMP/release-notes.md" \
             --latest=false
 
-          release="$RUNNER_TEMP/release.json"
-          gh api --hostname github.com "repos/$GITHUB_REPOSITORY/releases/tags/$SOURCE_TAG" > "$release"
-          jq -e \
-            --arg sourceTag "$SOURCE_TAG" \
-            '.tag_name == $sourceTag
-             and .draft == false
-             and .immutable == true' \
-            "$release"
-          release_id="$(jq -er '.id | select(type == "number")' "$release")"
-          scripts/verify-immutable-release-attestation.sh \
+          python3 scripts/verify_immutable_release_attestation.py \
             "$GITHUB_REPOSITORY" \
             "$SOURCE_TAG" \
-            "$release_id" \
             "$tag_object" \
-            "$SOURCE_COMMIT" \
+            "$ADMITTED_SOURCE_COMMIT" \
             release-evidence \
             "$RUNNER_TEMP/release-attestation.json"
