@@ -215,8 +215,8 @@ jobs:
 
       - name: Exercise release publication safety contracts
         run: |
-          python3 scripts/test_verify_immutable_release_attestation.py
-          python3 scripts/test_verify_publish_source.py
+          python3 -B scripts/test_verify_immutable_release_attestation.py
+          python3 -B scripts/test_verify_publish_source.py
           ruby scripts/test_publish_release_contract.rb
 
       - name: Set up exact Node
@@ -1617,7 +1617,7 @@ jobs:
           test "$SOURCE_COMMIT" = "$ADMITTED_SOURCE_COMMIT"
           git fetch --force --no-tags --depth=1 \
             origin "refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
-          python3 scripts/verify_publish_source.py \
+          python3 -B scripts/verify_publish_source.py \
             "$ADMITTED_SOURCE_COMMIT" \
             "$SOURCE_TAG" \
             "$ADMITTED_TAG_OBJECT" \
@@ -1691,7 +1691,7 @@ jobs:
             --notes-file "$RUNNER_TEMP/release-notes.md" \
             --latest=false
 
-          python3 scripts/verify_immutable_release_attestation.py \
+          python3 -B scripts/verify_immutable_release_attestation.py \
             "$GITHUB_REPOSITORY" \
             "$SOURCE_TAG" \
             "$tag_object" \

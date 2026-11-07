@@ -46,7 +46,7 @@ def validate(workflow)
   verify_index = verify_indexes.first
   verify_step = steps.fetch(verify_index)
   verify_run = verify_step['run']
-  unless verify_run.is_a?(String) && verify_run.include?('python3 scripts/verify_publish_source.py')
+  unless verify_run.is_a?(String) && verify_run.include?('python3 -B scripts/verify_publish_source.py')
     fail_contract('publish source verification does not execute the repository verifier')
   end
   verify_env = verify_step.fetch('env') { fail_contract('publish source verification environment is missing') }

@@ -77,8 +77,8 @@ jobs:
 
       - name: Exercise release publication safety contracts
         run: |
-          python3 scripts/test_verify_immutable_release_attestation.py
-          python3 scripts/test_verify_publish_source.py
+          python3 -B scripts/test_verify_immutable_release_attestation.py
+          python3 -B scripts/test_verify_publish_source.py
           ruby scripts/test_publish_release_contract.rb
 
       - name: Set up exact Node
