@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Sign an L1 operation identity again as a new journal attempt once its earlier attempt is terminal, so identical FPC-funding or prover-claim calldata and dropped L1 operations are no longer blocked forever. Generic journal schema 2 migrates in place to schema 3.
+- Bound settlement: a stop ends every receipt monitor, and a tx without an outcome 300 blocks after its send becomes durably ambiguous instead of being polled forever.
+- Reconcile unresolved generic attempts at startup from receipts and finalized nonces before any signing.
+- Derive the generic journal, runtime lease, and clean-handoff paths from `--state` and the new `--control-dir`, and write the clean-handoff marker beside the generic state, where the exact runtime reads it.
+- Record an exact claim intent before the external witness claim, so a crash between the claim and the journal row no longer locks the operation forever.
+- Retry reads again; only `eth_sendRawTransaction` runs with automatic retries disabled.
+- Share one owner-only SQLite file helper between the journals and the runtime lease, and drop the lease-kind write that was always rolled back.
+- Pin `@aws-sdk/client-s3` and the Docker base image digest, install CI dependencies without lifecycle scripts, and verify the Aztec toolchain hashes.
+
 ## 1.0.9
 
 - Check out and verify the exact admitted signed-tag source before the sole immutable release-creation boundary.

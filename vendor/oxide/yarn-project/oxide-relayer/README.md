@@ -43,7 +43,7 @@ The policy decides which of those entries get a worker and is applied on every r
 
 The pinned entry follows the same policy: it can be excluded or skipped on its token, in which case the relayer logs that it gets no worker while `fpc-funding` and `epoch-proofs` still run for it. The watched deposit tokens come from each entry's advertised token: DAI, USDC, and USDT on mainnet and that token on other chains.
 
-Mount durable storage at `/data` for the default `oxide-relayer-{portal}.sqlite3` files. Supply either a keystore and password file under the mount or an L1 private key through the configured secret environment. Fund the L1 signer with ETH. The read RPC must support `eth_simulateV1` with validation; the Aztec node and each served entry's enclave must be reachable. The configured Chainlink feed and sanctions-list endpoint must be reachable.
+Mount durable storage at `/data` for the default `oxide-relayer-{portal}.sqlite3` files. The generic submission journal (`generic-submission.sqlite3`) and the clean-handoff marker live in the same directory as the state files. `--control-dir` (`OXIDE_RELAYER_CONTROL_DIR`, default `/control`) names an existing owner-only directory for the runtime lease that the exact-operation runtime shares; a run whose control directory holds exact-operation state refuses to start outside the generic-restore profile. Supply either a keystore and password file under the mount or an L1 private key through the configured secret environment. Fund the L1 signer with ETH. The read RPC must support `eth_simulateV1` with validation; the Aztec node and each served entry's enclave must be reachable. The configured Chainlink feed and sanctions-list endpoint must be reachable.
 
 For a reader coming from upstream oxide: the inputs and flag names are upstream's. The two differences are the startup check of the pinned entry's rollup version against the node, and the policy, that is the exclude list and the token admission rule, which upstream does not have.
 
@@ -78,6 +78,10 @@ the exact returned object version and retention before continuing. Authority una
 collision, read-after-write failure, deletion markers, incomplete listings, local-journal rollback,
 or any witness/journal inconsistency fails closed. Exact journal schema v4 stores a domain-separated
 commitment to the private witness coordinate with the receipt evidence, never the raw prefix or key.
+Before the claim, the runtime fsyncs a claim intent for exactly this approval beside the exact journal. If the
+process dies after the claim but before the journal row, the next run with the same approval finds the intent and
+reuses the existing claim only when its body is byte-identical; signing always needs the journal row, so that claim
+was never signed. Without the intent an existing claim is a collision, so a journal rollback still fails closed.
 
 Runtime identity comes from fixed image/runtime paths. The complete inventory manifest binds every canonical
 SQLite/WAL/SHM file, historical database, generic ambiguity journal, exporter ledger, signer nonce record, mount,
@@ -128,13 +132,24 @@ It performs no network call, journal/control mutation, witness claim, signing, o
 
 
 Every generic L1 send now has the same durable ambiguity contract as exact mode. Before asking the
-account to sign, it fsyncs a `signing` reservation containing operation identity, signer commitment,
-chain ID, nonce, and canonical request digest. Signing failure or a crash during signing is permanently
-ambiguous. After signing, it fsyncs the signed hash and protected bytes, transitions to `sending`,
-calls `eth_sendRawTransaction` once, persists the exact response, and marks the send accepted. Accepted
-is still unresolved until a mined success, mined revert, or proved drop/replacement is durably recorded.
-A restart never rebuilds, re-signs, resends, advances the operation nonce, or treats an accepted but
-nonterminal transaction as a clean handoff.
+account to sign, it fsyncs a `signing` reservation containing operation identity, attempt, signer commitment,
+chain ID, nonce, and canonical request digest. Signing failure or a crash during signing is ambiguous. After
+signing, it fsyncs the signed hash and protected bytes, transitions to `sending`, calls `eth_sendRawTransaction`
+once, persists the exact response, and marks the send accepted. Accepted is still unresolved until a mined
+success, mined revert, or proved drop/replacement is durably recorded. An identity, for example FPC funding with
+the same calldata, is signed again as a new attempt only after its previous attempt is terminal.
+
+Settlement is bounded. Without an outcome 300 blocks after the send (at least the Protect drop window), the
+attempt becomes durably ambiguous, the `l1_tx_receipt_timeout` error is logged, and the process signs nothing
+more. A stop ends every settlement monitor at once; a stop with an unresolved attempt is not a clean handoff.
+Generic journal schema 2 files are migrated in place to schema 3 on the first read-write open.
+
+A restart never rebuilds, re-signs, resends, or advances the operation nonce. Before signing anything it
+reconciles each unresolved attempt of its own signer and chain from chain evidence only: the receipt of the
+durable signed bytes records a success or revert, and a finalized nonce past the attempt's nonce records a
+drop, because those bytes can no longer be mined. Any attempt it cannot resolve, including one of another signer,
+blocks startup with its identity, nonce, and state. To clear a public-mempool transaction that never lands, mine
+any transaction at its nonce from outside the relayer and restart after that nonce is finalized.
 
 Cutover is fail closed:
 
@@ -155,7 +170,7 @@ observed public call, and Outbox root/proof digest from the fetched membership w
 The Outbox root replays the indexer's leaf-first path with its exact `sha256Trunc(left || right)` Merkle hash, not a
 Poseidon tree. Approval values are comparison targets only. The signed execution window is checked again immediately
 before the immutable witness claim, the TEE finalization request, `account.signTransaction()`, and
-`eth_sendRawTransaction`. The submission HTTP and fallback transports have no automatic retry. A receipt naming
+`eth_sendRawTransaction`. `eth_sendRawTransaction` is never retried by the HTTP or fallback transports. A receipt naming
 a transaction hash other than the submitted signed hash is ambiguous, irrespective of its reported status.
 
 6. Any ambiguous exact send blocks all submission for the signer and chain. Exact success remains permanently
