@@ -246,7 +246,22 @@ describe('createCliProgram', () => {
     const config = await parseRunConfig([...REQUIRED_ARGS, '--state', '/data/flag-{portal}.sqlite3'], {
       OXIDE_RELAYER_STATE_PATH: '/data/env-{portal}.sqlite3',
     });
-    expect(config.state).toEqual({ backend: 'sqlite', sqlitePath: '/data/flag-{portal}.sqlite3' });
+    expect(config.state).toEqual({
+      backend: 'sqlite',
+      sqlitePath: '/data/flag-{portal}.sqlite3',
+      controlDir: '/control',
+    });
+  });
+
+  it('takes the control directory from the flag or its environment variable', async () => {
+    await expect(
+      parseRunConfig(REQUIRED_ARGS, { OXIDE_RELAYER_CONTROL_DIR: '/srv/control' }),
+    ).resolves.toMatchObject({ state: { controlDir: '/srv/control' } });
+    await expect(
+      parseRunConfig([...REQUIRED_ARGS, '--control-dir', '/srv/flag-control'], {
+        OXIDE_RELAYER_CONTROL_DIR: '/srv/control',
+      }),
+    ).resolves.toMatchObject({ state: { controlDir: '/srv/flag-control' } });
   });
 
   it('requires --portal or OXIDE_PORTAL', async () => {

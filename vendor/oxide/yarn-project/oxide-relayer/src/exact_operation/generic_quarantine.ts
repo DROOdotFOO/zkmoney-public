@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { lstat, open as openFile, readFile, rename, unlink } from 'node:fs/promises';
+import path from 'node:path';
 
 import { z } from 'zod';
 
@@ -11,12 +12,18 @@ import {
   type ExactApprovalClaimReceipt,
   exactApprovalClaimJournalReceipt,
 } from './monotonic_claim.js';
-import { EXACT_APPROVAL_AUTHORITY_PATH, EXACT_CONTROL_DIRECTORY, EXACT_JOURNAL_PATH } from './paths.js';
+import {
+  EXACT_APPROVAL_AUTHORITY_PATH,
+  EXACT_CONTROL_DIRECTORY,
+  EXACT_JOURNAL_FILE,
+  EXACT_JOURNAL_PATH,
+  GENERIC_RESTORE_MARKER_FILE,
+} from './paths.js';
 import { loadExactRuntimeIdentity } from './runtime_identity.js';
 import { consumePreparedInheritedBundle } from './runtime_sandbox.js';
 import { loadWitnessConfiguration, loadWitnessCredentials } from './witness_configuration.js';
 
-const RESTORE_MARKER_PATH = `${EXACT_CONTROL_DIRECTORY}/generic-restore.json`;
+const RESTORE_MARKER_PATH = `${EXACT_CONTROL_DIRECTORY}/${GENERIC_RESTORE_MARKER_FILE}`;
 const RESTORE_MARKER_TEMP_PATH = `${RESTORE_MARKER_PATH}.tmp`;
 const RESTORE_DOMAIN = 'oxide-relayer/generic-restore-approval/v2\0';
 const sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -70,6 +77,25 @@ export async function genericSubmissionQuarantine(): Promise<ReadonlySet<string>
     readRestoreMarker(),
   ]);
   return evaluateGenericQuarantine({ claims, records, marker, runtime });
+}
+
+/**
+ * A generic run outside the privileged generic-restore profile has no runtime identity or witness credentials, so it
+ * cannot evaluate quarantine. It starts only while the shared control directory holds no exact-operation state.
+ */
+export async function assertNoExactOperationState(controlDirectory: string): Promise<void> {
+  for (const name of [EXACT_JOURNAL_FILE, GENERIC_RESTORE_MARKER_FILE]) {
+    try {
+      await lstat(path.join(controlDirectory, name));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    throw new Error(
+      `Control directory ${controlDirectory} holds exact-operation state; generic submission requires the ` +
+        'generic-restore runtime profile',
+    );
+  }
 }
 
 export async function authorizeGenericRestore(bundleFd: number): Promise<void> {

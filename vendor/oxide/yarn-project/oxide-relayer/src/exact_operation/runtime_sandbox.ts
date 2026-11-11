@@ -114,8 +114,13 @@ export function runtimeProfileFromArguments(argv: readonly string[], env: NodeJS
   if (command === 'relay-exact') return 'exact';
   if (command === 'preflight-exact') return 'preflight-exact';
   if (command === 'authorize-generic-restore') return 'restore';
-  if (command === 'run' && env.OXIDE_RUNTIME_PROFILE === 'generic-restore') return 'generic-restore';
+  if (command === 'run' && isGenericRestoreProfile(env)) return 'generic-restore';
   throw new Error('Root initializer permits only reviewed exact, preflight, or restore runtime modes');
+}
+
+/** True when the generic run is the privileged generic-restore profile of the image's root initializer. */
+export function isGenericRestoreProfile(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OXIDE_RUNTIME_PROFILE === 'generic-restore';
 }
 
 export function installInheritedBundleBuffer(

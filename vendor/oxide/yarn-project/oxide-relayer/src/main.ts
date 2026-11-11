@@ -21,15 +21,16 @@ import {
   resolveDeploymentEnvManifest,
 } from './config/deployment_env_manifest.js';
 import { DeploymentManifestRefresher } from './config/deployment_manifest_refresher.js';
-import { GENERIC_SUBMISSION_JOURNAL_PATH } from './exact_operation/paths.js';
-import { RuntimeLease, runtimeLeasePath } from './exact_operation/runtime_lease.js';
+import { RuntimeLease } from './exact_operation/runtime_lease.js';
+import { isGenericRestoreProfile } from './exact_operation/runtime_sandbox.js';
 
 import { FpcFunderCaller } from './fpc_funding/fpc_funder_caller.js';
 import { HistoricalDeploymentSupervisor } from './historical_deployment_supervisor.js';
 import { getL1PublicClient } from './l1/client.js';
 import { assertNotFlashbots } from './l1/flashbots_protect.js';
-import { genericSubmissionQuarantine } from './exact_operation/generic_quarantine.js';
+import { assertNoExactOperationState, genericSubmissionQuarantine } from './exact_operation/generic_quarantine.js';
 import { GenericSubmissionJournal } from './l1/submission_journal.js';
+import { reconcileUnresolvedSubmissions } from './l1/submission_reconciliation.js';
 import { createL1TxQueue } from './l1/l1_tx_queue.js';
 import { L1OperationRelayer } from './l1_operations/l1_operation_relayer.js';
 import { L1OperationRouter } from './l1_operations/l1_operation_router.js';
@@ -39,7 +40,7 @@ import { UsdPeggedPriceOracle } from './price_oracle/usd_pegged_price_oracle.js'
 import { startEpochProofs } from './prover/index.js';
 import { RelayerTelemetry } from './relayer_telemetry.js';
 import { createEphemeralSigner, hasSignerKey, loadSigner } from './signers/index.js';
-import { statePathForPortal, supportsExactOperationHandoff } from './state/path.js';
+import { type GenericRuntimePaths, genericRuntimePaths, statePathForPortal } from './state/path.js';
 import { type SqliteStateStore, openSqliteStateStore } from './state/sqlite_store.js';
 import { relayerVersion } from './version.js';
 
@@ -58,16 +59,26 @@ const TELEMETRY_STOP_MS = 5_000;
 const GENERIC_READY_PATH = '/tmp/oxide-relayer-generic-ready';
 
 export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}): Promise<void> {
-  const lease = await RuntimeLease.acquire(runtimeLeasePath(), 'generic');
+  const paths = genericRuntimePaths(config.state.sqlitePath, config.state.controlDir);
+  const restoreProfile = isGenericRestoreProfile();
+  if (restoreProfile && !paths.exactHandoff) {
+    throw new Error('The generic-restore runtime profile requires the fixed /data state and /control layout');
+  }
+  const lease = await RuntimeLease.acquire(paths.runtimeLease, 'generic', { cleanHandoffPath: paths.cleanHandoff });
   let cleanHandoff = false;
   try {
-    await runRelayerWithLease(config, opts);
-    cleanHandoff = supportsExactOperationHandoff(config.state.sqlitePath);
+    await runRelayerWithLease(config, paths, restoreProfile, opts);
+    cleanHandoff = paths.exactHandoff;
   } finally {
     await lease.close({ cleanHandoff });
   }
 }
-async function runRelayerWithLease(config: RunConfig, opts: RunRelayerOptions): Promise<void> {
+async function runRelayerWithLease(
+  config: RunConfig,
+  paths: GenericRuntimePaths,
+  restoreProfile: boolean,
+  opts: RunRelayerOptions,
+): Promise<void> {
   await removeGenericReadyMarker();
   const log = createLogger('oxide-relayer');
   log.info(`oxide-relayer version ${relayerVersion()}`);
@@ -109,15 +120,26 @@ async function runRelayerWithLease(config: RunConfig, opts: RunRelayerOptions): 
     rollupVersion: publicConfig.rollupVersion,
     ...(config.modes.includes('l1-operations') ? { broadcaster: publicConfig.broadcaster.toString() } : {}),
   });
-  const quarantinedOperationIds = await genericSubmissionQuarantine();
-  const submissionJournal = await GenericSubmissionJournal.open(GENERIC_SUBMISSION_JOURNAL_PATH);
-  await submissionJournal.assertNoUnresolved();
-
+  // Only the privileged generic-restore profile can read the exact witness and journal; a plain run requires that
+  // the shared control directory has no exact-operation state at all.
+  let quarantinedOperationIds: ReadonlySet<string> = new Set();
+  if (restoreProfile) {
+    quarantinedOperationIds = await genericSubmissionQuarantine();
+  } else {
+    await assertNoExactOperationState(paths.controlDirectory);
+  }
+  const submissionJournal = await GenericSubmissionJournal.open(paths.submissionJournal);
 
   const signer =
     config.disableSubmission && !hasSignerKey(config.signer)
       ? createEphemeralSigner()
       : await loadSigner(config.signer);
+  await reconcileUnresolvedSubmissions({
+    journal: submissionJournal,
+    client: publicClient,
+    address: signer.account.address,
+    log,
+  });
   const l1TxQueue = createL1TxQueue({
     client: publicClient,
     account: signer.account,

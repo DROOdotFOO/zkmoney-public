@@ -12,6 +12,7 @@ import {
   DEFAULT_LOG_SCAN_WINDOW,
 } from '../l1_operations/l1_operation_relayer.js';
 import { PROVER_ENV_VARS, PROVER_RUN_OPTIONS } from '../prover/cli.js';
+import { EXACT_CONTROL_DIRECTORY } from '../exact_operation/paths.js';
 import { EXACT_HANDOFF_STATE_TEMPLATE } from '../state/path.js';
 import { SIGNER_BACKENDS, urlOrigin } from './config.js';
 
@@ -41,6 +42,7 @@ export const RELAYER_ENV_VARS = [
   'OXIDE_RELAYER_KEYSTORE_PASSWORD_FILE',
   'OXIDE_RELAYER_STATE_BACKEND',
   'OXIDE_RELAYER_STATE_PATH',
+  'OXIDE_RELAYER_CONTROL_DIR',
   'OXIDE_RELAYER_SDN_URL',
   'OXIDE_RELAYER_LOG_SCAN_WINDOW',
   'DISABLE_SUBMISSION',
@@ -156,6 +158,12 @@ export const RUN_OPTIONS: readonly CliOptionSpec[] = [
     description: "SQLite state path; {portal} expands to each worker's portal",
     env: 'OXIDE_RELAYER_STATE_PATH',
     defaultValue: DEFAULT_SQLITE_PATH,
+  },
+  {
+    flags: '--control-dir <path>',
+    description: 'existing owner-only directory of the runtime lease that the exact-operation runtime shares',
+    env: 'OXIDE_RELAYER_CONTROL_DIR',
+    defaultValue: EXACT_CONTROL_DIRECTORY,
   },
   {
     flags: '--sdn-url <url>',

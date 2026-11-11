@@ -171,6 +171,7 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
     state: {
       backend: 'sqlite',
       sqlitePath: opts.state!,
+      controlDir: opts.controlDir!,
     },
     sdnUrl: opts.sdnUrl,
     logScanWindow: BigInt(opts.logScanWindow!),

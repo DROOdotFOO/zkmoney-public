@@ -1,6 +1,6 @@
 import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { EXACT_CANONICAL_DIRECTORY, EXACT_CONTROL_DIRECTORY } from './paths.js';
+import { EXACT_CANONICAL_DIRECTORY, EXACT_CONTROL_DIRECTORY, EXACT_JOURNAL_FILE, RUNTIME_LEASE_FILE } from './paths.js';
 
 export interface ExactStorageRoots {
   canonicalState: string;
@@ -44,7 +44,7 @@ function exactPaths(canonicalState: string, controlDir: string): ExactStorageRoo
   return {
     canonicalState,
     controlDir,
-    exactJournal: path.join(controlDir, 'exact-operation.sqlite3'),
-    runtimeLease: path.join(controlDir, 'oxide-relayer.runtime-lease.sqlite3'),
+    exactJournal: path.join(controlDir, EXACT_JOURNAL_FILE),
+    runtimeLease: path.join(controlDir, RUNTIME_LEASE_FILE),
   };
 }

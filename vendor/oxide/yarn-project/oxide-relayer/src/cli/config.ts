@@ -90,6 +90,8 @@ export interface SignerConfig {
 export interface StateConfig {
   backend: 'sqlite';
   sqlitePath: string;
+  /** Directory of the runtime lease shared with the exact-operation runtime. */
+  controlDir: string;
 }
 
 const REDACTED = '<redacted>';
@@ -147,6 +149,7 @@ export interface CommanderRunOptions extends ProverCommanderOptions {
   keystorePasswordFile?: string;
   stateBackend?: string;
   state?: string;
+  controlDir?: string;
   sdnUrl?: string;
   logScanWindow?: number;
   disableSubmission?: boolean;

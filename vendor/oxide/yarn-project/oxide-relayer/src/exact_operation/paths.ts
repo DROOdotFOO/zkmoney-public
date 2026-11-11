@@ -1,11 +1,21 @@
+/** File names shared by the generic and exact runtimes. Their directories differ per runtime layout. */
+export const GENERIC_SUBMISSION_JOURNAL_FILE = 'generic-submission.sqlite3';
+export const RUNTIME_LEASE_FILE = 'oxide-relayer.runtime-lease.sqlite3';
+export const CLEAN_HANDOFF_FILE = `${RUNTIME_LEASE_FILE}.clean-handoff.json`;
+export const EXACT_JOURNAL_FILE = 'exact-operation.sqlite3';
+export const GENERIC_RESTORE_MARKER_FILE = 'generic-restore.json';
+
+/**
+ * The fixed layout of the image. The generic data directory is mounted writable at `/data` for the generic runtime,
+ * and read-only at `/canonical` for the exact runtime. Both runtimes share `/control`.
+ */
 export const EXACT_CANONICAL_DIRECTORY = '/canonical';
 export const EXACT_CONTROL_DIRECTORY = '/control';
 export const GENERIC_DATA_DIRECTORY = '/data';
-export const EXACT_JOURNAL_PATH = '/control/exact-operation.sqlite3';
-export const EXACT_RUNTIME_LEASE_PATH = '/control/oxide-relayer.runtime-lease.sqlite3';
-export const EXACT_GENERIC_SUBMISSION_JOURNAL_PATH = '/canonical/generic-submission.sqlite3';
-export const EXACT_CLEAN_HANDOFF_PATH = '/canonical/oxide-relayer.runtime-lease.sqlite3.clean-handoff.json';
-export const GENERIC_SUBMISSION_JOURNAL_PATH = '/data/generic-submission.sqlite3';
+export const EXACT_JOURNAL_PATH = `${EXACT_CONTROL_DIRECTORY}/${EXACT_JOURNAL_FILE}`;
+export const EXACT_RUNTIME_LEASE_PATH = `${EXACT_CONTROL_DIRECTORY}/${RUNTIME_LEASE_FILE}`;
+export const EXACT_GENERIC_SUBMISSION_JOURNAL_PATH = `${EXACT_CANONICAL_DIRECTORY}/${GENERIC_SUBMISSION_JOURNAL_FILE}`;
+export const EXACT_CLEAN_HANDOFF_PATH = `${EXACT_CANONICAL_DIRECTORY}/${CLEAN_HANDOFF_FILE}`;
 export const EXACT_APPROVAL_AUTHORITY_PATH = '/app/approval-authority.pem';
 export const EXACT_SOURCE_COMMIT_PATH = '/app/source-commit';
 export const EXACT_RUNTIME_CONFIG_DIRECTORY = '/run/config/oxide-relayer';
