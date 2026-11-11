@@ -20,6 +20,9 @@ on:
       - "scripts/verify_publish_source.py"
       - "scripts/test_verify_publish_source.py"
       - "scripts/test_publish_release_contract.rb"
+      - "scripts/smoke-exact-relayer-entrypoint.sh"
+      - "scripts/verify-aztec-toolchain.sh"
+      - "scripts/aztec-toolchain-*.sha256"
   push:
     branches:
       - security/exact-operation-relay
@@ -42,6 +45,9 @@ on:
       - "scripts/verify_publish_source.py"
       - "scripts/test_verify_publish_source.py"
       - "scripts/test_publish_release_contract.rb"
+      - "scripts/smoke-exact-relayer-entrypoint.sh"
+      - "scripts/verify-aztec-toolchain.sh"
+      - "scripts/aztec-toolchain-*.sha256"
 
 env:
   APPROVAL_AUTHORITY_PEM_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQXVmMTNWdlAxUWZoU2dSM1d2d2dvMmJXbkMyNkhCSEZVMmtwTkoxQkRmQTg9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo=
@@ -97,7 +103,10 @@ jobs:
       - name: Set up exact pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
 
-      - name: Install exact lockfile
+      # The root package.json allows lifecycle scripts only for sqlite3; compile it rather than download a prebuilt.
+      - name: Install exact lockfile with only the sqlite3 build script
+        env:
+          npm_config_build_from_source: "true"
         run: pnpm install --frozen-lockfile
 
       - name: Set up exact Foundry
@@ -126,8 +135,13 @@ jobs:
             printf '%s\n' "$HOME/.aztec/current/internal-bin"
           } >> "$GITHUB_PATH"
 
+      - name: Verify the pinned Aztec toolchain
+        run: scripts/verify-aztec-toolchain.sh "$AZTEC_VERSION"
+
       - name: Build and smoke reviewed image
         shell: bash
+        env:
+          npm_config_build_from_source: "true"
         run: |
           set -euo pipefail
           authority="$RUNNER_TEMP/approval-authority.pem"

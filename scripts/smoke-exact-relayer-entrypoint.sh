@@ -5,11 +5,17 @@ image=${1:?usage: smoke-exact-relayer-entrypoint.sh IMAGE}
 [[ $(docker info --format '{{.OSType}}') == linux ]] || { printf '%s\n' 'exact entrypoint smoke requires a Linux Docker daemon' >&2; exit 1; }
 
 fixture=$(mktemp -d)
+# Cleanup runs from the EXIT trap and must not replace the smoke result, so failures are reported, not fatal.
 cleanup() {
-  docker run --rm --entrypoint rm \
+  # The fixture holds files chowned to other users, so only a container can remove them.
+  if ! docker run --rm --entrypoint rm \
     --mount "type=bind,src=$fixture,dst=/fixture" \
-    "$image" -rf /fixture/canonical /fixture/config >/dev/null 2>&1 || true
-  rm -rf "$fixture"
+    "$image" -rf /fixture/canonical /fixture/config; then
+    printf 'warning: could not remove smoke fixture files under %s\n' "$fixture" >&2
+  fi
+  if ! rm -rf "$fixture"; then
+    printf 'warning: could not remove smoke fixture %s\n' "$fixture" >&2
+  fi
 }
 trap cleanup EXIT
 canonical="$fixture/canonical"
@@ -112,7 +118,7 @@ runtime = {
     'runtimeUid': 65532,
     'runtimeGid': 65532,
     'signerAddress': '0x' + '00' * 20,
-    'schemaIdentity': 'oxide-relayer.sqlite.portal-v4+exact-v4+generic-v2+lease-v1+runtime-v2',
+    'schemaIdentity': 'oxide-relayer.sqlite.portal-v4+exact-v4+generic-v3+lease-v1+runtime-v2',
     'stateInventoryDigest': digest(b'oxide-relayer-state-inventory-v3\0' + inventory_bytes),
     'canonicalStateDigest': canonical_state_digest,
     'expectedNonce': 0,

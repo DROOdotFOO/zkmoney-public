@@ -16,7 +16,7 @@
     "test": "NODE_NO_WARNINGS=1 NODE_OPTIONS=--experimental-vm-modules jest --runInBand"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1045.0",
+    "@aws-sdk/client-s3": "3.1063.0",
     "@aztec-labs/aztec.js": "6.0.0",
     "@aztec-labs/constants": "6.0.0",
     "@aztec-labs/ethereum": "6.0.0",

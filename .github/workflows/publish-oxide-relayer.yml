@@ -265,6 +265,9 @@ jobs:
             echo "$HOME/.aztec/current/internal-bin"
           } >> "$GITHUB_PATH"
 
+      - name: Verify the pinned Aztec toolchain
+        run: scripts/verify-aztec-toolchain.sh "$AZTEC_VERSION"
+
       - name: Materialize reviewed Nargo dependency mirrors
         shell: bash
         run: |
