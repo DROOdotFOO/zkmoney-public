@@ -9,7 +9,7 @@ import sqlite3Driver from 'sqlite3';
 
 import type { ExactOperationApproval } from './contract.js';
 import { ExactOperationJournal } from './journal.js';
-import type { ExactApprovalClaimStore } from './monotonic_claim.js';
+import { ExactApprovalClaimCollisionError, type ExactApprovalClaimStore } from './monotonic_claim.js';
 import { relayExactOperation, type ExactOperationExecution } from './runner.js';
 import { exactApprovalFixture } from './test_fixture.js';
 
@@ -57,7 +57,7 @@ class RecordingExecution implements ExactOperationExecution {
 
 class RecordingClaimStore implements ExactApprovalClaimStore {
   claim:
-    | { key: string; versionId: string; checksumSha256: string; retainUntil: Date }
+    | { key: string; body: string; versionId: string; checksumSha256: string; retainUntil: Date }
     | undefined;
 
   async assertComplianceRetention(): Promise<void> {}
@@ -72,7 +72,7 @@ class RecordingClaimStore implements ExactApprovalClaimStore {
     assertApprovalWindow: () => void,
   ): Promise<{ versionId: string }> {
     assertApprovalWindow();
-    if (this.claim) throw new Error('collision');
+    if (this.claim) throw new ExactApprovalClaimCollisionError();
     this.claim = { ...args, versionId: 'version-1' };
     return { versionId: this.claim.versionId };
   }
@@ -84,6 +84,11 @@ class RecordingClaimStore implements ExactApprovalClaimStore {
     retainUntil: Date;
   }): Promise<void> {
     expect(this.claim).toMatchObject(args);
+  }
+
+  async readExisting(key: string) {
+    if (this.claim?.key !== key) throw new ExactApprovalClaimCollisionError();
+    return { ...this.claim, retainUntil: this.claim.retainUntil.toISOString() };
   }
 }
 
@@ -275,10 +280,37 @@ describe('relayExactOperation', () => {
         execution,
         claimStore,
       }),
-    ).rejects.toThrow('collision');
+    ).rejects.toBeInstanceOf(ExactApprovalClaimCollisionError);
     expect(execution.signingCount).toBe(1);
     expect(execution.sendCount).toBe(1);
     await state.close();
+  });
+
+  it('adopts its own claim after a crash between the claim and the journal row', async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), 'oxide-exact-claim-crash-')));
+    directories.push(directory);
+    const path = join(directory, 'journal.sqlite3');
+    const crashed = await ExactOperationJournal.open(path);
+    crashed.consumeApproval = async () => {
+      throw new Error('process killed after the external claim');
+    };
+    const execution = new RecordingExecution();
+    const claimStore = new RecordingClaimStore();
+    await expect(
+      relayExactOperation({ approval, approvalCommitment, journal: crashed, execution, claimStore }),
+    ).rejects.toThrow('process killed');
+    await crashed.close();
+    const claim = claimStore.claim;
+    expect(claim).toBeDefined();
+
+    const restarted = await ExactOperationJournal.open(path);
+    await expect(
+      relayExactOperation({ approval, approvalCommitment, journal: restarted, execution, claimStore }),
+    ).resolves.toEqual({ l1TxHash: `0x${'aa'.repeat(32)}` });
+    expect(claimStore.claim).toBe(claim);
+    expect(execution.signingCount).toBe(1);
+    expect(execution.sendCount).toBe(1);
+    await restarted.close();
   });
 
   it('fails before signing when the local journal exists but its witness version is unavailable', async () => {

@@ -1,8 +1,15 @@
-import { chmod, lstat, open as openFile, realpath } from 'node:fs/promises';
+import { chmod, open as openFile, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
-import { type Database, open } from 'sqlite';
-import sqlite3Driver, { type Database as Sqlite3Database, type Statement as Sqlite3Statement } from 'sqlite3';
+import {
+  type SqliteDatabase,
+  assertOwnerOnlyFile,
+  assertOwnerOnlyParent,
+  createOrValidateOwnerOnlyFile,
+  isEmptySchema,
+  openSqlite,
+  withReadOnlySqlite,
+} from '../state/secure_sqlite.js';
 import {
   type ExactApprovalClaimJournalReceipt,
   type ExactApprovalClaimReceipt,
@@ -28,7 +35,12 @@ const OPERATIONS_TABLE_SQL = `CREATE TABLE exact_operations (
   updated_at TEXT NOT NULL
 )`;
 
-type SqliteDatabase = Database<Sqlite3Database, Sqlite3Statement>;
+const OPERATIONS_SCHEMA = new Map([
+  ['exact_operation_meta', META_TABLE_SQL],
+  ['exact_operations', OPERATIONS_TABLE_SQL],
+]);
+const SCHEMA_MISMATCH = 'Existing SQLite file is not the canonical exact-operation journal schema';
+const JOURNAL_LABEL = 'Exact-operation journal';
 
 export type ExactOperationState =
   | 'approved'
@@ -59,22 +71,10 @@ export class ExactOperationJournal {
 
   static async open(filename: string): Promise<ExactOperationJournal> {
     const resolved = path.resolve(filename);
-    await assertSecureParent(resolved);
-    await createOrValidateJournalFile(resolved);
-    await assertEmptyOrExactJournalFile(resolved);
-    // OPEN_URI enables SQLite's nofollow flag, so a path swap to a symlink is rejected.
-    // sqlite3 is a CJS native addon whose runtime constructor is on the default export.
-    // eslint-disable-next-line import-x/no-named-as-default-member
-    const mode =
-      sqlite3Driver.OPEN_READWRITE |
-      sqlite3Driver.OPEN_CREATE |
-      sqlite3Driver.OPEN_FULLMUTEX |
-      sqlite3Driver.OPEN_URI;
-    const db = await open({
-      filename: `file:${resolved}?mode=rwc&nofollow=1`,
-      driver: sqlite3Driver.Database,
-      mode,
-    });
+    await assertOwnerOnlyParent(resolved, JOURNAL_LABEL);
+    await createOrValidateOwnerOnlyFile(resolved, JOURNAL_LABEL);
+    await withReadOnlySqlite(resolved, 'read-only', assertEmptyOrExactJournal);
+    const db = await openSqlite(resolved, 'read-write');
     try {
       await db.exec('PRAGMA busy_timeout = 0');
       await db.exec('PRAGMA locking_mode = NORMAL');
@@ -89,6 +89,40 @@ export class ExactOperationJournal {
       await db.close();
       throw error;
     }
+  }
+
+  /**
+   * Durably notes, before the external witness claim, that this approval is about to be claimed. A crash after the
+   * claim but before `consumeApproval` leaves the note, which lets the next run adopt its own claim. Without the note
+   * an existing claim stays a collision, so a local journal rollback still fails closed.
+   */
+  async recordClaimIntent(approvalCommitment: string, operationId: string): Promise<void> {
+    const temporary = `${this.claimIntentPath}.tmp`;
+    await removeFile(temporary);
+    const handle = await openFile(temporary, 'wx', 0o600);
+    try {
+      await handle.writeFile(claimIntentBody(approvalCommitment, operationId));
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporary, this.claimIntentPath);
+    await syncDirectory(path.dirname(this.path));
+  }
+
+  /** True when `recordClaimIntent` ran for exactly this approval and operation and no row consumed it since. */
+  async hasClaimIntent(approvalCommitment: string, operationId: string): Promise<boolean> {
+    try {
+      await assertOwnerOnlyFile(this.claimIntentPath, 'Exact-operation claim intent');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+    return (await readFile(this.claimIntentPath, 'utf8')) === claimIntentBody(approvalCommitment, operationId);
+  }
+
+  private get claimIntentPath(): string {
+    return `${this.path}.claim-intent.json`;
   }
 
   async consumeApproval(
@@ -124,6 +158,8 @@ export class ExactOperationJournal {
         new Date().toISOString(),
       );
     });
+    await removeFile(this.claimIntentPath);
+    await syncDirectory(path.dirname(this.path));
   }
 
   async findConsumption(
@@ -317,34 +353,15 @@ export class ExactOperationJournal {
 
 export async function auditExactOperationJournal(filename: string): Promise<ExactOperationRecord[]> {
   const resolved = path.resolve(filename);
-  await assertSecureParent(resolved);
+  await assertOwnerOnlyParent(resolved, JOURNAL_LABEL);
   try {
-    const metadata = await lstat(resolved);
-    if (
-      !metadata.isFile() ||
-      metadata.isSymbolicLink() ||
-      metadata.nlink !== 1 ||
-      metadata.uid !== process.getuid?.() ||
-      (metadata.mode & 0o777) !== 0o600
-    ) {
-      throw new Error('Exact-operation journal must be one owner-only regular file');
-    }
+    await assertOwnerOnlyFile(resolved, JOURNAL_LABEL);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
-  const mode = sqlite3Driver.OPEN_READONLY | sqlite3Driver.OPEN_FULLMUTEX | sqlite3Driver.OPEN_URI;
-  const db = await open({
-    filename: `file:${resolved}?mode=ro&nofollow=1`,
-    driver: sqlite3Driver.Database,
-    mode,
-  });
-  try {
-    await assertEmptyOrExactJournal(db);
-    const hasSchema = await db.get<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'exact_operations'",
-    );
-    if (!hasSchema) return [];
+  return await withReadOnlySqlite(resolved, 'read-only', async db => {
+    if (await assertEmptyOrExactJournal(db)) return [];
     const rows = await db.all<
       Array<{
         state: ExactOperationState;
@@ -381,91 +398,19 @@ export async function auditExactOperationJournal(filename: string): Promise<Exac
         body: row.witness_body,
       },
     }));
-  } finally {
-    await db.close();
-  }
-}
-
-async function assertSecureParent(filename: string): Promise<void> {
-  const parent = path.dirname(filename);
-  const [metadata, canonical] = await Promise.all([lstat(parent), realpath(parent)]);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink() || canonical !== parent) {
-    throw new Error('Exact-operation journal parent must be one canonical directory');
-  }
-  if ((metadata.mode & 0o022) !== 0) {
-    throw new Error('Exact-operation journal parent must not be group- or world-writable');
-  }
-}
-
-async function createOrValidateJournalFile(filename: string): Promise<void> {
-  try {
-    const handle = await openFile(filename, 'wx', 0o600);
-    await handle.close();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-      throw error;
-    }
-  }
-  const metadata = await lstat(filename);
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1 ||
-    metadata.uid !== process.getuid?.() ||
-    (metadata.mode & 0o777) !== 0o600
-  ) {
-    throw new Error('Exact-operation journal must be one owner-only regular file');
-  }
-}
-
-async function assertEmptyOrExactJournalFile(filename: string): Promise<void> {
-  // sqlite3 is a CJS native addon whose runtime constructor is on the default export.
-  // eslint-disable-next-line import-x/no-named-as-default-member
-  const mode = sqlite3Driver.OPEN_READONLY | sqlite3Driver.OPEN_FULLMUTEX | sqlite3Driver.OPEN_URI;
-  const db = await open({
-    filename: `file:${filename}?mode=ro&nofollow=1`,
-    driver: sqlite3Driver.Database,
-    mode,
   });
-  try {
-    await assertEmptyOrExactJournal(db);
-  } finally {
-    await db.close();
-  }
 }
 
-async function assertEmptyOrExactJournal(db: SqliteDatabase): Promise<void> {
-  const objects = await db.all<{ type: string; name: string; sql: string | null }[]>(
-    `SELECT type, name, sql FROM sqlite_master
-     WHERE name NOT LIKE 'sqlite_%'
-     ORDER BY type, name`,
-  );
-  if (objects.length === 0) {
-    return;
-  }
-  const expected = new Map([
-    ['exact_operation_meta', normalizeSql(META_TABLE_SQL)],
-    ['exact_operations', normalizeSql(OPERATIONS_TABLE_SQL)],
-  ]);
-  if (
-    objects.length !== expected.size ||
-    objects.some(
-      object =>
-        object.type !== 'table' ||
-        object.sql === null ||
-        expected.get(object.name) !== normalizeSql(object.sql),
-    )
-  ) {
-    throw new Error('Existing SQLite file is not the canonical exact-operation journal schema');
+/** True for an empty file. Throws unless the file is exactly the canonical journal schema at `SCHEMA_VERSION`. */
+async function assertEmptyOrExactJournal(db: SqliteDatabase): Promise<boolean> {
+  if (await isEmptySchema(db, OPERATIONS_SCHEMA, SCHEMA_MISMATCH)) {
+    return true;
   }
   const versions = await db.all<{ schema_version: number }[]>('SELECT schema_version FROM exact_operation_meta');
   if (versions.length !== 1 || versions[0]?.schema_version !== SCHEMA_VERSION) {
     throw new Error('Existing exact-operation journal has an unrecognized schema version');
   }
-}
-
-function normalizeSql(sql: string): string {
-  return sql.replace(/\s+/g, ' ').trim();
+  return false;
 }
 
 async function initialize(db: SqliteDatabase): Promise<void> {
@@ -488,5 +433,26 @@ async function initialize(db: SqliteDatabase): Promise<void> {
       `Exact-operation journal schema ${String(version?.schema_version)} is not supported; expected ${SCHEMA_VERSION}. ` +
         'No automatic migration is available.',
     );
+  }
+}
+
+function claimIntentBody(approvalCommitment: string, operationId: string): string {
+  return `${JSON.stringify({ schema: 'oxide-relayer.exact-claim-intent.v1', approvalCommitment, operationId })}\n`;
+}
+
+async function removeFile(filename: string): Promise<void> {
+  try {
+    await unlink(filename);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  const handle = await openFile(directory, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }

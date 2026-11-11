@@ -69,6 +69,8 @@ export interface ExactApprovalClaimStore {
     checksumSha256: string;
     retainUntil: Date;
   }): Promise<void>;
+  /** The single immutable version at `key`, read with its checksum. Throws unless exactly one version exists. */
+  readExisting(key: string): Promise<ExactApprovalClaimReceipt>;
 }
 
 export class ExactApprovalClaimCollisionError extends Error {
@@ -152,21 +154,37 @@ export function restoreExactApprovalClaimReceipt(
   };
 }
 
+/**
+ * Publishes the immutable external claim of this approval. `adoptOwnClaim` is set only when the local journal holds
+ * the durable intent of this exact approval, that is after a crash between the claim and the journal row. Then an
+ * existing claim with exactly this body is the earlier run's own and is reused; any other existing claim collides.
+ */
 export async function consumeExactApprovalExternally(
   approval: ExactOperationApproval,
   approvalCommitment: ExactApprovalCommitment,
   store: ExactApprovalClaimStore,
   assertApprovalWindow: () => void,
+  { adoptOwnClaim = false }: { adoptOwnClaim?: boolean } = {},
 ): Promise<ExactApprovalClaimReceipt> {
   await store.assertComplianceRetention();
   const body = canonicalJson(exactApprovalClaim(approval, approvalCommitment));
   const checksumSha256 = createHash('sha256').update(body).digest('base64');
   const retainUntil = new Date(approval.witness.retainUntil);
   const key = exactApprovalClaimKey(approval, approvalCommitment, store.claimPrefix);
-  const { versionId } = await store.createIfAbsent(
-    { key, body, checksumSha256, retainUntil },
-    assertApprovalWindow,
-  );
+  let versionId: string;
+  try {
+    ({ versionId } = await store.createIfAbsent({ key, body, checksumSha256, retainUntil }, assertApprovalWindow));
+  } catch (error) {
+    if (!adoptOwnClaim || !(error instanceof ExactApprovalClaimCollisionError)) {
+      throw error;
+    }
+    const existing = await store.readExisting(key);
+    if (existing.body !== body || existing.checksumSha256 !== checksumSha256) {
+      throw error;
+    }
+    assertApprovalWindow();
+    versionId = existing.versionId;
+  }
   await store.verify({ key, versionId, checksumSha256, retainUntil });
   return {
     key,
@@ -322,6 +340,27 @@ export class S3ExactApprovalClaimStore implements ExactApprovalClaimStore {
       return { key: version.Key, versionId: version.VersionId };
     });
     return await Promise.all(versions.map(version => this.readClaim(version.key, version.versionId)));
+  }
+
+  async readExisting(key: string): Promise<ExactApprovalClaimReceipt> {
+    const inventory = await this.client.send(
+      new ListObjectVersionsCommand({
+        Bucket: this.config.bucket,
+        Prefix: key,
+        ExpectedBucketOwner: this.config.expectedOwner,
+      }),
+    );
+    const versions = (inventory.Versions ?? []).filter(version => version.Key === key);
+    const versionId = versions[0]?.VersionId;
+    if (
+      inventory.IsTruncated !== false ||
+      (inventory.DeleteMarkers?.length ?? 0) !== 0 ||
+      versions.length !== 1 ||
+      versionId === undefined
+    ) {
+      throw new ExactApprovalClaimCollisionError();
+    }
+    return (await this.readClaim(key, versionId)).receipt;
   }
 
   private async readClaim(

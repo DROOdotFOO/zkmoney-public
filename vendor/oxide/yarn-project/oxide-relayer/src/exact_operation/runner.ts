@@ -61,12 +61,12 @@ export async function relayExactOperation({
     await verifyExactApprovalClaimReceipt(claimStore, restoreExactApprovalClaimReceipt(key, existing));
     throw new Error(`Exact operation ${approval.operation.id} approval was already consumed`);
   }
-  const witness = await consumeExactApprovalExternally(
-    approval,
-    approvalCommitment,
-    claimStore,
-    assertApprovalWindow,
-  );
+  // Signing needs the journal row, so an intent without a row proves this approval was never signed.
+  const adoptOwnClaim = await journal.hasClaimIntent(approvalCommitment, approval.operation.id);
+  await journal.recordClaimIntent(approvalCommitment, approval.operation.id);
+  const witness = await consumeExactApprovalExternally(approval, approvalCommitment, claimStore, assertApprovalWindow, {
+    adoptOwnClaim,
+  });
   await journal.consumeApproval(approvalCommitment, approval.operation.id, approval.stageA.approvalDigest, witness);
   await journal.beginSigning(approval.operation.id);
   assertApprovalWindow();

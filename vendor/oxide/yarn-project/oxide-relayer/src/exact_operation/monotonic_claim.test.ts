@@ -3,6 +3,7 @@ import { ListObjectVersionsCommand, PutObjectCommand, type S3Client } from '@aws
 
 import {
   ExactApprovalClaimCollisionError,
+  type ExactApprovalClaimReceipt,
   type ExactApprovalClaimStore,
   consumeExactApprovalExternally,
   exactApprovalClaimKey,
@@ -15,7 +16,7 @@ const approvalCommitment = `sha256:${'ca'.repeat(32)}` as const;
 const approvalLive = () => {};
 
 class MemoryClaimStore implements ExactApprovalClaimStore {
-  readonly claims = new Map<string, { checksumSha256: string; retainUntil: Date; versionId: string }>();
+  readonly claims = new Map<string, { body: string; checksumSha256: string; retainUntil: Date; versionId: string }>();
   unavailable = false;
 
   async assertComplianceRetention(): Promise<void> {
@@ -35,7 +36,12 @@ class MemoryClaimStore implements ExactApprovalClaimStore {
     if (this.unavailable) throw new Error('unavailable');
     if (this.claims.has(args.key)) throw new ExactApprovalClaimCollisionError();
     const versionId = `version-${this.claims.size + 1}`;
-    this.claims.set(args.key, { checksumSha256: args.checksumSha256, retainUntil: args.retainUntil, versionId });
+    this.claims.set(args.key, {
+      body: args.body,
+      checksumSha256: args.checksumSha256,
+      retainUntil: args.retainUntil,
+      versionId,
+    });
     return { versionId };
   }
 
@@ -55,6 +61,18 @@ class MemoryClaimStore implements ExactApprovalClaimStore {
       throw new Error('verification failed');
     }
   }
+
+  async readExisting(key: string): Promise<ExactApprovalClaimReceipt> {
+    const claim = this.claims.get(key);
+    if (!claim) throw new ExactApprovalClaimCollisionError();
+    return {
+      key,
+      versionId: claim.versionId,
+      checksumSha256: claim.checksumSha256,
+      retainUntil: claim.retainUntil.toISOString(),
+      body: claim.body,
+    };
+  }
 }
 
 describe('external exact-operation approval consumption', () => {
@@ -67,6 +85,19 @@ describe('external exact-operation approval consumption', () => {
     ).rejects.toBeInstanceOf(
       ExactApprovalClaimCollisionError,
     );
+  });
+
+  it('adopts only its own claim, and only when the journal holds its intent', async () => {
+    const store = new MemoryClaimStore();
+    const first = await consumeExactApprovalExternally(approval, approvalCommitment, store, approvalLive);
+    await expect(
+      consumeExactApprovalExternally(approval, approvalCommitment, store, approvalLive, { adoptOwnClaim: true }),
+    ).resolves.toEqual(first);
+
+    const otherCommitment = `sha256:${'cb'.repeat(32)}` as const;
+    await expect(
+      consumeExactApprovalExternally(approval, otherCommitment, store, approvalLive, { adoptOwnClaim: true }),
+    ).rejects.toBeInstanceOf(ExactApprovalClaimCollisionError);
   });
 
   it('fails before eligibility when the authority is unavailable', async () => {
