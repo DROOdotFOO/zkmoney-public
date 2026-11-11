@@ -44,8 +44,11 @@ class MemorySubmissionJournal implements DurableSubmissionJournal {
   }
 
   async reserveSigning(record: GenericSigningReservation): Promise<void> {
-    if (this.rows.has(record.operationIdentity)) throw new Error('already journaled');
-    this.rows.set(record.operationIdentity, { ...record, state: 'signing' });
+    const latest = this.rows.get(record.operationIdentity);
+    if (latest && !['confirmed', 'reverted', 'dropped_or_replaced'].includes(latest.state)) {
+      throw new Error('already journaled with an unresolved outcome');
+    }
+    this.rows.set(record.operationIdentity, { ...record, attempt: (latest?.attempt ?? 0) + 1, state: 'signing' });
   }
 
   async recordPrepared(operationIdentity: string, signedTxHash: string, signedTx: Buffer): Promise<void> {
@@ -330,6 +333,49 @@ describe('L1TxQueue', () => {
     await expect(journal.assertNoUnresolved()).rejects.toThrow('unresolved');
   });
 
+  it('signs the same operation identity again once its earlier attempt is terminal', async () => {
+    const journal = new MemorySubmissionJournal();
+    const queue = makeQueue({ submissionJournal: journal });
+    const identity = { kind: 'fpc-funding', id: 'funder/0xsamecalldata' } as const;
+    const first = await queue.enqueue(send => send({ ...REQUEST, ...GAS }, identity));
+    chain.mine(first);
+    await expect(first.settled).resolves.toMatchObject({ status: 'success' });
+
+    const second = await queue.enqueue(send => send({ ...REQUEST, ...GAS }, identity));
+    expect(second.nonce).toBe(1);
+    expect(journal.rows.get('fpc-funding:funder/0xsamecalldata')).toMatchObject({ attempt: 2, state: 'accepted' });
+    chain.mine(second);
+    await expect(second.settled).resolves.toMatchObject({ status: 'success' });
+  });
+
+  it('makes a public transaction durably ambiguous after the receipt timeout and stops signing', async () => {
+    const journal = new MemorySubmissionJournal();
+    const queue = makeQueue({ submissionJournal: journal, receiptTimeoutBlocks: 20 });
+    const first = await send(queue);
+    chain.blockNumber = 120n;
+    expect(await isPending(first.settled)).toBe(true);
+    chain.blockNumber = 121n;
+    await expect(first.settled).rejects.toThrow('durably ambiguous');
+    expect(journal.rows.get('l1-operation:test-operation-0')).toMatchObject({
+      state: 'ambiguous',
+      response: expect.stringContaining('receipt_timeout'),
+    });
+    await expect(send(queue)).rejects.toThrow('no further signing is permitted');
+    expect(chain.broadcasts).toHaveLength(1);
+    await expect(queue.stop()).rejects.toThrow('exact-operation handoff is forbidden');
+    queues = queues.filter(candidate => candidate !== queue);
+  });
+
+  it('ends pending monitors on stop and leaves their attempts unresolved', async () => {
+    const journal = new MemorySubmissionJournal();
+    const queue = makeQueue({ submissionJournal: journal });
+    const first = await send(queue);
+    await expect(queue.stop()).rejects.toThrow('no terminal outcome at shutdown');
+    await expect(first.settled).rejects.toThrow('no terminal outcome when the queue stopped');
+    expect(journal.rows.get('l1-operation:test-operation-0')?.state).toBe('accepted');
+    queues = queues.filter(candidate => candidate !== queue);
+  });
+
   it('keeps the last broadcast as a lower bound when the RPC gives a stale pending count', async () => {
     await enqueue(makeQueue(), async send => {
       await send({ ...REQUEST, ...GAS });
@@ -549,7 +595,8 @@ describe('L1TxQueue', () => {
     await send(queue);
     const pending = send(queue);
     const rejected = expect(pending).rejects.toThrow('stopped before queued work could run');
-    await queue.stop();
+    // The first transaction has no outcome yet, so the stop is not a clean handoff.
+    await expect(queue.stop()).rejects.toThrow('no terminal outcome at shutdown');
     await rejected;
     await expect(send(queue)).rejects.toThrow('is stopped');
   });

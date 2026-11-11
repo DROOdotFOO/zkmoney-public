@@ -27,6 +27,8 @@ import type { DurableSubmissionJournal } from './submission_journal.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const PROTECT_TX_STATUS_TIMEOUT_MS = 5_000;
+/** Blocks after its send that a tx may stay without a terminal outcome before it is durably ambiguous (~1h). */
+export const DEFAULT_RECEIPT_TIMEOUT_BLOCKS = 300;
 
 /** A broadcast transaction and its settlement result. */
 export interface SentL1Tx {
@@ -52,6 +54,13 @@ export type SendL1Tx = (
 export class DurableSubmissionAmbiguityError extends Error {
   constructor(cause: unknown) {
     super('L1 submission outcome is durably ambiguous; reconciliation approval is required', { cause });
+  }
+}
+
+/** The queue stopped while a broadcast tx had no terminal outcome. Its journal attempt stays unresolved. */
+export class L1SettlementAbandonedError extends Error {
+  constructor(txHash: Hash) {
+    super(`L1 transaction ${txHash} had no terminal outcome when the queue stopped`);
   }
 }
 /**
@@ -94,6 +103,12 @@ export class L1TxQueue {
   private lastSentNonce: number | undefined;
   /** A send call failed after it may have reached the RPC. Exact-operation handoff is permanently forbidden. */
   private ambiguousBroadcastResult = false;
+  /** A monitor stopped before its tx had a terminal outcome. Exact-operation handoff is forbidden. */
+  private unresolvedAtStop = false;
+  /** Settlement monitors of broadcast txs; `stop` waits for them. */
+  private readonly monitors = new Set<Promise<void>>();
+  /** Blocks after a send before an outcome-less tx becomes durably ambiguous. */
+  private readonly receiptTimeoutBlocks: number;
 
   constructor(options: {
     client: PublicClient;
@@ -110,6 +125,11 @@ export class L1TxQueue {
     disableSubmission?: boolean;
     maxFeePerGasCap?: bigint;
     pollIntervalMs?: number;
+    /**
+     * Blocks after its send that a tx may have no terminal outcome. Then its attempt becomes durably ambiguous and
+     * this queue signs nothing more. Raised to the Protect drop window when that is longer.
+     */
+    receiptTimeoutBlocks?: number;
     logger?: Logger;
   }) {
     if (!Number.isInteger(options.blockWindow) || options.blockWindow < 1) {
@@ -126,6 +146,11 @@ export class L1TxQueue {
     this.disableSubmission = options.disableSubmission ?? false;
     this.maxFeePerGasCap = options.maxFeePerGasCap;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const receiptTimeoutBlocks = options.receiptTimeoutBlocks ?? DEFAULT_RECEIPT_TIMEOUT_BLOCKS;
+    if (!Number.isInteger(receiptTimeoutBlocks) || receiptTimeoutBlocks < 1) {
+      throw new Error(`invalid L1 receipt timeout '${receiptTimeoutBlocks}' blocks`);
+    }
+    this.receiptTimeoutBlocks = Math.max(receiptTimeoutBlocks, options.blockWindow + 3);
     this.log = options.logger ?? createLogger('oxide-relayer:l1-tx-queue');
     this.stoppedSignal = new Promise(resolve => {
       this.resolveStoppedSignal = resolve;
@@ -156,8 +181,12 @@ export class L1TxQueue {
       this.#rejectQueued(new Error('L1 submission batcher stopped before queued work could run'));
     }
     await this.worker;
+    await Promise.all(this.monitors);
     if (this.ambiguousBroadcastResult) {
       throw new Error('An L1 broadcast has an unknown result; exact-operation handoff is forbidden');
+    }
+    if (this.unresolvedAtStop) {
+      throw new Error('An L1 transaction had no terminal outcome at shutdown; exact-operation handoff is forbidden');
     }
   }
 
@@ -270,7 +299,8 @@ export class L1TxQueue {
     const address = this.address;
     const lastNonce = Math.max(...sent.map(transaction => transaction.nonce));
     let reportedNonceError = false;
-    while (!this.stopped) {
+    // A durably ambiguous tx may never use its nonce. Later sends then fail fast instead of waiting forever.
+    while (!this.stopped && !this.ambiguousBroadcastResult) {
       try {
         if ((await this.client.getTransactionCount({ address, blockTag: 'latest' })) > lastNonce) {
           return;
@@ -315,14 +345,31 @@ export class L1TxQueue {
         return receipt;
       },
       async error => {
-        await this.submissionJournal.recordTerminal(
-          operationIdentity,
-          'dropped_or_replaced',
-          JSON.stringify({ txHash, outcome: 'dropped_or_replaced' }),
-        );
+        if (error instanceof L1SettlementAbandonedError) {
+          // The next start reconciles the attempt from the chain.
+          this.unresolvedAtStop = true;
+        } else if (error instanceof DurableSubmissionAmbiguityError) {
+          this.ambiguousBroadcastResult = true;
+          await this.submissionJournal.recordAmbiguous(
+            operationIdentity,
+            JSON.stringify({ txHash, outcome: 'receipt_timeout' }),
+          );
+        } else {
+          await this.submissionJournal.recordTerminal(
+            operationIdentity,
+            'dropped_or_replaced',
+            JSON.stringify({ txHash, outcome: 'dropped_or_replaced' }),
+          );
+        }
         throw error;
       },
     );
+    const monitor = settled.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.monitors.add(monitor);
+    void monitor.then(() => this.monitors.delete(monitor));
     // Callers see a failure through `settled`. This catch only prevents an unhandled rejection.
     void settled.catch(() => {});
     return { txHash, nonce, settled };
@@ -444,14 +491,20 @@ export class L1TxQueue {
   }
 
   /**
-   * Reads the chain until it uses the nonce. Protect can also prove a drop after
-   * `sentAtBlock + 1 + blockWindow`; public-mempool expiry is never terminal.
+   * Reads the chain until it uses the nonce. Protect can also prove a drop after `sentAtBlock + 1 + blockWindow`;
+   * public-mempool expiry is never terminal. Without an outcome after `receiptTimeoutBlocks`, the tx is durably
+   * ambiguous. A stop ends the monitor and leaves the outcome to the startup reconciliation.
    */
   async #monitor(txHash: Hash, nonce: number, sentAtBlock: bigint): Promise<TransactionReceipt> {
     const lastBlock = sentAtBlock + BigInt(this.blockWindow + 2);
+    const timeoutBlock = sentAtBlock + BigInt(this.receiptTimeoutBlocks);
     let reportedReadError = false;
     for (;;) {
+      if (this.stopped) {
+        throw new L1SettlementAbandonedError(txHash);
+      }
       let terminalError: string | undefined;
+      let timedOut = false;
       try {
         const blockNumber = await this.client.getBlockNumber({ cacheTime: 0 });
         const minedNonce = await this.client.getTransactionCount({ address: this.address, blockTag: 'latest' });
@@ -469,6 +522,7 @@ export class L1TxQueue {
         } else if (this.protectTxStatusUrl && blockNumber > lastBlock) {
           terminalError = `L1 transaction ${txHash} with nonce ${nonce} is not in a block up to block ${lastBlock}`;
         }
+        timedOut = terminalError === undefined && blockNumber > timeoutBlock;
       } catch (err) {
         if (!reportedReadError) {
           reportedReadError = true;
@@ -483,7 +537,19 @@ export class L1TxQueue {
       if (terminalError) {
         throw new Error(terminalError);
       }
-      await sleep(this.pollIntervalMs);
+      if (timedOut) {
+        this.log.error('L1 transaction has no outcome within the receipt timeout; signing is blocked', {
+          event: 'l1_tx_receipt_timeout',
+          txHash,
+          nonce,
+          sentAtBlock: sentAtBlock.toString(),
+          timeoutBlock: timeoutBlock.toString(),
+        });
+        throw new DurableSubmissionAmbiguityError(
+          new Error(`L1 transaction ${txHash} with nonce ${nonce} has no outcome by block ${timeoutBlock}`),
+        );
+      }
+      await Promise.race([sleep(this.pollIntervalMs), this.stoppedSignal]);
     }
   }
 
@@ -543,7 +609,7 @@ function durableOperationIdentity(identity: DurableSubmissionIdentity): string {
   return `${identity.kind}:${identity.id}`;
 }
 
-function signerCommitment(address: Address): string {
+export function signerCommitment(address: Address): string {
   return `sha256:${createHash('sha256').update(Buffer.from(address.slice(2), 'hex')).digest('hex')}`;
 }
 
