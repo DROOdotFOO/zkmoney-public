@@ -25,7 +25,13 @@ import { type FeeValuesEIP1559, type Hex, type PublicClient, type TransactionRec
 
 import { CauseTransitions } from '../cause_transitions.js';
 import type { L1OperationsSubmissionConfig } from '../cli/config.js';
-import { type L1TxQueue, type SendL1Tx, type SentL1Tx, isAboveMaxFeePerGas } from '../l1/l1_tx_queue.js';
+import {
+  DurableSubmissionAmbiguityError,
+  type L1TxQueue,
+  type SendL1Tx,
+  type SentL1Tx,
+  isAboveMaxFeePerGas,
+} from '../l1/l1_tx_queue.js';
 import { type PriceOracle, readTokenUnitsPerEth } from '../price_oracle/price_oracle.js';
 import type { RelayerDeferReason, RelayerTelemetry } from '../relayer_telemetry.js';
 import type { PendingL1Operation, PendingL1OperationReason, StateStore } from '../state/types.js';
@@ -44,6 +50,8 @@ export interface L1OperationSubmitterDeps {
   client: PublicClient;
   l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
   store: StateStore;
+  /** Exact-operation identities permanently excluded before evaluation or TEE completion. */
+  forbiddenOperationIds: ReadonlySet<string>;
   priceOracle: PriceOracle;
   screener: L1OperationScreener;
   config: L1OperationsSubmissionConfig;
@@ -106,6 +114,9 @@ export class L1OperationSubmitter {
   private readonly deferrals = new CauseTransitions();
   /** The operations whose sent tx has no outcome yet. A batch skips them. */
   private readonly inFlight = new Set<Hex>();
+  /** Settlement monitors that must finish before a clean generic-runtime handoff. */
+  private readonly settlementMonitors = new Set<Promise<void>>();
+
   private retryNextBatch = false;
 
   constructor(private readonly deps: L1OperationSubmitterDeps) {
@@ -119,11 +130,17 @@ export class L1OperationSubmitter {
     return await this.deps.l1TxQueue.enqueue(send => this.#runBatch(send), { retry });
   }
 
+  /** A clean shutdown waits until every signed submission has a terminal chain outcome. */
+  async stop(): Promise<void> {
+    await Promise.all(this.settlementMonitors);
+  }
+
   async #runBatch(send: SendL1Tx): Promise<L1OperationRunSummary> {
     const summary = this.#drainBackgroundSummary();
     // A batch can start before the monitor of an earlier batch's tx records its outcome.
     const due = (await this.deps.store.listPendingL1Operations({ dueAt: this.#now() })).filter(
-      operation => !this.inFlight.has(operation.operationId),
+      operation =>
+        !this.inFlight.has(operation.operationId) && !this.deps.forbiddenOperationIds.has(operation.operationId),
     );
     if (due.length === 0) {
       return summary;
@@ -378,8 +395,14 @@ export class L1OperationSubmitter {
   ): Promise<void> {
     let sent: SentL1Tx;
     try {
-      sent = await send({ to: this.deps.executor.toString(), data, gas: gasLimit, ...feeValues });
+      sent = await send(
+        { to: this.deps.executor.toString(), data, gas: gasLimit, ...feeValues },
+        { kind: 'l1-operation', id: operation.operationId },
+      );
     } catch (err) {
+      if (err instanceof DurableSubmissionAmbiguityError) {
+        throw err;
+      }
       this.log.warn('L1 operation broadcast failed; deferring', {
         event: 'l1_operation_deferred',
         cause: 'broadcast_failed',
@@ -416,9 +439,12 @@ export class L1OperationSubmitter {
       // An already rejected monitor is terminal and must be processed before this run returns.
     }
     this.inFlight.add(operation.operationId);
-    const monitor = this.#monitorBroadcast(sent, operation, pending ? this.backgroundSummary : summary).finally(() =>
-      this.inFlight.delete(operation.operationId),
-    );
+    let monitor: Promise<void>;
+    monitor = this.#monitorBroadcast(sent, operation, pending ? this.backgroundSummary : summary).finally(() => {
+      this.inFlight.delete(operation.operationId);
+      this.settlementMonitors.delete(monitor);
+    });
+    this.settlementMonitors.add(monitor);
     if (!pending) {
       await monitor;
     }

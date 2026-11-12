@@ -200,6 +200,7 @@ function buildSubmitter(
     executorVersion?: OperationExecutorVersion;
     /** Which saved operations another worker owns and holds; none when omitted. */
     givesWayTo?: L1OperationOwnership['givesWayTo'];
+    forbiddenOperationIds?: ReadonlySet<string>;
   } = {},
 ) {
   const l1 = fakeSender({
@@ -228,6 +229,7 @@ function buildSubmitter(
     client: l1.client,
     l1TxQueue: l1.l1TxQueue,
     store,
+    forbiddenOperationIds: overrides.forbiddenOperationIds ?? new Set(),
     priceOracle: overrides.priceOracle ?? identityOracle,
     screener,
     config: {
@@ -1115,6 +1117,29 @@ describe('L1OperationSubmitter', () => {
       });
       expect(sendTransaction).not.toHaveBeenCalled();
     });
+  });
+
+  it('skips a permanently quarantined operation before TEE completion or submission', async () => {
+    await withStore(
+      async store => {
+        const resolveCalldata = jest.fn(() => Promise.reject(new Error('must not request TEE completion')));
+        const { submitter, simulateBlocks, sendTransaction } = buildSubmitter(store, {
+          forbiddenOperationIds: new Set([OPERATION_ID]),
+          withdrawalCompletion: { resolveCalldata } as unknown as WithdrawalCompletion,
+        });
+
+        await expect(submitter.runOnce()).resolves.toMatchObject({ deferred: 0, submitted: 0 });
+        await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({
+          status: 'pending',
+          attempts: 0,
+          lastReason: undefined,
+        });
+        expect(resolveCalldata).not.toHaveBeenCalled();
+        expect(simulateBlocks).not.toHaveBeenCalled();
+        expect(sendTransaction).not.toHaveBeenCalled();
+      },
+      { ...OPERATION, condition: L1OperationCondition.messageInOutbox() },
+    );
   });
 
   it('defers with completion_error when withdrawal calldata completion fails, without burning an attempt', async () => {

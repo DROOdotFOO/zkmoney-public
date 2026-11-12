@@ -12,7 +12,7 @@ import {
   gasCostInToken,
 } from '@oxide/oxide-client/l1_operation_quote.js';
 
-import { type Hex, type PublicClient, encodeFunctionData } from 'viem';
+import { type Hex, type PublicClient, encodeFunctionData, keccak256 } from 'viem';
 
 import { CauseTransitions } from '../cause_transitions.js';
 import { type L1TxQueue, type SendL1Tx, type SentL1Tx, isAboveMaxFeePerGas } from '../l1/l1_tx_queue.js';
@@ -166,7 +166,11 @@ export class FpcFunderCaller {
       return;
     }
 
-    const sent = await send({ to, data: this.executeCalldata(inputToken, floor), gas: gasLimit, ...price });
+    const data = this.executeCalldata(inputToken, floor);
+    const sent = await send(
+      { to, data, gas: gasLimit, ...price },
+      { kind: 'fpc-funding', id: `${this.config.fpcFunder.toString().toLowerCase()}/${keccak256(data)}` },
+    );
     const { txHash, nonce } = sent;
     this.deferrals.forget(this.deferralKey());
     this.log.info('Submitted FPC funding call', {

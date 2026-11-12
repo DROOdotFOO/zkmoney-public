@@ -1,0 +1,1617 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+from verify_immutable_release_attestation import (
+    CommandRunner,
+    Deadline,
+    VerificationFailure,
+)
+
+REPOSITORY = "DROOdotFOO/zkmoney-public"
+TAG = "oxide-relayer-exact-v1.0.9"
+RELEASE_ID = 123456
+TAG_OBJECT = "1" * 40
+TARGET_COMMIT = "2" * 40
+HOSTED_REPOSITORY = f"github.com/{REPOSITORY}"
+
+# Loaded runners can delay parent scheduling after a kernel timeout. The upper
+# bounds retain scheduler and kill/reap margin while rejecting the reproduced
+# 13-second hang, a forbidden 5-second retry sleep, and three-second command
+# overruns. Load cannot make a configured deadline legitimately fire early.
+GLOBAL_DEADLINE_LOWER_SECONDS = 1.7
+ATTESTATION_CUTOFF_LOWER_SECONDS = 0.8
+REQUEST_TIMEOUT_LOWER_SECONDS = 0.4
+PROCESS_GROUP_TIMEOUT_LOWER_SECONDS = 0.2
+LOADED_GLOBAL_DEADLINE_UPPER_SECONDS = 5
+LOADED_COMMAND_TIMEOUT_UPPER_SECONDS = 2
+LOADED_HELPER_TIMEOUT_UPPER_SECONDS = 4
+SLEEP_REFUSAL_UPPER_SECONDS = 3
+ALARM_RETURN_UPPER_SECONDS = 0.75
+ALARM_WATCHDOG_SECONDS = 6
+TAG_REF_OBJECT_URL = f"https://api.github.com/repos/{REPOSITORY}/git/tags/{TAG_OBJECT}"
+TARGET_OBJECT_URL = (
+    f"https://api.github.com/repos/{REPOSITORY}/git/commits/{TARGET_COMMIT}"
+)
+
+
+def captured_tag_reference(object_value: object) -> dict[str, object]:
+    return {
+        "ref": f"refs/tags/{TAG}",
+        "node_id": "REF_kwDOVjnTirNyZWZzL3RhZ3MvdjEuMC45",
+        "url": (f"https://api.github.com/repos/{REPOSITORY}/git/refs/tags/{TAG}"),
+        "object": object_value,
+    }
+
+
+def captured_annotated_tag(target: object) -> dict[str, object]:
+    return {
+        "node_id": "TA_kwDOVjnTirNyZWZzL3RhZ3MvdjEuMC45",
+        "tag": TAG,
+        "sha": TAG_OBJECT,
+        "url": TAG_REF_OBJECT_URL,
+        "message": "oxide relayer exact v1.0.9",
+        "tagger": {
+            "name": "Release signer",
+            "email": "release-signer@example.invalid",
+            "date": "2026-11-07T00:00:00Z",
+        },
+        "object": target,
+        "verification": {
+            "verified": True,
+            "reason": "valid",
+            "signature": "captured-minimal-signature",
+            "payload": "captured-minimal-payload",
+            "verified_at": "2026-11-07T00:00:01Z",
+        },
+    }
+
+
+VERIFIER = Path(__file__).with_name("verify_immutable_release_attestation.py")
+
+
+def load_state() -> dict[str, object]:
+    path = Path(os.environ["FAKE_GH_STATE"])
+    if not path.exists():
+        return {"calls": []}
+    return json.loads(path.read_text())
+
+
+def save_state(state: dict[str, object]) -> None:
+    path = Path(os.environ["FAKE_GH_STATE"])
+    temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary_path.write_text(json.dumps(state, sort_keys=True))
+    os.replace(temporary_path, path)
+
+
+def increment(state: dict[str, object], key: str) -> int:
+    value = int(state.get(key, 0)) + 1
+    state[key] = value
+    return value
+
+
+def baseline_assets() -> list[dict[str, object]]:
+    return json.loads(os.environ["FAKE_BASELINE_ASSETS"])
+
+
+def valid_attestation(
+    assets: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    if assets is None:
+        assets = baseline_assets()
+    subjects: list[dict[str, object]] = [
+        {
+            "uri": f"pkg:github/{REPOSITORY}@{TAG}",
+            "digest": {"sha1": TAG_OBJECT},
+        }
+    ]
+    subjects.extend(
+        {"name": asset["name"], "digest": {"sha256": asset["sha256"]}}
+        for asset in assets
+    )
+    return {
+        "attestation": {"bundle": {}},
+        "verificationResult": {
+            "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",
+            "signature": {"certificate": {}},
+            "verifiedTimestamps": [{"type": "transparency-log"}],
+            "verifiedIdentity": {
+                "subjectAlternativeName": "https://dotcom.releases.github.com",
+                "issuer": "https://github.com/login/oauth",
+            },
+            "statement": {
+                "_type": "https://in-toto.io/Statement/v1",
+                "subject": subjects,
+                "predicateType": "https://in-toto.io/attestation/release/v0.2",
+                "predicate": {
+                    "databaseId": str(RELEASE_ID),
+                    "ownerId": "65291057",
+                    "packageId": "1446630282",
+                    "purl": f"pkg:github/{REPOSITORY}@{TAG}",
+                    "repository": REPOSITORY,
+                    "repositoryId": "1446630282",
+                    "tag": TAG,
+                },
+            },
+        },
+    }
+
+
+def encoded_json(value: object) -> str:
+    return json.dumps(value, separators=(",", ":")) + "\n"
+
+
+def fake_gh_main(argv: list[str]) -> int:
+    state = load_state()
+    calls = state.setdefault("calls", [])
+    assert isinstance(calls, list)
+    calls.append(argv)
+    outcomes = state.setdefault("outcomes", [])
+    assert isinstance(outcomes, list)
+    started_monotonic = time.monotonic()
+    outcomes.append(
+        {
+            "status": None,
+            "stdout": None,
+            "stderr": None,
+            "started_monotonic": started_monotonic,
+        }
+    )
+    call_index = len(outcomes) - 1
+    save_state(state)
+    scenario = os.environ["FAKE_GH_SCENARIO"]
+
+    def finish(status: int, stdout: str = "", stderr: str = "") -> int:
+        outcomes[call_index] = {
+            "status": status,
+            "stdout": stdout,
+            "stderr": stderr,
+            "started_monotonic": started_monotonic,
+            "finished_monotonic": time.monotonic(),
+        }
+        save_state(state)
+        sys.stdout.write(stdout)
+        sys.stderr.write(stderr)
+        return status
+
+    def spawn_escape_descendant(
+        pid_path: str, marker_path: str, redirect_output: bool
+    ) -> subprocess.Popen[bytes]:
+        output = subprocess.DEVNULL if redirect_output else None
+        descendant = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import pathlib,time,sys; time.sleep(1); pathlib.Path(sys.argv[1]).write_text('survived')",
+                marker_path,
+            ],
+            stdout=output,
+            stderr=output,
+        )
+        Path(os.environ["FAKE_DIRECT_PID"]).write_text(str(os.getpid()))
+        Path(pid_path).write_text(str(descendant.pid))
+        return descendant
+
+    def delay(kind: str, count: int) -> None:
+        should_delay = (
+            scenario == "all_commands_slow"
+            or (scenario == "request_timeout" and kind == "repository" and count == 1)
+            or (scenario == "attestation_timeout" and kind == "attestation")
+            or (scenario == "asset_timeout" and kind == "asset")
+            or (
+                scenario == "final_identity_timeout"
+                and kind == "repository"
+                and count == 3
+            )
+        )
+        if scenario == "attestation_near_cutoff" and kind == "attestation":
+            time.sleep(1.25)
+        if scenario == "child_process_timeout" and kind == "repository" and count == 1:
+            spawn_escape_descendant(
+                os.environ["FAKE_CHILD_PID"],
+                os.environ["FAKE_CHILD_SENTINEL"],
+                False,
+            )
+            time.sleep(10)
+        if (
+            scenario
+            in {
+                "leader_exits_before_timeout",
+                "success_descendant_escape",
+                "nonzero_descendant_escape",
+                "parse_failure_descendant_escape",
+            }
+            and kind == "repository"
+            and count == 1
+        ):
+            spawn_escape_descendant(
+                os.environ["FAKE_DESCENDANT_PID"],
+                os.environ["FAKE_DELAYED_SENTINEL"],
+                scenario != "leader_exits_before_timeout",
+            )
+        if (
+            scenario == "transient_with_descendant"
+            and kind == "attestation"
+            and count == 1
+        ):
+            spawn_escape_descendant(
+                os.environ["FAKE_DESCENDANT_PID"],
+                os.environ["FAKE_DELAYED_SENTINEL"],
+                True,
+            )
+        if (
+            scenario == "spawn_registration_alarm"
+            and kind == "repository"
+            and count == 1
+        ):
+            descendant = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import pathlib,time,sys; time.sleep(1); pathlib.Path(sys.argv[1]).write_text('survived')",
+                    os.environ["FAKE_DELAYED_SENTINEL"],
+                ]
+            )
+            Path(os.environ["FAKE_DIRECT_PID"]).write_text(str(os.getpid()))
+            Path(os.environ["FAKE_DESCENDANT_PID"]).write_text(str(descendant.pid))
+            Path(os.environ["FAKE_SPAWN_READY"]).write_text("ready")
+            time.sleep(10)
+        if should_delay:
+            time.sleep(10)
+
+    if len(argv) == 4 and argv[:3] == ["api", "--hostname", "github.com"]:
+        endpoint = argv[3]
+        if endpoint == f"repos/{REPOSITORY}":
+            count = increment(state, "repository_calls")
+            save_state(state)
+            delay("repository", count)
+            if scenario == "nonzero_descendant_escape" and count == 1:
+                return finish(9, stderr="synthetic command failure\n")
+            if scenario == "parse_failure_descendant_escape" and count == 1:
+                return finish(0, "{\n")
+            if scenario == "malformed_api_json" and count == 1:
+                return finish(0, "{\n")
+            if count == 1:
+                evidence = Path(os.environ["FAKE_EVIDENCE"])
+                if scenario == "local_asset_missing":
+                    (evidence / "alpha.txt").unlink()
+                elif scenario == "local_asset_added":
+                    (evidence / "gamma.txt").write_text("gamma\n")
+                elif scenario == "local_asset_changed":
+                    (evidence / "alpha.txt").write_text("changed\n")
+            repository = (
+                "unexpected/repository"
+                if scenario == "wrong_repository"
+                else REPOSITORY
+            )
+            return finish(0, encoded_json({"full_name": repository}))
+        if endpoint == f"repos/{REPOSITORY}/releases/tags/{TAG}":
+            count = increment(state, "release_calls")
+            assets = [
+                {
+                    "name": asset["name"],
+                    "size": asset["size"],
+                    "digest": f"sha256:{asset['sha256']}",
+                }
+                for asset in baseline_assets()
+            ]
+            release_id = RELEASE_ID
+            release_tag = TAG
+            immutable = True
+            if scenario == "wrong_release_id":
+                release_id = 999
+            elif scenario == "wrong_tag":
+                release_tag = "oxide-relayer-exact-v0.0.0"
+            elif scenario == "mutable_release":
+                immutable = False
+            elif scenario == "published_asset_missing":
+                assets.pop()
+            elif scenario == "published_asset_added":
+                assets.append(
+                    {"name": "extra.txt", "size": 1, "digest": f"sha256:{'f' * 64}"}
+                )
+            elif scenario == "published_asset_changed":
+                assets[0]["digest"] = f"sha256:{'f' * 64}"
+            elif scenario == "duplicate_asset_names":
+                assets.append(dict(assets[0]))
+            elif scenario == "release_drift_after_attestation" and count >= 2:
+                release_id = 999
+            elif scenario == "asset_drift_after_attestation" and count >= 2:
+                assets[0]["digest"] = f"sha256:{'f' * 64}"
+            elif scenario == "final_identity_drift" and count >= 3:
+                release_id = 999
+            return finish(
+                0,
+                encoded_json(
+                    {
+                        "id": release_id,
+                        "tag_name": release_tag,
+                        "draft": False,
+                        "immutable": immutable,
+                        "assets": assets,
+                    }
+                ),
+            )
+        if endpoint == f"repos/{REPOSITORY}/git/ref/tags/{TAG}":
+            increment(state, "tag_ref_calls")
+            tag_object: object = {
+                "type": "tag",
+                "sha": TAG_OBJECT,
+                "url": TAG_REF_OBJECT_URL,
+            }
+            if scenario == "tag_ref_wrong_type":
+                tag_object["type"] = "commit"
+            elif scenario in {"wrong_tag_object", "tag_ref_wrong_sha"}:
+                tag_object["sha"] = "f" * 40
+            elif scenario == "tag_ref_missing_object":
+                response = captured_tag_reference(tag_object)
+                del response["object"]
+                return finish(0, encoded_json(response))
+            elif scenario == "tag_ref_nonobject":
+                tag_object = ["tag", TAG_OBJECT, TAG_REF_OBJECT_URL]
+            elif scenario == "tag_ref_metadata_cannot_override":
+                tag_object = {
+                    "type": "commit",
+                    "sha": "f" * 40,
+                    "url": TAG_REF_OBJECT_URL,
+                    "expected_type": "tag",
+                    "expected_sha": TAG_OBJECT,
+                }
+            return finish(0, encoded_json(captured_tag_reference(tag_object)))
+        if endpoint == f"repos/{REPOSITORY}/git/tags/{TAG_OBJECT}":
+            increment(state, "tag_object_calls")
+            target: object = {
+                "type": "commit",
+                "sha": TARGET_COMMIT,
+                "url": TARGET_OBJECT_URL,
+            }
+            if scenario == "tag_target_wrong_type":
+                target["type"] = "tree"
+            elif scenario in {"wrong_tag_target", "tag_target_wrong_sha"}:
+                target["sha"] = "f" * 40
+            elif scenario == "tag_target_missing_object":
+                response = captured_annotated_tag(target)
+                del response["object"]
+                return finish(0, encoded_json(response))
+            elif scenario == "tag_target_nonobject":
+                target = f"commit:{TARGET_COMMIT}"
+            elif scenario == "tag_target_metadata_cannot_override":
+                target = {
+                    "type": "tree",
+                    "sha": "f" * 40,
+                    "url": TARGET_OBJECT_URL,
+                    "expected_type": "commit",
+                    "expected_sha": TARGET_COMMIT,
+                }
+            return finish(0, encoded_json(captured_annotated_tag(target)))
+        return finish(64, stderr=f"unexpected API endpoint: {endpoint}\n")
+
+    expected_verify = [
+        "release",
+        "verify",
+        TAG,
+        "--repo",
+        HOSTED_REPOSITORY,
+        "--format",
+        "json",
+    ]
+    if argv == expected_verify:
+        count = increment(state, "verify_calls")
+        save_state(state)
+        delay("attestation", count)
+        if scenario in {
+            "exact_transient_then_success",
+            "transient_until_deadline",
+            "transient_with_descendant",
+            "transient_wrong_sha",
+            "transient_wrong_tag",
+            "transient_prefix",
+            "transient_suffix",
+            "transient_plural",
+            "transient_stdout",
+            "transient_wrong_status",
+        }:
+            if (
+                scenario in {"transient_until_deadline", "transient_with_descendant"}
+                or count == 1
+            ):
+                message = f"no attestations for tag {TAG} (sha1:{TAG_OBJECT})"
+                if scenario == "transient_wrong_sha":
+                    message = f"no attestations for tag {TAG} (sha1:{'f' * 40})"
+                elif scenario == "transient_wrong_tag":
+                    message = f"no attestations for tag wrong-tag (sha1:{TAG_OBJECT})"
+                elif scenario == "transient_prefix":
+                    message = (
+                        f"warning: no attestations for tag {TAG} (sha1:{TAG_OBJECT})"
+                    )
+                elif scenario == "transient_suffix":
+                    message += " retry later"
+                elif scenario == "transient_plural":
+                    message = f"no attestation for tag {TAG} (sha1:{TAG_OBJECT})"
+                if scenario == "transient_stdout":
+                    return finish(1, stdout="unexpected\n", stderr=message + "\n")
+                if scenario == "transient_wrong_status":
+                    return finish(2, stderr=message + "\n")
+                return finish(1, stderr=message + "\n")
+        failures = {
+            "authentication_failure": (1, "HTTP 401: Bad credentials\n"),
+            "permission_failure": (
+                1,
+                "HTTP 403: Resource not accessible by integration\n",
+            ),
+            "rate_limit_failure": (1, "HTTP 429: rate limit exceeded\n"),
+            "network_failure": (1, "failed to connect to api.github.com\n"),
+        }
+        if scenario in failures:
+            status, message = failures[scenario]
+            return finish(status, stderr=message)
+        attestation: object = valid_attestation()
+        if scenario == "arbitrary_attestation_json":
+            attestation = {}
+        elif scenario == "multiple_attestations":
+            attestation = [valid_attestation(), valid_attestation()]
+        elif isinstance(attestation, dict):
+            statement = attestation["verificationResult"]["statement"]
+            predicate = statement["predicate"]
+            subjects = statement["subject"]
+            if scenario == "attestation_other_release":
+                predicate["databaseId"] = "999"
+            elif scenario == "attestation_wrong_repository":
+                predicate["repository"] = "unexpected/repository"
+            elif scenario == "attestation_wrong_tag":
+                predicate["tag"] = "wrong-tag"
+            elif scenario == "attestation_wrong_tag_object":
+                subjects[0]["digest"]["sha1"] = "f" * 40
+            elif scenario == "attestation_asset_missing":
+                subjects.pop()
+            elif scenario == "attestation_asset_added":
+                subjects.append({"name": "extra.txt", "digest": {"sha256": "f" * 64}})
+            elif scenario == "attestation_asset_changed":
+                subjects[1]["digest"]["sha256"] = "f" * 64
+        return finish(0, encoded_json(attestation))
+
+    if (
+        len(argv) == 6
+        and argv[0:3] == ["release", "verify-asset", TAG]
+        and argv[4:6] == ["--repo", HOSTED_REPOSITORY]
+    ):
+        count = increment(state, "asset_calls")
+        save_state(state)
+        delay("asset", count)
+        expected_names = {asset["name"] for asset in baseline_assets()}
+        if Path(argv[3]).name not in expected_names:
+            return finish(64, stderr="unexpected asset path\n")
+        if scenario == "asset_verification_failure":
+            return finish(1, stderr="asset digest verification failed\n")
+        return finish(0, stdout="verified\n")
+
+    return finish(64, stderr=f"unexpected or mutating gh argv: {json.dumps(argv)}\n")
+
+
+class VerifierBehaviorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fixture = tempfile.TemporaryDirectory()
+        self.root = Path(self.fixture.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        (self.bin / "gh").symlink_to(Path(__file__).resolve())
+        self.evidence = self.root / "evidence"
+        self.evidence.mkdir()
+        self.state = self.root / "state.json"
+        self.output = self.root / "verified.json"
+        self.child_pid = self.root / "child.pid"
+        self.direct_pid = self.root / "direct.pid"
+        self.descendant_pid = self.root / "descendant.pid"
+        self.spawn_ready = self.root / "spawn-ready"
+        self.delayed_sentinel = self.root / "delayed-survived"
+        self.child_sentinel = self.root / "child-survived"
+
+    def tearDown(self) -> None:
+        self.fixture.cleanup()
+
+    def reset_evidence(self) -> list[dict[str, object]]:
+        for path in self.evidence.iterdir():
+            path.unlink()
+        (self.evidence / "alpha.txt").write_text("alpha\n")
+        (self.evidence / "beta.txt").write_text("beta\n")
+        assets = []
+        for path in sorted(self.evidence.iterdir()):
+            payload = path.read_bytes()
+            assets.append(
+                {
+                    "name": path.name,
+                    "size": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }
+            )
+        return assets
+
+    def invoke(
+        self,
+        scenario: str,
+        *,
+        deadline: float = 15,
+        request_timeout: float = 1,
+        interval: float = 0.01,
+        attempts: int = 4,
+        reserve: float = 0.25,
+        verifier: Path = VERIFIER,
+    ) -> tuple[subprocess.CompletedProcess[str], float, dict[str, object]]:
+        assets = self.reset_evidence()
+        self.state.unlink(missing_ok=True)
+        self.output.unlink(missing_ok=True)
+        for temporary_output in self.root.glob(f".{self.output.name}.*.tmp"):
+            temporary_output.unlink()
+        self.child_pid.unlink(missing_ok=True)
+        self.child_sentinel.unlink(missing_ok=True)
+        self.direct_pid.unlink(missing_ok=True)
+        self.descendant_pid.unlink(missing_ok=True)
+        self.spawn_ready.unlink(missing_ok=True)
+        self.delayed_sentinel.unlink(missing_ok=True)
+        environment = {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "FAKE_GH_SCENARIO": scenario,
+            "FAKE_GH_STATE": str(self.state),
+            "FAKE_BASELINE_ASSETS": json.dumps(assets),
+            "FAKE_EVIDENCE": str(self.evidence),
+            "FAKE_CHILD_PID": str(self.child_pid),
+            "FAKE_CHILD_SENTINEL": str(self.child_sentinel),
+            "FAKE_DIRECT_PID": str(self.direct_pid),
+            "FAKE_DESCENDANT_PID": str(self.descendant_pid),
+            "FAKE_SPAWN_READY": str(self.spawn_ready),
+            "FAKE_DELAYED_SENTINEL": str(self.delayed_sentinel),
+            "RELEASE_VERIFY_DEADLINE_SECONDS": str(deadline),
+            "RELEASE_VERIFY_REQUEST_TIMEOUT_SECONDS": str(request_timeout),
+            "RELEASE_VERIFY_INTERVAL_SECONDS": str(interval),
+            "RELEASE_VERIFY_MAX_ATTEMPTS": str(attempts),
+            "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS": str(reserve),
+        }
+        command = [
+            sys.executable,
+            str(verifier),
+            REPOSITORY,
+            TAG,
+            TAG_OBJECT,
+            TARGET_COMMIT,
+            str(self.evidence),
+            str(self.output),
+        ]
+        started = time.monotonic()
+        result = subprocess.run(
+            command, capture_output=True, text=True, env=environment
+        )
+        finished = time.monotonic()
+        elapsed = finished - started
+        state = (
+            json.loads(self.state.read_text()) if self.state.exists() else {"calls": []}
+        )
+        state["_test_started_monotonic"] = started
+        state["_test_finished_monotonic"] = finished
+        return result, elapsed, state
+
+    def assert_failure(self, scenario: str, message: str, **kwargs: object) -> None:
+        result, _elapsed, state = self.invoke(scenario, **kwargs)
+        self.assertNotEqual(result.returncode, 0, scenario)
+        self.assertIn(message, result.stderr, scenario)
+        self.assertFalse(self.output.exists(), scenario)
+        self.assert_no_mutation_calls(state)
+        self.assertEqual(
+            list(self.root.glob(f".{self.output.name}.*.tmp")),
+            [],
+            scenario,
+        )
+
+    def assert_no_mutation_calls(self, state: dict[str, object]) -> None:
+        for call in state.get("calls", []):
+            self.assertNotIn(
+                call[:2],
+                [
+                    ["release", "create"],
+                    ["release", "edit"],
+                    ["release", "delete"],
+                    ["release", "upload"],
+                ],
+            )
+
+    def timed_out_command_elapsed(self, state: dict[str, object]) -> float:
+        outcomes = state["outcomes"]
+        assert isinstance(outcomes, list)
+        timed_out = [outcome for outcome in outcomes if outcome["status"] is None]
+        self.assertEqual(len(timed_out), 1)
+        finished = state["_test_finished_monotonic"]
+        started = timed_out[0]["started_monotonic"]
+        assert isinstance(finished, float)
+        assert isinstance(started, float)
+        return finished - started
+
+    def assert_process_absent(self, pid: int) -> None:
+        def kill_survivor() -> None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        self.addCleanup(kill_survivor)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def assert_escape_descendant_removed(self) -> None:
+        descendant_pid = int(self.descendant_pid.read_text())
+        self.assert_process_absent(descendant_pid)
+        time.sleep(1.1)
+        self.assertFalse(self.delayed_sentinel.exists())
+
+    def invoke_alarm_boundary(
+        self, boundary: str, scenario: str
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+        assets = self.reset_evidence()
+        self.state.unlink(missing_ok=True)
+        self.output.unlink(missing_ok=True)
+        for temporary_output in self.root.glob(f".{self.output.name}.*.tmp"):
+            temporary_output.unlink()
+        self.direct_pid.unlink(missing_ok=True)
+        self.descendant_pid.unlink(missing_ok=True)
+        self.spawn_ready.unlink(missing_ok=True)
+        self.delayed_sentinel.unlink(missing_ok=True)
+        alarm_state = self.root / f"alarm-{boundary}.json"
+        harness = self.root / f"alarm-{boundary}.py"
+        verifier_directory = str(VERIFIER.parent)
+        arguments = [
+            REPOSITORY,
+            TAG,
+            TAG_OBJECT,
+            TARGET_COMMIT,
+            str(self.evidence),
+            str(self.output),
+        ]
+        harness.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import os",
+                    "import signal",
+                    "import sys",
+                    "import time",
+                    "from pathlib import Path",
+                    f"sys.path.insert(0, {verifier_directory!r})",
+                    "import verify_immutable_release_attestation as verifier",
+                    f"BOUNDARY = {boundary!r}",
+                    f"ARGUMENTS = {arguments!r}",
+                    f"ALARM_STATE = Path({str(alarm_state)!r})",
+                    f"SPAWN_READY = Path({str(self.spawn_ready)!r})",
+                    "FAKE_STATE = Path(os.environ['FAKE_GH_STATE'])",
+                    "OUTPUT = Path(ARGUMENTS[-1])",
+                    "OriginalRunner = verifier.CommandRunner",
+                    "OriginalDeadline = verifier.Deadline",
+                    "OriginalVerifierRun = verifier.Verifier.run",
+                    "OriginalWriteTemporary = verifier.Verifier.write_temporary_output",
+                    "OriginalWriteBytes = verifier.Verifier._write_temporary_output_bytes",
+                    "alarm_monotonic = None",
+                    "alarm_call_count = None",
+                    "def call_count():",
+                    "    if not FAKE_STATE.exists():",
+                    "        return 0",
+                    "    return len(json.loads(FAKE_STATE.read_text()).get('calls', []))",
+                    "def record_alarm():",
+                    "    global alarm_monotonic, alarm_call_count",
+                    "    if alarm_monotonic is None:",
+                    "        alarm_monotonic = time.monotonic()",
+                    "        alarm_call_count = call_count()",
+                    "def trigger_alarm():",
+                    "    record_alarm()",
+                    "    os.kill(os.getpid(), signal.SIGALRM)",
+                    "class BoundaryDeadline(OriginalDeadline):",
+                    "    def expire(self):",
+                    "        record_alarm()",
+                    "        super().expire()",
+                    "    def _sleep_slice(self, seconds):",
+                    "        if BOUNDARY == 'during-slice':",
+                    "            signal.setitimer(signal.ITIMER_REAL, min(seconds / 2, 0.01))",
+                    "        result = super()._sleep_slice(seconds)",
+                    "        if BOUNDARY == 'post-slice':",
+                    "            trigger_alarm()",
+                    "        return result",
+                    "    def wait(self, seconds, phase, reserve_seconds=0):",
+                    "        if BOUNDARY == 'pre-wait':",
+                    "            trigger_alarm()",
+                    "        result = super().wait(seconds, phase, reserve_seconds)",
+                    "        if BOUNDARY == 'interval-boundary':",
+                    "            trigger_alarm()",
+                    "        return result",
+                    "    def confirm_output_publication(self):",
+                    "        if BOUNDARY == 'pre-replace':",
+                    "            trigger_alarm()",
+                    "        return super().confirm_output_publication()",
+                    "class BoundaryRunner(OriginalRunner):",
+                    "    instance = None",
+                    "    last_process = None",
+                    "    cleanup_alarm_sent = False",
+                    "    def __init__(self, deadline, request_timeout):",
+                    "        super().__init__(deadline, request_timeout)",
+                    "        type(self).instance = self",
+                    "    def run(self, argv, phase, finalization_reserve_seconds=0):",
+                    "        if BOUNDARY == 'pre-next-call' and call_count() == 5:",
+                    "            trigger_alarm()",
+                    "        return super().run(argv, phase, finalization_reserve_seconds)",
+                    "    def _spawn_process(self, argv):",
+                    "        process = super()._spawn_process(argv)",
+                    "        type(self).last_process = process",
+                    "        if BOUNDARY == 'spawn-registration':",
+                    "            limit = time.monotonic() + 2",
+                    "            while not SPAWN_READY.exists():",
+                    "                if time.monotonic() >= limit:",
+                    "                    raise RuntimeError('fake child did not become ready')",
+                    "                time.sleep(0.005)",
+                    "            trigger_alarm()",
+                    "        return process",
+                    "    def _collect_output(self, active_group, timeout, child_exited):",
+                    "        if BOUNDARY == 'running-command':",
+                    "            limit = time.monotonic() + 2",
+                    "            while not SPAWN_READY.exists():",
+                    "                if time.monotonic() >= limit:",
+                    "                    raise RuntimeError('fake child did not become ready')",
+                    "                time.sleep(0.005)",
+                    "            trigger_alarm()",
+                    "        result = super()._collect_output(active_group, timeout, child_exited)",
+                    "        if BOUNDARY == 'pre-cleanup':",
+                    "            trigger_alarm()",
+                    "        return result",
+                    "    @staticmethod",
+                    "    def _send_process_group_signal(process_group_id):",
+                    "        if BOUNDARY == 'during-cleanup' and not BoundaryRunner.cleanup_alarm_sent:",
+                    "            BoundaryRunner.cleanup_alarm_sent = True",
+                    "            trigger_alarm()",
+                    "        OriginalRunner._send_process_group_signal(process_group_id)",
+                    "    def _finalize_process_group(self, active_group, previous_handler, original_mask):",
+                    "        super()._finalize_process_group(active_group, previous_handler, original_mask)",
+                    "        if BOUNDARY == 'post-cleanup':",
+                    "            trigger_alarm()",
+                    "def write_temporary_bytes(self, output_file, attestation):",
+                    "    if BOUNDARY != 'temp-write':",
+                    "        return OriginalWriteBytes(self, output_file, attestation)",
+                    "    midpoint = len(attestation) // 2",
+                    "    output_file.write(attestation[:midpoint])",
+                    "    trigger_alarm()",
+                    "    output_file.write(attestation[midpoint:])",
+                    "def write_temporary(self, attestation):",
+                    "    result = OriginalWriteTemporary(self, attestation)",
+                    "    if BOUNDARY == 'post-temp':",
+                    "        trigger_alarm()",
+                    "    return result",
+                    "def verifier_run(self):",
+                    "    if BOUNDARY == 'no-active-command':",
+                    "        trigger_alarm()",
+                    "        self.deadline.raise_if_expired()",
+                    "    result = OriginalVerifierRun(self)",
+                    "    if BOUNDARY == 'post-run':",
+                    "        trigger_alarm()",
+                    "    return result",
+                    "verifier.CommandRunner = BoundaryRunner",
+                    "verifier.Deadline = BoundaryDeadline",
+                    "verifier.Verifier._write_temporary_output_bytes = write_temporary_bytes",
+                    "verifier.Verifier.write_temporary_output = write_temporary",
+                    "verifier.Verifier.run = verifier_run",
+                    "before_alarm = signal.getsignal(signal.SIGALRM)",
+                    "before_child = signal.getsignal(signal.SIGCHLD)",
+                    "before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())",
+                    "status = 0",
+                    "error = ''",
+                    "try:",
+                    "    status = verifier.main(ARGUMENTS)",
+                    "except verifier.VerificationFailure as caught:",
+                    "    status = 1",
+                    "    error = str(caught)",
+                    "returned_monotonic = time.monotonic()",
+                    "exit_call_count = call_count()",
+                    "runner = BoundaryRunner.instance",
+                    "process = BoundaryRunner.last_process",
+                    "group_absent = None",
+                    "if process is not None:",
+                    "    try:",
+                    "        os.killpg(process.pid, 0)",
+                    "    except ProcessLookupError:",
+                    "        group_absent = True",
+                    "    except PermissionError:",
+                    "        group_absent = False",
+                    "    else:",
+                    "        group_absent = False",
+                    "after_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())",
+                    "ALARM_STATE.write_text(json.dumps({",
+                    "    'status': status,",
+                    "    'error': error,",
+                    "    'alarm_monotonic': alarm_monotonic,",
+                    "    'returned_monotonic': returned_monotonic,",
+                    "    'alarm_call_count': alarm_call_count,",
+                    "    'exit_call_count': exit_call_count,",
+                    "    'active_group_cleared': runner is not None and runner.active_group is None,",
+                    "    'leader_reaped': process is None or process.returncode is not None,",
+                    "    'group_absent': group_absent,",
+                    "    'process_group_id': None if process is None else process.pid,",
+                    "    'output_exists': OUTPUT.exists(),",
+                    "    'temporary_outputs': [str(path) for path in OUTPUT.parent.glob(f'.{OUTPUT.name}.*.tmp')],",
+                    "    'sigalrm_restored': signal.getsignal(signal.SIGALRM) == before_alarm,",
+                    "    'sigchld_restored': signal.getsignal(signal.SIGCHLD) == before_child,",
+                    "    'mask_restored': after_mask == before_mask,",
+                    "}, sort_keys=True))",
+                    "if error:",
+                    "    print(error, file=sys.stderr)",
+                    "raise SystemExit(status)",
+                    "",
+                ]
+            )
+        )
+        environment = {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "FAKE_GH_SCENARIO": scenario,
+            "FAKE_GH_STATE": str(self.state),
+            "FAKE_BASELINE_ASSETS": json.dumps(assets),
+            "FAKE_EVIDENCE": str(self.evidence),
+            "FAKE_CHILD_PID": str(self.child_pid),
+            "FAKE_CHILD_SENTINEL": str(self.child_sentinel),
+            "FAKE_DIRECT_PID": str(self.direct_pid),
+            "FAKE_DESCENDANT_PID": str(self.descendant_pid),
+            "FAKE_SPAWN_READY": str(self.spawn_ready),
+            "FAKE_DELAYED_SENTINEL": str(self.delayed_sentinel),
+            "RELEASE_VERIFY_DEADLINE_SECONDS": "5",
+            "RELEASE_VERIFY_REQUEST_TIMEOUT_SECONDS": "2",
+            "RELEASE_VERIFY_INTERVAL_SECONDS": "2",
+            "RELEASE_VERIFY_MAX_ATTEMPTS": "3",
+            "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS": "1",
+        }
+        try:
+            result = subprocess.run(
+                [sys.executable, str(harness)],
+                capture_output=True,
+                text=True,
+                env=environment,
+                timeout=ALARM_WATCHDOG_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            self.fail(f"alarm watchdog fired at {boundary}: {error}")
+        self.assertTrue(
+            alarm_state.exists(),
+            f"alarm harness did not record state: rc={result.returncode}, stderr={result.stderr!r}",
+        )
+        recorded_state = json.loads(alarm_state.read_text())
+        recorded_state["watchdog_fired"] = False
+        recorded_state["fake_state"] = (
+            json.loads(self.state.read_text()) if self.state.exists() else {"calls": []}
+        )
+        return result, recorded_state
+
+    def assert_alarm_boundary_state(
+        self, result: subprocess.CompletedProcess[str], state: dict[str, object]
+    ) -> None:
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("global wall-clock deadline expired", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(state["status"], 1)
+        self.assertIn("global wall-clock deadline expired", str(state["error"]))
+        self.assertFalse(state["watchdog_fired"])
+        self.assertTrue(state["active_group_cleared"])
+        self.assertTrue(state["leader_reaped"])
+        self.assertFalse(state["output_exists"])
+        self.assertEqual(state["temporary_outputs"], [])
+        self.assertTrue(state["sigalrm_restored"])
+        self.assertTrue(state["sigchld_restored"])
+        self.assertTrue(state["mask_restored"])
+        self.assertIsInstance(state["alarm_monotonic"], float)
+        self.assertIsInstance(state["returned_monotonic"], float)
+        self.assertEqual(state["alarm_call_count"], state["exit_call_count"])
+
+    def assert_retry_alarm_boundary(
+        self, result: subprocess.CompletedProcess[str], state: dict[str, object]
+    ) -> None:
+        self.assert_alarm_boundary_state(result, state)
+        elapsed = float(state["returned_monotonic"]) - float(
+            state["alarm_monotonic"]
+        )
+        self.assertGreaterEqual(elapsed, 0)
+        self.assertLess(elapsed, ALARM_RETURN_UPPER_SECONDS)
+        fake_state = state["fake_state"]
+        assert isinstance(fake_state, dict)
+        self.assertEqual(state["exit_call_count"], len(fake_state["calls"]))
+        self.assertEqual(fake_state["verify_calls"], 1)
+        self.assertEqual(fake_state["repository_calls"], 1)
+        self.assertEqual(len(fake_state["calls"]), 5)
+        self.assert_alarm_processes_removed(state)
+
+    def assert_alarm_group_absent(self, state: dict[str, object]) -> None:
+        process_group_id = state["process_group_id"]
+        self.assertIsInstance(process_group_id, int)
+        expires_at = time.monotonic() + 1
+        while True:
+            try:
+                os.killpg(process_group_id, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                pass
+            if time.monotonic() >= expires_at:
+                self.fail(f"process group {process_group_id} still exists")
+            time.sleep(0.01)
+
+    def assert_alarm_processes_removed(self, state: dict[str, object]) -> None:
+        self.assert_process_absent(int(self.direct_pid.read_text()))
+        self.assert_escape_descendant_removed()
+        self.assert_alarm_group_absent(state)
+
+    def test_immediate_valid_attestation_success(self) -> None:
+        result, _elapsed, state = self.invoke("immediate_success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.output.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(
+            self.output.read_bytes(),
+            encoded_json(valid_attestation(self.reset_evidence())).encode(),
+        )
+        self.assertEqual(list(self.root.glob(f".{self.output.name}.*.tmp")), [])
+        self.assertEqual(state["verify_calls"], 1)
+        self.assertEqual(state["asset_calls"], 2)
+        self.assertEqual(state["repository_calls"], 3)
+        self.assert_no_mutation_calls(state)
+        identity_calls = [
+            ["api", "--hostname", "github.com", f"repos/{REPOSITORY}"],
+            [
+                "api",
+                "--hostname",
+                "github.com",
+                f"repos/{REPOSITORY}/releases/tags/{TAG}",
+            ],
+            [
+                "api",
+                "--hostname",
+                "github.com",
+                f"repos/{REPOSITORY}/git/ref/tags/{TAG}",
+            ],
+            [
+                "api",
+                "--hostname",
+                "github.com",
+                f"repos/{REPOSITORY}/git/tags/{TAG_OBJECT}",
+            ],
+        ]
+        expected_calls = [
+            *identity_calls,
+            [
+                "release",
+                "verify",
+                TAG,
+                "--repo",
+                HOSTED_REPOSITORY,
+                "--format",
+                "json",
+            ],
+            *identity_calls,
+            [
+                "release",
+                "verify-asset",
+                TAG,
+                str(self.evidence / "alpha.txt"),
+                "--repo",
+                HOSTED_REPOSITORY,
+            ],
+            [
+                "release",
+                "verify-asset",
+                TAG,
+                str(self.evidence / "beta.txt"),
+                "--repo",
+                HOSTED_REPOSITORY,
+            ],
+            *identity_calls,
+        ]
+        self.assertEqual(state["calls"], expected_calls)
+        outcomes = state["outcomes"]
+        self.assertEqual(len(outcomes), len(expected_calls))
+        self.assertTrue(all(outcome["status"] == 0 for outcome in outcomes))
+        self.assertTrue(all(outcome["stderr"] == "" for outcome in outcomes))
+        self.assertEqual(
+            [
+                outcome["stdout"]
+                for outcome in outcomes
+                if outcome["stdout"] == "verified\n"
+            ],
+            ["verified\n", "verified\n"],
+        )
+
+    def test_real_shaped_git_objects_with_url_succeed(self) -> None:
+        result, _elapsed, state = self.invoke("immediate_success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(state["tag_ref_calls"], 3)
+        self.assertEqual(state["tag_object_calls"], 3)
+
+    def test_git_object_type_sha_and_shape_fail_closed(self) -> None:
+        cases = {
+            "tag_ref_wrong_type": "tag reference drifted",
+            "tag_ref_wrong_sha": "tag reference drifted",
+            "tag_ref_missing_object": "tag reference drifted",
+            "tag_ref_nonobject": "tag reference drifted",
+            "tag_ref_metadata_cannot_override": "tag reference drifted",
+            "tag_target_wrong_type": "signed tag object or target drifted",
+            "tag_target_wrong_sha": "signed tag object or target drifted",
+            "tag_target_missing_object": "signed tag object or target drifted",
+            "tag_target_nonobject": "signed tag object or target drifted",
+            "tag_target_metadata_cannot_override": "signed tag object or target drifted",
+        }
+        for scenario, message in cases.items():
+            with self.subTest(scenario=scenario):
+                self.assert_failure(scenario, message)
+
+    def test_exact_transient_then_success(self) -> None:
+        result, _elapsed, state = self.invoke("exact_transient_then_success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(state["verify_calls"], 2)
+        self.assertEqual(state["repository_calls"], 4)
+
+    def test_identity_and_inventory_failures(self) -> None:
+        cases = {
+            "malformed_api_json": "malformed JSON",
+            "mutable_release": "release identity or immutable state drifted",
+            "wrong_repository": "repository identity drifted",
+            "wrong_tag": "release identity or immutable state drifted",
+            "wrong_tag_object": "tag reference drifted",
+            "wrong_tag_target": "signed tag object or target drifted",
+            "published_asset_missing": "published release asset inventory drifted",
+            "published_asset_added": "published release asset inventory drifted",
+            "published_asset_changed": "published release asset inventory drifted",
+            "duplicate_asset_names": "published asset names are not unique",
+            "local_asset_missing": "local release asset inventory drifted",
+            "local_asset_added": "local release asset inventory drifted",
+            "local_asset_changed": "local release asset inventory drifted",
+            "wrong_release_id": "identifies another release",
+        }
+        for scenario, message in cases.items():
+            with self.subTest(scenario=scenario):
+                self.assert_failure(scenario, message)
+
+    def test_nonretryable_transport_and_exact_message_failures(self) -> None:
+        cases = {
+            "authentication_failure": "non-retryable result",
+            "permission_failure": "non-retryable result",
+            "rate_limit_failure": "non-retryable result",
+            "network_failure": "non-retryable result",
+            "transient_wrong_sha": "non-retryable result",
+            "transient_wrong_tag": "non-retryable result",
+            "transient_prefix": "non-retryable result",
+            "transient_suffix": "non-retryable result",
+            "transient_plural": "non-retryable result",
+            "transient_stdout": "non-retryable result",
+            "transient_wrong_status": "non-retryable result",
+        }
+        for scenario, message in cases.items():
+            with self.subTest(scenario=scenario):
+                self.assert_failure(scenario, message)
+
+    def test_attestation_schema_and_binding_failures(self) -> None:
+        cases = {
+            "arbitrary_attestation_json": "unexpected top-level schema",
+            "multiple_attestations": "unexpected top-level schema",
+            "attestation_other_release": "identifies another release",
+            "attestation_wrong_repository": "identifies another release",
+            "attestation_wrong_tag": "identifies another release",
+            "attestation_wrong_tag_object": "tag subject is unexpected",
+            "attestation_asset_missing": "subject cardinality is unexpected",
+            "attestation_asset_added": "subject cardinality is unexpected",
+            "attestation_asset_changed": "asset subjects do not match",
+        }
+        for scenario, message in cases.items():
+            with self.subTest(scenario=scenario):
+                self.assert_failure(scenario, message)
+
+    def test_post_attestation_and_post_asset_drift(self) -> None:
+        cases = {
+            "release_drift_after_attestation": "post-attestation identity",
+            "asset_drift_after_attestation": "post-attestation identity",
+            "final_identity_drift": "post-asset identity",
+        }
+        for scenario, message in cases.items():
+            with self.subTest(scenario=scenario):
+                self.assert_failure(scenario, message)
+
+    def test_asset_verification_failure(self) -> None:
+        self.assert_failure("asset_verification_failure", "asset verification failed")
+
+    def test_global_deadline_is_measured_wall_clock(self) -> None:
+        result, elapsed, state = self.invoke(
+            "all_commands_slow",
+            deadline=2,
+            request_timeout=10,
+            reserve=0.05,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            "attestation cutoff reached" in result.stderr
+            or "global wall-clock deadline expired" in result.stderr
+        )
+        self.assertGreaterEqual(elapsed, GLOBAL_DEADLINE_LOWER_SECONDS)
+        self.assertLess(elapsed, LOADED_GLOBAL_DEADLINE_UPPER_SECONDS)
+        self.assertEqual(len(state["calls"]), 1)
+        print(f"MEASURED_GLOBAL_DEADLINE_2S={elapsed:.3f}s")
+
+    def test_request_timeout_is_shorter_than_global_deadline(self) -> None:
+        result, elapsed, state = self.invoke(
+            "request_timeout", deadline=8, request_timeout=0.5
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("timed out after 0.500 seconds", result.stderr)
+        self.assertGreaterEqual(elapsed, REQUEST_TIMEOUT_LOWER_SECONDS)
+        self.assertLess(elapsed, LOADED_COMMAND_TIMEOUT_UPPER_SECONDS)
+        self.assertEqual(len(state["calls"]), 1)
+        print(f"MEASURED_REQUEST_TIMEOUT_0_5S={elapsed:.3f}s")
+
+    def test_slow_asset_verification_is_bounded(self) -> None:
+        result, elapsed, state = self.invoke(
+            "asset_timeout", deadline=8, request_timeout=0.5
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("asset verification: alpha.txt timed out", result.stderr)
+        self.assertLess(elapsed, LOADED_HELPER_TIMEOUT_UPPER_SECONDS)
+        command_elapsed = self.timed_out_command_elapsed(state)
+        self.assertGreaterEqual(command_elapsed, REQUEST_TIMEOUT_LOWER_SECONDS)
+        self.assertLess(command_elapsed, LOADED_COMMAND_TIMEOUT_UPPER_SECONDS)
+        self.assertEqual(state["asset_calls"], 1)
+        print(
+            f"MEASURED_ASSET_TIMEOUT_0_5S={command_elapsed:.3f}s "
+            f"(helper {elapsed:.3f}s)"
+        )
+
+    def test_slow_final_identity_revalidation_is_bounded(self) -> None:
+        result, elapsed, state = self.invoke(
+            "final_identity_timeout", deadline=8, request_timeout=0.5
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("post-asset identity: repository timed out", result.stderr)
+        self.assertLess(elapsed, LOADED_HELPER_TIMEOUT_UPPER_SECONDS)
+        command_elapsed = self.timed_out_command_elapsed(state)
+        self.assertGreaterEqual(command_elapsed, REQUEST_TIMEOUT_LOWER_SECONDS)
+        self.assertLess(command_elapsed, LOADED_COMMAND_TIMEOUT_UPPER_SECONDS)
+        self.assertEqual(state["repository_calls"], 3)
+        print(
+            f"MEASURED_FINAL_IDENTITY_TIMEOUT_0_5S={command_elapsed:.3f}s "
+            f"(helper {elapsed:.3f}s)"
+        )
+
+    def test_sleep_that_would_cross_attestation_cutoff_is_omitted(self) -> None:
+        result, elapsed, state = self.invoke(
+            "transient_until_deadline",
+            deadline=8,
+            request_timeout=1,
+            interval=5,
+            attempts=30,
+            reserve=4,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "attestation retry sleep would enter the "
+            "4-second finalization reserve",
+            result.stderr,
+        )
+        self.assertLess(elapsed, SLEEP_REFUSAL_UPPER_SECONDS)
+        self.assertEqual(state["verify_calls"], 1)
+        self.assertEqual(state["repository_calls"], 1)
+        self.assertEqual(len(state["calls"]), 5)
+        print(f"MEASURED_SLEEP_OMITTED_4S_CUTOFF={elapsed:.3f}s")
+
+    def test_exact_transient_response_stops_at_attestation_cutoff(self) -> None:
+        result, elapsed, state = self.invoke(
+            "transient_until_deadline",
+            deadline=3,
+            request_timeout=1,
+            interval=0,
+            attempts=100,
+            reserve=2,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("attestation cutoff reached", result.stderr)
+        self.assertGreaterEqual(elapsed, ATTESTATION_CUTOFF_LOWER_SECONDS)
+        self.assertLess(elapsed, LOADED_GLOBAL_DEADLINE_UPPER_SECONDS)
+        self.assertGreaterEqual(state["verify_calls"], 1)
+        self.assertEqual(state["asset_calls"] if "asset_calls" in state else 0, 0)
+        print(f"MEASURED_ATTESTATION_CUTOFF_1S={elapsed:.3f}s")
+
+    def test_attestation_before_cutoff_retains_finalization_reserve(self) -> None:
+        deadline = 5
+        reserve = 2
+        result, elapsed, state = self.invoke(
+            "attestation_near_cutoff",
+            deadline=deadline,
+            request_timeout=2,
+            reserve=reserve,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected_verify = [
+            "release",
+            "verify",
+            TAG,
+            "--repo",
+            HOSTED_REPOSITORY,
+            "--format",
+            "json",
+        ]
+        verify_index = state["calls"].index(expected_verify)
+        accepted_at = state["outcomes"][verify_index]["finished_monotonic"]
+        started_at = state["_test_started_monotonic"]
+        self.assertGreaterEqual(
+            started_at + deadline - accepted_at,
+            reserve - 0.1,
+        )
+        self.assertLess(elapsed, deadline)
+
+    def test_invalid_reserve_fails_before_github_command(self) -> None:
+        for reserve in (0, 2, 3):
+            with self.subTest(reserve=reserve):
+                result, _elapsed, state = self.invoke(
+                    "immediate_success",
+                    deadline=2,
+                    reserve=reserve,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS", result.stderr
+                )
+                self.assertEqual(state["calls"], [])
+
+    def test_attestation_request_timeout_is_not_retried(self) -> None:
+        result, _elapsed, state = self.invoke(
+            "attestation_timeout",
+            deadline=5,
+            request_timeout=0.5,
+            reserve=1,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("release attestation timed out", result.stderr)
+        self.assertEqual(state["verify_calls"], 1)
+
+    def test_maximum_attempt_bound_remains_secondary(self) -> None:
+        result, elapsed, state = self.invoke(
+            "transient_until_deadline",
+            deadline=15,
+            request_timeout=1,
+            interval=0,
+            attempts=2,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("attempt limit", result.stderr)
+        self.assertEqual(state["verify_calls"], 2)
+        self.assertLess(elapsed, 15)
+
+    def test_timed_out_process_group_leaves_no_child(self) -> None:
+        result, elapsed, _state = self.invoke(
+            "child_process_timeout", deadline=8, request_timeout=0.25
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertGreaterEqual(elapsed, PROCESS_GROUP_TIMEOUT_LOWER_SECONDS)
+        self.assertLess(elapsed, LOADED_COMMAND_TIMEOUT_UPPER_SECONDS)
+        direct_pid = int(self.direct_pid.read_text())
+        descendant_pid = int(self.child_pid.read_text())
+        self.assert_process_absent(direct_pid)
+        self.assert_process_absent(descendant_pid)
+        time.sleep(1.1)
+        self.assertFalse(self.child_sentinel.exists())
+        print(f"MEASURED_CHILD_GROUP_TIMEOUT_0_25S={elapsed:.3f}s")
+
+    def test_leader_exits_before_timeout_and_descendant_is_removed(self) -> None:
+        result, elapsed, _state = self.invoke(
+            "leader_exits_before_timeout", deadline=8, request_timeout=0.5
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("timed out after 0.500 seconds", result.stderr)
+        self.assertLess(elapsed, 4)
+        self.assert_process_absent(int(self.direct_pid.read_text()))
+        self.assert_escape_descendant_removed()
+
+    def test_successful_leader_cannot_leave_descendant(self) -> None:
+        result, _elapsed, _state = self.invoke("success_descendant_escape")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_escape_descendant_removed()
+
+    def test_nonzero_leader_cannot_leave_descendant(self) -> None:
+        result, _elapsed, _state = self.invoke("nonzero_descendant_escape")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exit status 9", result.stderr)
+        self.assert_escape_descendant_removed()
+
+    def test_parse_failure_cannot_leave_descendant(self) -> None:
+        result, _elapsed, _state = self.invoke("parse_failure_descendant_escape")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("malformed JSON", result.stderr)
+        self.assert_escape_descendant_removed()
+
+    def test_alarm_during_child_registration_uses_structured_cleanup(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "spawn-registration", "spawn_registration_alarm"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_processes_removed(state)
+
+    def test_alarm_while_command_runs_uses_structured_cleanup(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "running-command", "spawn_registration_alarm"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_processes_removed(state)
+
+    def test_alarm_after_leader_exit_before_cleanup_is_deferred(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "pre-cleanup", "success_descendant_escape"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_processes_removed(state)
+
+    def test_alarm_during_cleanup_is_deferred(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "during-cleanup", "success_descendant_escape"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_processes_removed(state)
+
+    def test_alarm_after_cleanup_before_return_cannot_escape(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "post-cleanup", "success_descendant_escape"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_processes_removed(state)
+
+    def test_alarm_without_active_command_fails_at_safe_boundary(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "no-active-command", "immediate_success"
+        )
+        self.assert_alarm_boundary_state(result, state)
+        self.assertIsNone(state["group_absent"])
+
+    def test_alarm_immediately_before_retry_sleep_prevents_wait(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "pre-wait", "transient_with_descendant"
+        )
+        self.assert_retry_alarm_boundary(result, state)
+
+    def test_alarm_during_retry_wait_slice_interrupts_wait(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "during-slice", "transient_with_descendant"
+        )
+        self.assert_retry_alarm_boundary(result, state)
+
+    def test_alarm_immediately_after_retry_slice_interrupts_wait(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "post-slice", "transient_with_descendant"
+        )
+        self.assert_retry_alarm_boundary(result, state)
+
+    def test_alarm_at_retry_interval_boundary_prevents_next_call(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "interval-boundary", "transient_with_descendant"
+        )
+        self.assert_retry_alarm_boundary(result, state)
+
+    def test_alarm_immediately_before_next_github_call_prevents_call(self) -> None:
+        result, state = self.invoke_alarm_boundary(
+            "pre-next-call", "transient_with_descendant"
+        )
+        self.assert_retry_alarm_boundary(result, state)
+
+    def test_alarm_during_temporary_output_write_removes_output(self) -> None:
+        result, state = self.invoke_alarm_boundary("temp-write", "immediate_success")
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_group_absent(state)
+
+    def test_alarm_after_temporary_output_removes_output(self) -> None:
+        result, state = self.invoke_alarm_boundary("post-temp", "immediate_success")
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_group_absent(state)
+
+    def test_alarm_at_previous_final_output_boundary_removes_output(self) -> None:
+        result, state = self.invoke_alarm_boundary("post-run", "immediate_success")
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_group_absent(state)
+
+    def test_alarm_before_atomic_output_replacement_removes_output(self) -> None:
+        result, state = self.invoke_alarm_boundary("pre-replace", "immediate_success")
+        self.assert_alarm_boundary_state(result, state)
+        self.assert_alarm_group_absent(state)
+
+    def test_alarm_at_spawn_registration_boundary_kills_descendants(self) -> None:
+        assets = self.reset_evidence()
+        harness = self.root / "spawn_boundary_harness.py"
+        verifier_directory = str(VERIFIER.parent)
+        arguments = [
+            REPOSITORY,
+            TAG,
+            TAG_OBJECT,
+            TARGET_COMMIT,
+            str(self.evidence),
+            str(self.output),
+        ]
+        harness.write_text(
+            "\n".join(
+                [
+                    "import os",
+                    "import signal",
+                    "import sys",
+                    "import time",
+                    "from pathlib import Path",
+                    f"sys.path.insert(0, {verifier_directory!r})",
+                    "import verify_immutable_release_attestation as verifier",
+                    "original_spawn = verifier.CommandRunner._spawn_process",
+                    "def spawn_with_pending_alarm(self, argv):",
+                    "    process = original_spawn(self, argv)",
+                    f"    ready = Path({str(self.spawn_ready)!r})",
+                    "    wait_deadline = time.monotonic() + 2",
+                    "    while not ready.exists():",
+                    "        if time.monotonic() >= wait_deadline:",
+                    "            raise RuntimeError('fake child did not become ready')",
+                    "        time.sleep(0.005)",
+                    "    os.kill(os.getpid(), signal.SIGALRM)",
+                    "    return process",
+                    "verifier.CommandRunner._spawn_process = spawn_with_pending_alarm",
+                    "try:",
+                    f"    status = verifier.main({arguments!r})",
+                    "except verifier.VerificationFailure as error:",
+                    "    print(f'immutable release verification failed: {error}', file=sys.stderr)",
+                    "    status = 1",
+                    "raise SystemExit(status)",
+                    "",
+                ]
+            )
+        )
+        environment = {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "FAKE_GH_SCENARIO": "spawn_registration_alarm",
+            "FAKE_GH_STATE": str(self.state),
+            "FAKE_BASELINE_ASSETS": json.dumps(assets),
+            "FAKE_EVIDENCE": str(self.evidence),
+            "FAKE_CHILD_PID": str(self.child_pid),
+            "FAKE_CHILD_SENTINEL": str(self.child_sentinel),
+            "FAKE_DIRECT_PID": str(self.direct_pid),
+            "FAKE_DESCENDANT_PID": str(self.descendant_pid),
+            "FAKE_SPAWN_READY": str(self.spawn_ready),
+            "FAKE_DELAYED_SENTINEL": str(self.delayed_sentinel),
+            "RELEASE_VERIFY_DEADLINE_SECONDS": "5",
+            "RELEASE_VERIFY_REQUEST_TIMEOUT_SECONDS": "2",
+            "RELEASE_VERIFY_INTERVAL_SECONDS": "0",
+            "RELEASE_VERIFY_MAX_ATTEMPTS": "2",
+            "RELEASE_VERIFY_FINALIZATION_RESERVE_SECONDS": "1",
+        }
+        result = subprocess.run(
+            [sys.executable, str(harness)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=5,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("global wall-clock deadline expired", result.stderr)
+        direct_pid = int(self.direct_pid.read_text())
+        descendant_pid = int(self.descendant_pid.read_text())
+
+        def kill_survivor(pid: int) -> None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        self.addCleanup(kill_survivor, direct_pid)
+        self.addCleanup(kill_survivor, descendant_pid)
+        time.sleep(1.1)
+        self.assertFalse(self.delayed_sentinel.exists())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(direct_pid, 0)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(descendant_pid, 0)
+
+    def test_popen_failure_restores_signal_state(self) -> None:
+        class PopenFailureRunner(CommandRunner):
+            def _spawn_process(self, argv: list[str]) -> subprocess.Popen[bytes]:
+                raise OSError("synthetic Popen failure")
+
+        before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        before_handler = signal.getsignal(signal.SIGCHLD)
+        runner = PopenFailureRunner(Deadline(5), 1)
+        with self.assertRaisesRegex(OSError, "synthetic Popen failure"):
+            runner.run(["gh"], "Popen failure")
+        after_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        self.assertEqual(after_mask, before_mask)
+        self.assertIs(signal.getsignal(signal.SIGCHLD), before_handler)
+        self.assertIsNone(runner.active_group)
+
+    def test_absent_process_group_cleanup_is_idempotent(self) -> None:
+        process = subprocess.Popen(
+            [sys.executable, "-c", "pass"], start_new_session=True
+        )
+        process_group_id = process.pid
+        process.wait(timeout=1)
+        CommandRunner._signal_process_group(process_group_id)
+        CommandRunner._signal_process_group(process_group_id)
+
+    def test_unexpected_process_group_signal_error_fails_closed(self) -> None:
+        class PermissionDeniedRunner(CommandRunner):
+            @staticmethod
+            def _send_process_group_signal(process_group_id: int) -> None:
+                raise PermissionError("synthetic permission denial")
+
+        runner = PermissionDeniedRunner(Deadline(5), 1)
+        with self.assertRaisesRegex(VerificationFailure, "synthetic permission denial"):
+            runner.run([sys.executable, "-c", "pass"], "permission failure")
+        self.assertIsNone(runner.active_group)
+
+    def test_monotonic_clock_rollback_and_malformed_values_fail_closed(self) -> None:
+        values = iter([10.0, 9.0])
+        deadline = Deadline(5, lambda: next(values))
+        with self.assertRaisesRegex(VerificationFailure, "moved backwards"):
+            deadline.remaining("rollback test")
+        with self.assertRaisesRegex(VerificationFailure, "malformed value"):
+            Deadline(5, lambda: float("nan"))
+
+    def test_fake_gh_rejects_wrong_argv_and_mutation(self) -> None:
+        assets = self.reset_evidence()
+        environment = {
+            **os.environ,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "FAKE_GH_SCENARIO": "immediate_success",
+            "FAKE_GH_STATE": str(self.state),
+            "FAKE_BASELINE_ASSETS": json.dumps(assets),
+            "FAKE_EVIDENCE": str(self.evidence),
+            "FAKE_CHILD_PID": str(self.child_pid),
+            "FAKE_CHILD_SENTINEL": str(self.child_sentinel),
+        }
+        invalid_commands = [
+            ["release", "verify", TAG, "--repo", HOSTED_REPOSITORY],
+            ["release", "verify", TAG, "--format", "json", "--repo", HOSTED_REPOSITORY],
+            ["release", "verify", TAG, "--repo", REPOSITORY, "--format", "json"],
+            [
+                "release",
+                "verify",
+                TAG,
+                "--repo",
+                HOSTED_REPOSITORY,
+                "--format",
+                "json",
+                "--extra",
+            ],
+            [
+                "release",
+                "verify",
+                TAG,
+                "--repo",
+                HOSTED_REPOSITORY,
+                "--repo",
+                HOSTED_REPOSITORY,
+                "--format",
+                "json",
+            ],
+            ["api", f"repos/{REPOSITORY}"],
+            ["release", "create", TAG],
+        ]
+        for command in invalid_commands:
+            with self.subTest(command=command):
+                result = subprocess.run(
+                    [str(self.bin / "gh"), *command],
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                )
+                self.assertEqual(result.returncode, 64)
+                self.assertEqual(result.stdout, "")
+                self.assertNotEqual(result.stderr, "")
+
+
+if __name__ == "__main__" and Path(sys.argv[0]).name == "gh":
+    raise SystemExit(fake_gh_main(sys.argv[1:]))
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -22,7 +22,11 @@ export function chainFor(chainId: number | bigint): Chain {
   );
 }
 
-/** Routes private submissions separately and keeps RPC URLs out of error messages. */
+/**
+ * Routes private submissions separately and keeps RPC URLs out of error messages. Reads keep viem's retries;
+ * `eth_sendRawTransaction` gets exactly one attempt, because a retried send can reach the RPC twice and a durable
+ * submission must know whether its single send happened.
+ */
 export function l1Transport(readUrl: string, submissionUrl?: string): Transport {
   const transport: Transport = submissionUrl
     ? fallback([
@@ -32,9 +36,12 @@ export function l1Transport(readUrl: string, submissionUrl?: string): Transport 
     : redactedHttp(readUrl);
   return params => {
     const inner = transport(params);
-    const request: typeof inner.request = async args => {
+    const request: typeof inner.request = async (args, options) => {
       try {
-        return await inner.request(args);
+        return await inner.request(
+          args,
+          args.method === 'eth_sendRawTransaction' ? { ...options, retryCount: 0 } : options,
+        );
       } catch (cause) {
         throw new Error('L1 RPC request failed', { cause });
       }

@@ -12,6 +12,7 @@ import { initTelemetry } from '@oxide/telemetry';
 import { OFAC_SDN_LIST_URL, OfacSdnList } from '@oxide/watcher-lib/sanctions';
 
 import { type PublicClient, zeroAddress } from 'viem';
+import { unlink, writeFile } from 'node:fs/promises';
 
 import { type RunConfig, redactRunConfig } from './cli/config.js';
 import {
@@ -20,10 +21,16 @@ import {
   resolveDeploymentEnvManifest,
 } from './config/deployment_env_manifest.js';
 import { DeploymentManifestRefresher } from './config/deployment_manifest_refresher.js';
+import { RuntimeLease } from './exact_operation/runtime_lease.js';
+import { isGenericRestoreProfile } from './exact_operation/runtime_sandbox.js';
+
 import { FpcFunderCaller } from './fpc_funding/fpc_funder_caller.js';
 import { HistoricalDeploymentSupervisor } from './historical_deployment_supervisor.js';
 import { getL1PublicClient } from './l1/client.js';
 import { assertNotFlashbots } from './l1/flashbots_protect.js';
+import { assertNoExactOperationState, genericSubmissionQuarantine } from './exact_operation/generic_quarantine.js';
+import { GenericSubmissionJournal } from './l1/submission_journal.js';
+import { reconcileUnresolvedSubmissions } from './l1/submission_reconciliation.js';
 import { createL1TxQueue } from './l1/l1_tx_queue.js';
 import { L1OperationRelayer } from './l1_operations/l1_operation_relayer.js';
 import { L1OperationRouter } from './l1_operations/l1_operation_router.js';
@@ -33,7 +40,7 @@ import { UsdPeggedPriceOracle } from './price_oracle/usd_pegged_price_oracle.js'
 import { startEpochProofs } from './prover/index.js';
 import { RelayerTelemetry } from './relayer_telemetry.js';
 import { createEphemeralSigner, hasSignerKey, loadSigner } from './signers/index.js';
-import { statePathForPortal } from './state/path.js';
+import { type GenericRuntimePaths, genericRuntimePaths, statePathForPortal } from './state/path.js';
 import { type SqliteStateStore, openSqliteStateStore } from './state/sqlite_store.js';
 import { relayerVersion } from './version.js';
 
@@ -49,8 +56,30 @@ export interface RunRelayerOptions {
 
 /** Bounded final telemetry flush on shutdown, so a hung exporter cannot block exit. */
 const TELEMETRY_STOP_MS = 5_000;
+const GENERIC_READY_PATH = '/tmp/oxide-relayer-generic-ready';
 
 export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}): Promise<void> {
+  const paths = genericRuntimePaths(config.state.sqlitePath, config.state.controlDir);
+  const restoreProfile = isGenericRestoreProfile();
+  if (restoreProfile && !paths.exactHandoff) {
+    throw new Error('The generic-restore runtime profile requires the fixed /data state and /control layout');
+  }
+  const lease = await RuntimeLease.acquire(paths.runtimeLease, 'generic', { cleanHandoffPath: paths.cleanHandoff });
+  let cleanHandoff = false;
+  try {
+    await runRelayerWithLease(config, paths, restoreProfile, opts);
+    cleanHandoff = paths.exactHandoff;
+  } finally {
+    await lease.close({ cleanHandoff });
+  }
+}
+async function runRelayerWithLease(
+  config: RunConfig,
+  paths: GenericRuntimePaths,
+  restoreProfile: boolean,
+  opts: RunRelayerOptions,
+): Promise<void> {
+  await removeGenericReadyMarker();
   const log = createLogger('oxide-relayer');
   log.info(`oxide-relayer version ${relayerVersion()}`);
   log.info('Starting relayer', { config: redactRunConfig(config) });
@@ -91,19 +120,36 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
     rollupVersion: publicConfig.rollupVersion,
     ...(config.modes.includes('l1-operations') ? { broadcaster: publicConfig.broadcaster.toString() } : {}),
   });
+  // Only the privileged generic-restore profile can read the exact witness and journal; a plain run requires that
+  // the shared control directory has no exact-operation state at all.
+  let quarantinedOperationIds: ReadonlySet<string> = new Set();
+  if (restoreProfile) {
+    quarantinedOperationIds = await genericSubmissionQuarantine();
+  } else {
+    await assertNoExactOperationState(paths.controlDirectory);
+  }
+  const submissionJournal = await GenericSubmissionJournal.open(paths.submissionJournal);
 
   const signer =
     config.disableSubmission && !hasSignerKey(config.signer)
       ? createEphemeralSigner()
       : await loadSigner(config.signer);
+  await reconcileUnresolvedSubmissions({
+    journal: submissionJournal,
+    client: publicClient,
+    address: signer.account.address,
+    log,
+  });
   const l1TxQueue = createL1TxQueue({
     client: publicClient,
     account: signer.account,
     readL1RpcUrl: config.readL1RpcUrl,
     flashbotsBlockRange: config.flashbotsBlockRange,
     disableSubmission: config.disableSubmission,
+    submissionJournal,
     maxFeePerGasCap:
       config.l1MaxFeePerGasGwei === undefined ? undefined : BigInt(Math.trunc(config.l1MaxFeePerGasGwei * 1e9)),
+    forbiddenOperationIds: quarantinedOperationIds,
   });
 
   // Endpoint arrives through the standard OTel env vars set by the deploy; external operators set nothing
@@ -223,6 +269,7 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
           executor: publicConfig.operationExecutor,
           executorVersion,
           l1TxQueue,
+          forbiddenOperationIds: quarantinedOperationIds,
           sanctionsList,
           withdrawalCompletion: new WithdrawalCompletion(
             node,
@@ -319,12 +366,20 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
     }
 
     manifestRefresher?.start();
+    await writeFile(
+      GENERIC_READY_PATH,
+      `${JSON.stringify({ schema: 'oxide-relayer.generic-ready.v1', pid: process.pid })}\n`,
+      { mode: 0o400 },
+    );
     await waitForShutdown(opts.shutdownSignal);
   } finally {
+    await removeGenericReadyMarker();
     await manifestRefresher?.stop();
     // Stop the L1 tx queue together with the workers. A worker run can wait on a queue hold that only the queue stop
     // ends.
-    await Promise.allSettled([...historicalSupervisors, ...currentServices, l1TxQueue].map(service => service.stop()));
+    const stopResults = await Promise.allSettled(
+      [...historicalSupervisors, ...currentServices, l1TxQueue].map(service => service.stop()),
+    );
     // stop() with a timeout so shutdown does not hang if the exporter stalls.
     await Promise.allSettled([
       Promise.race([
@@ -332,11 +387,26 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
         new Promise<void>(resolve => setTimeout(resolve, TELEMETRY_STOP_MS).unref()),
       ]),
     ]);
-    await Promise.allSettled(historicalSupervisors.map(supervisor => supervisor.close()));
+    const closeResults = await Promise.allSettled(historicalSupervisors.map(supervisor => supervisor.close()));
     await state?.close();
+    await submissionJournal.close();
     sdn?.stop();
+    const shutdownFailures = [...stopResults, ...closeResults]
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map(result => result.reason);
+    if (shutdownFailures.length > 0) {
+      throw new AggregateError(shutdownFailures, 'Relayer shutdown was not clean; exact-operation handoff is forbidden');
+    }
   }
 }
+async function removeGenericReadyMarker(): Promise<void> {
+  try {
+    await unlink(GENERIC_READY_PATH);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
 
 /** The hostname of an L1 RPC URL, for logs that must not leak the provider API key the URL embeds. */
 function rpcHost(url: string): string {

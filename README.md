@@ -122,6 +122,15 @@ pnpm build:relayer          # generates @oxide/noir-contracts.js, then compiles 
 node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js run --help
 ```
 
+Prepare a minimal production filesystem only after the relayer build succeeds,
+then build the runtime image from that filesystem:
+
+```shell
+pnpm prepare:relayer-image
+docker buildx build --platform linux/amd64 --provenance=mode=max --sbom=true \
+  -f Dockerfile.oxide-relayer -t oxide-relayer:exact-operation .
+```
+
 For the relayer configuration, see [vendor/oxide/yarn-project/oxide-relayer/README.md](vendor/oxide/yarn-project/oxide-relayer/README.md).
 
 ## Circuits

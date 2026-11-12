@@ -42,6 +42,22 @@ describe('loadSigner', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+  it('loads and wipes initializer-prepared keystore buffers without a filesystem path', async () => {
+    const wallet = new Wallet(PRIVATE_KEY);
+    const keystoreJson = Buffer.from(await wallet.encrypt('secret'), 'utf8');
+    const password = Buffer.from('secret\n', 'utf8');
+    const signer = await loadSigner({
+      backend: 'keystore',
+      privateKeyEnvVar: 'L1_PRIVATE_KEY', // gitleaks:allow
+      keystoreJson,
+      keystorePasswordBytes: password,
+    });
+
+    expect(signer.address).toBe(wallet.address);
+    expect(keystoreJson.every(byte => byte === 0)).toBe(true);
+    expect(password.every(byte => byte === 0)).toBe(true);
+  });
+
 });
 
 describe('hasSignerKey', () => {
@@ -52,8 +68,9 @@ describe('hasSignerKey', () => {
     expect(hasSignerKey(envConfig, {})).toBe(false);
   });
 
-  it('detects a keystore only when its path is set', () => {
+  it('detects a keystore path or initializer-prepared bytes', () => {
     expect(hasSignerKey({ ...envConfig, backend: 'keystore', keystorePath: '/data/relayer.json' }, {})).toBe(true);
+    expect(hasSignerKey({ ...envConfig, backend: 'keystore', keystoreJson: Buffer.from('{}') }, {})).toBe(true);
     expect(hasSignerKey({ ...envConfig, backend: 'keystore' }, {})).toBe(false);
   });
 });

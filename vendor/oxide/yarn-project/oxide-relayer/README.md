@@ -7,12 +7,16 @@ The `@oxide/oxide-relayer` workspace builds the long-running L1 operation relaye
 Use Node 24, Aztec 6.0.0, Docker Buildx, and the Foundry toolchain. From the repository root:
 
 ```sh
-deployer/bash/relayer/prepare-relayer-image.sh
-docker buildx build --platform linux/amd64 --provenance=false --sbom=false --load \
-  -f yarn-project/oxide-relayer/Dockerfile -t oxide-relayer:local .
+pnpm build-contracts
+pnpm build:relayer
+pnpm prepare:relayer-image
+docker buildx build --platform linux/amd64 --provenance=mode=max --sbom=true \
+  -f Dockerfile.oxide-relayer -t oxide-relayer:local .
 ```
 
-The preparation command builds production L1 ABI modules and the L2 and refund artifacts used by the image. The Dockerfile installs the locked Yarn workspace, builds the relayer dependency chain, and keeps production dependencies. Publish an immutable image digest for a persistent deployment.
+The preparation command deploys production dependencies into an isolated
+filesystem, copies the built Oxide workspace outputs, and runs the exact CLI
+from that filesystem. Publish only a reviewed image by immutable digest.
 
 ## Public releases
 
@@ -39,11 +43,148 @@ The policy decides which of those entries get a worker and is applied on every r
 
 The pinned entry follows the same policy: it can be excluded or skipped on its token, in which case the relayer logs that it gets no worker while `fpc-funding` and `epoch-proofs` still run for it. The watched deposit tokens come from each entry's advertised token: DAI, USDC, and USDT on mainnet and that token on other chains.
 
-Mount durable storage at `/data` for the default `oxide-relayer-{portal}.sqlite3` files. Supply either a keystore and password file under the mount or an L1 private key through the configured secret environment. Fund the L1 signer with ETH. The read RPC must support `eth_simulateV1` with validation; the Aztec node and each served entry's enclave must be reachable. The configured Chainlink feed and sanctions-list endpoint must be reachable.
+Mount durable storage at `/data` for the default `oxide-relayer-{portal}.sqlite3` files. The generic submission journal (`generic-submission.sqlite3`) and the clean-handoff marker live in the same directory as the state files. `--control-dir` (`OXIDE_RELAYER_CONTROL_DIR`, default `/control`) names an existing owner-only directory for the runtime lease that the exact-operation runtime shares; a run whose control directory holds exact-operation state refuses to start outside the generic-restore profile. Supply either a keystore and password file under the mount or an L1 private key through the configured secret environment. Fund the L1 signer with ETH. The read RPC must support `eth_simulateV1` with validation; the Aztec node and each served entry's enclave must be reachable. The configured Chainlink feed and sanctions-list endpoint must be reachable.
 
 For a reader coming from upstream oxide: the inputs and flag names are upstream's. The two differences are the startup check of the pinned entry's rollup version against the node, and the policy, that is the exclude list and the token admission rule, which upstream does not have.
 
 Start the relayer before clients broadcast operations and check that its L2 cursor advances. Observe one transaction through discovery, simulation, screening, L1 execution, and receipt. Back up the SQLite state and monitor discovery lag, deferred operations, signer ETH, and the sanctions-list refresh. The L2 transaction payload is available only for a short window; an operation broadcast before discovery cannot be recovered after its payload is pruned.
+
+## Exact-operation relay
+
+`relay-exact` is a separate one-shot runtime for an already-finalized withdrawal operation. It does not start the
+L1-operation discovery loop, historical supervisors, FPC funding, epoch proofs, fake-send mode, or a retry loop. It
+opens canonical generic state only through the fixed read-only `/canonical` mount for preflight and quarantine
+checks. Exact leases, journals, receipts, and control markers exist only under the separate writable `/control`
+mount.
+
+The operation identity is not available before the L2 exit transaction is submitted. Derive it after inclusion from
+the exact Portal deployment, source transaction hash and block, the single Broadcaster call, its calldata, and the
+resulting operation ID. The source block must be at or below the proven L2 tip, the withdrawal must verify against the
+transaction effect, and an Outbox witness must exist. Recipient plus amount is not an operation identity.
+
+The approval and Ed25519 approval signature are accepted only through a strict inherited `--bundle-fd`. The
+root-owned authority in the immutable image is not caller-selectable. Approval schema v4 binds an approval nonce,
+source commit, immutable image digest, singleton host, schema identity, complete state-inventory digest, canonical
+state digest, Portal, exact operation, and an S3 Object Lock witness authority.
+
+Before TEE or transaction signing, the runtime creates one operation-scoped witness claim with S3
+`If-None-Match: *`, SHA-256 checksum, and `COMPLIANCE` retention through `9999-12-31T23:59:59Z`.
+It rechecks the signed window immediately before that immutable `PutObject`, with SDK retries disabled.
+The key is stable across fresh approvals and runtime-state changes for the same chain, deployment,
+Portal, rollup, and operation ID. The canonical body binds an opaque commitment to the verified
+approval signature, including its nonce and runtime identity, without storing the nonce, token,
+recipient address, recipient commitment, or a recomputable descriptor digest. The runtime verifies
+the exact returned object version and retention before continuing. Authority unavailability,
+collision, read-after-write failure, deletion markers, incomplete listings, local-journal rollback,
+or any witness/journal inconsistency fails closed. Exact journal schema v4 stores a domain-separated
+commitment to the private witness coordinate with the receipt evidence, never the raw prefix or key.
+Before the claim, the runtime fsyncs a claim intent for exactly this approval beside the exact journal. If the
+process dies after the claim but before the journal row, the next run with the same approval finds the intent and
+reuses the existing claim only when its body is byte-identical; signing always needs the journal row, so that claim
+was never signed. Without the intent an existing claim is a collision, so a journal rollback still fails closed.
+
+Runtime identity comes from fixed image/runtime paths. The complete inventory manifest binds every canonical
+SQLite/WAL/SHM file, historical database, generic ambiguity journal, exporter ledger, signer nonce record, mount,
+and Compose identity. Unknown mounts, unknown files, symlinks, hard links, missing canonical files, owner or mode
+drift, or changed canonical bytes are rejected. `/canonical`, `/control`, `/run/config/oxide-relayer`,
+`/run/secrets/oxide-relayer`, and `/tmp` must be distinct, canonical mount points; path overlap, symlink aliases,
+bind aliases, and device/inode aliases fail closed. The launcher must independently enforce one host and one
+immutable image digest with a read-only root filesystem and no `/app` mount. Approval material never enters
+inventory, environment files, generated Compose, argv, logs, witness records, or canonical state.
+
+The image starts only as container root with `DAC_READ_SEARCH`, `SETUID`, and `SETGID`;
+`no-new-privileges` is mandatory. `DAC_READ_SEARCH` is used only while root preflights the legacy-owned,
+read-only canonical state. Before opening credentials, the initializer validates all mount and runtime identities.
+It reads only approved root-owned mode-0400 files beneath root-owned mode-0700 configuration and secret directories
+directly into process-memory buffers, reads the inherited standard-input bundle into a separate memory buffer, closes
+the source descriptors, clears supplementary groups, and drops permanently to dedicated non-login UID/GID 65532.
+Post-drop code consumes and wipes those buffers; it never reopens `/proc/self/fd/*`, `/dev/fd/*`, or a root-only
+input path, and input values never enter environment variables, argv, logs, or disk. UID/GID 0 and 1000 are
+prohibited. The final process verifies that all real, effective, saved, and filesystem IDs are 65532, its permitted,
+inheritable, effective, and ambient capability sets are empty, the bounding set is exactly the reviewed three
+startup capabilities, and root cannot be regained. The host must reserve UID/GID 65532 exclusively for this runtime.
+
+Canonical state is mounted read-only. The final process cannot create SQLite journals, WAL/SHM files, locks,
+temporary files, migrations, or permission changes beside canonical data. Runtime temporary files use an isolated
+`noexec,nosuid,nodev` tmpfs. Exact writes are restricted to `/control`, which is mode 0700 and owned by the dedicated
+identity. Generic restore requires separate approval, exact terminal evidence, unchanged canonical bytes, no active
+exact lease, and a separately reviewed remount into the generic layout; it never removes exact-operation quarantine
+or performs a migration or permission change.
+The safe image preflight uses the real default entrypoint and the same mount, inventory, canonical-handoff, startup
+capability, privilege-drop, and post-drop readability path:
+
+```text
+preflight-exact --bundle-fd 0 --canonical-state /canonical --control-dir /control
+```
+
+The caller runs as UID/GID 0 with a read-only root filesystem, `--network none`, `no-new-privileges`,
+`--cap-drop ALL`, and only `--cap-add DAC_READ_SEARCH --cap-add SETUID --cap-add SETGID`. It bind-mounts
+the legacy canonical state at `/canonical:ro` and the root-owned configuration directory at
+`/run/config/oxide-relayer:ro`; mounts a fresh UID/GID-65532 mode-0700 tmpfs at `/control`; mounts a distinct
+root-owned mode-0700 empty tmpfs at `/run/secrets/oxide-relayer`; and mounts a distinct writable
+`noexec,nosuid,nodev` tmpfs at `/tmp`. It does not mount production control state, credentials, or any host `/app`.
+
+Inherited standard input must contain exactly `{"schema":"oxide-relayer.preflight-exact.v1"}`. The fixed
+root-owned mode-0400 inputs are `/run/config/oxide-relayer/runtime-identity.json` and
+`/run/config/oxide-relayer/state-inventory.json`. `/run/secrets/oxide-relayer` remains a distinct, empty,
+writable root-owned mode-0700 tmpfs: preflight opens no signer, witness, AWS, S3, RPC, PXE, or relayer credential.
+It performs no network call, journal/control mutation, witness claim, signing, or send, and exits after the post-drop checks.
+
+
+Every generic L1 send now has the same durable ambiguity contract as exact mode. Before asking the
+account to sign, it fsyncs a `signing` reservation containing operation identity, attempt, signer commitment,
+chain ID, nonce, and canonical request digest. Signing failure or a crash during signing is ambiguous. After
+signing, it fsyncs the signed hash and protected bytes, transitions to `sending`, calls `eth_sendRawTransaction`
+once, persists the exact response, and marks the send accepted. Accepted is still unresolved until a mined
+success, mined revert, or proved drop/replacement is durably recorded. An identity, for example FPC funding with
+the same calldata, is signed again as a new attempt only after its previous attempt is terminal.
+
+Settlement is bounded. Without an outcome 300 blocks after the send (at least the Protect drop window), the
+attempt becomes durably ambiguous, the `l1_tx_receipt_timeout` error is logged, and the process signs nothing
+more. A stop ends every settlement monitor at once; a stop with an unresolved attempt is not a clean handoff.
+Generic journal schema 2 files are migrated in place to schema 3 on the first read-write open.
+
+A restart never rebuilds, re-signs, resends, or advances the operation nonce. Before signing anything it
+reconciles each unresolved attempt of its own signer and chain from chain evidence only: the receipt of the
+durable signed bytes records a success or revert, and a finalized nonce past the attempt's nonce records a
+drop, because those bytes can no longer be mined. Any attempt it cannot resolve, including one of another signer,
+blocks startup with its identity, nonce, and state. To clear a public-mempool transaction that never lands, mine
+any transaction at its nonce from outside the relayer and restart after that nonce is finalized.
+
+Cutover is fail closed:
+
+1. Freeze intake outside the relayer.
+2. Gracefully stop the generic runtime. Shutdown must prove no active signing, send, or durable ambiguity and write
+   the clean-handoff marker while holding the shared lease.
+3. Inventory and hash every reachable state artifact without copying, compacting, migrating, filtering, or rewriting
+   it. Bind `stateInventoryDigest` and `canonicalStateDigest` into approval and witness evidence.
+4. Confirm host, source, image, schema, expected signer address, deployment, source event, operation,
+   economics, witness authority, and inventory. The keystore-derived account must match the signed
+   signer identity before `relay-exact` consumes the external claim or requests any signature.
+5. Enforce independent hard limits:
+   `TEE_FINALIZATION_SIGNATURE_REQUESTS_MAX=1`, `L1_TRANSACTION_SIGNINGS_MAX=1`, and
+   `ETH_SEND_RAW_TRANSACTION_CALLS_MAX=1`. The exact journal persists signed bytes and the pre-send boundary.
+The runtime independently derives the deployment registry from the observed Portal domain's `teeRegistry`, the
+manifest digest from the exact fetched manifest bytes, broadcaster contract/selector/call index/call digest from the
+observed public call, and Outbox root/proof digest from the fetched membership witness before the external claim.
+The Outbox root replays the indexer's leaf-first path with its exact `sha256Trunc(left || right)` Merkle hash, not a
+Poseidon tree. Approval values are comparison targets only. The signed execution window is checked again immediately
+before the immutable witness claim, the TEE finalization request, `account.signTransaction()`, and
+`eth_sendRawTransaction`. `eth_sendRawTransaction` is never retried by the HTTP or fallback transports. A receipt naming
+a transaction hash other than the submitted signed hash is ambiguous, irrespective of its reported status.
+
+6. Any ambiguous exact send blocks all submission for the signer and chain. Exact success remains permanently
+   quarantined from generic submission; duplicate safety never relies on a destination revert.
+7. `authorize-generic-restore --bundle-fd 3` accepts a separate signed, non-persisted restore approval
+   bound to confirmed terminal evidence, the immutable witness claim set, current state digests, and
+   signer identity. It atomically installs or idempotently accepts a mode-0600 signature-commitment
+   marker. Generic startup independently rechecks both witness and local journal and keeps every exact
+   operation excluded.
+
+While exact mode owns the lease, unrelated L1-operation discovery/submission, FPC funding, and epoch-proof work are
+delayed. Their rows, bytes, and ordering remain unchanged. A pre-send failure has no automatic generic takeover; an
+ambiguous send is not restorable by this path and requires separately reviewed reconciliation.
+
 
 ## User flows
 

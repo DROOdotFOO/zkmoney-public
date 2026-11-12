@@ -141,6 +141,7 @@ describe('L1OperationSubmitter against anvil', () => {
       client,
       l1TxQueue: { address: RELAYER.address, enqueue: submit => submit(send), maxFeePerGasCap: undefined },
       store: pendingStore,
+      forbiddenOperationIds: new Set(),
       priceOracle: FIXED_PRICE_ORACLE,
       screener: new L1OperationScreener({ isListed: () => false }),
       config: { retryBackoffMs: 0, maxPendingAgeMs: MAX_PENDING_AGE_MS },

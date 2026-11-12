@@ -15,6 +15,7 @@
     "build:web-deps": "pnpm --filter '@obsidion/config-client...' --filter '@obsidion/front-core...' --filter '@obsidion/passkey-web...' --filter '@obsidion/web-ds...' --filter '!@oxide/*' -r --if-present run build",
     "build:web-wallet": "pnpm --filter '@obsidion/web-wallet...' --filter '!@oxide/*' -r --if-present run build",
     "build:relayer": "node packages/oxide-build/scripts/build-oxide-tee.mjs --relayer",
+    "prepare:relayer-image": "node packages/oxide-build/scripts/prepare-relayer-image.mjs",
     "build:oxide-circuits": "scripts/build-oxide-circuits.sh"
   },
   "engines": {
@@ -22,8 +23,8 @@
   },
   "packageManager": "pnpm@9.14.4+sha512.c8180b3fbe4e4bca02c94234717896b5529740a6cbadf19fa78254270403ea2f27d4e1d46a08a0f56c89b63dc8ebfd3ee53326da720273794e6200fcf0d184ab",
   "pnpm": {
-    "neverBuiltDependencies": [
-      "bcrypto"
+    "onlyBuiltDependencies": [
+      "sqlite3"
     ],
     "peerDependencyRules": {
       "allowedVersions": {

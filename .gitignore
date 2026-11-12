@@ -7,6 +7,7 @@ note.md
 temp.md
 dist
 dest
+.relayer-image/
 .env
 # Local-only env files for compose stack (e.g. .env.dev, .env.local, .env.testnet).
 # Keep .env.example tracked (negation below).

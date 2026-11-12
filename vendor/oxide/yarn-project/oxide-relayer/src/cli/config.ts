@@ -80,12 +80,18 @@ export interface SignerConfig {
   keystorePath?: string;
   keystorePassword?: string;
   keystorePasswordFile?: string;
+  /** Encrypted keystore bytes prepared by the privileged initializer before dropping identity. */
+  keystoreJson?: Buffer;
+  /** Keystore password bytes prepared by the privileged initializer before dropping identity. */
+  keystorePasswordBytes?: Buffer;
 }
 
 /** Persistent SQLite state for each deployment. */
 export interface StateConfig {
   backend: 'sqlite';
   sqlitePath: string;
+  /** Directory of the runtime lease shared with the exact-operation runtime. */
+  controlDir: string;
 }
 
 const REDACTED = '<redacted>';
@@ -107,7 +113,12 @@ export function redactRunConfig(config: RunConfig): Record<string, unknown> {
     aztecNodeUrl: urlOrigin(config.aztecNodeUrl),
     aztecNodeApiKey: config.aztecNodeApiKey && REDACTED,
     proverNodeUrl: config.proverNodeUrl && urlOrigin(config.proverNodeUrl),
-    signer: { ...config.signer, keystorePassword: config.signer.keystorePassword && REDACTED },
+    signer: {
+      ...config.signer,
+      keystorePassword: config.signer.keystorePassword && REDACTED,
+      keystoreJson: config.signer.keystoreJson && REDACTED,
+      keystorePasswordBytes: config.signer.keystorePasswordBytes && REDACTED,
+    },
     predicate: config.predicate && { ...config.predicate, apiKey: REDACTED, log: undefined },
   };
   return JSON.parse(JSON.stringify(redacted, (_key, value) => (typeof value === 'bigint' ? value.toString() : value)));
@@ -138,6 +149,7 @@ export interface CommanderRunOptions extends ProverCommanderOptions {
   keystorePasswordFile?: string;
   stateBackend?: string;
   state?: string;
+  controlDir?: string;
   sdnUrl?: string;
   logScanWindow?: number;
   disableSubmission?: boolean;
