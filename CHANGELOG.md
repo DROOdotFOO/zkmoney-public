@@ -9,7 +9,7 @@
 - Record an exact claim intent before the external witness claim, so a crash between the claim and the journal row no longer locks the operation forever.
 - Retry reads again; only `eth_sendRawTransaction` runs with automatic retries disabled.
 - Share one owner-only SQLite file helper between the journals and the runtime lease, and drop the lease-kind write that was always rolled back.
-- Pin `@aws-sdk/client-s3` and the Docker base image digest, install CI dependencies without lifecycle scripts, and verify the Aztec toolchain hashes.
+- Pin `@aws-sdk/client-s3` and the Docker base image digest, allow dependency lifecycle scripts only for sqlite3, and verify the Aztec toolchain hashes.
 
 ## 1.0.9
 

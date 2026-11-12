@@ -103,10 +103,9 @@ jobs:
       - name: Set up exact pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
 
-      # The root package.json allows lifecycle scripts only for sqlite3; compile it rather than download a prebuilt.
+      # The root package.json allows lifecycle scripts only for sqlite3. Its N-API prebuild stays portable to the
+      # bookworm image; a runner-compiled addon would need the runner's newer glibc.
       - name: Install exact lockfile with only the sqlite3 build script
-        env:
-          npm_config_build_from_source: "true"
         run: pnpm install --frozen-lockfile
 
       - name: Set up exact Foundry
@@ -140,8 +139,6 @@ jobs:
 
       - name: Build and smoke reviewed image
         shell: bash
-        env:
-          npm_config_build_from_source: "true"
         run: |
           set -euo pipefail
           authority="$RUNNER_TEMP/approval-authority.pem"
